@@ -2,8 +2,8 @@ package handler
 
 import (
 	"github.com/gin-gonic/gin"
-	"github.com/racio/llmio/common"
-	"github.com/racio/llmio/consts"
+	"github.com/racio/orvion/common"
+	"github.com/racio/orvion/consts"
 )
 
 func GetVersion(c *gin.Context) {

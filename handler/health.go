@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/racio/llmio/consts"
-	"github.com/racio/llmio/models"
-	"github.com/racio/llmio/service"
+	"github.com/racio/orvion/consts"
+	"github.com/racio/orvion/models"
+	"github.com/racio/orvion/service"
 )
 
 // ComponentStatus 组件状态

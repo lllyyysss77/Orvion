@@ -15,12 +15,12 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/go-redis/redis/v8"
 	"github.com/joho/godotenv"
-	"github.com/racio/llmio/consts"
-	"github.com/racio/llmio/handler"
-	"github.com/racio/llmio/limiter"
-	"github.com/racio/llmio/middleware"
-	"github.com/racio/llmio/models"
-	"github.com/racio/llmio/service"
+	"github.com/racio/orvion/consts"
+	"github.com/racio/orvion/handler"
+	"github.com/racio/orvion/limiter"
+	"github.com/racio/orvion/middleware"
+	"github.com/racio/orvion/models"
+	"github.com/racio/orvion/service"
 	_ "golang.org/x/crypto/x509roots/fallback"
 )
 

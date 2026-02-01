@@ -1,4 +1,4 @@
-module github.com/racio/llmio
+module github.com/racio/orvion
 
 go 1.25.0
 

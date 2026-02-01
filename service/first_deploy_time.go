@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/racio/llmio/models"
+	"github.com/racio/orvion/models"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )

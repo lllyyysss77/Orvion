@@ -3,7 +3,7 @@ package service
 import (
 	"context"
 
-	"github.com/racio/llmio/models"
+	"github.com/racio/orvion/models"
 	"github.com/samber/lo"
 	"gorm.io/gorm"
 )

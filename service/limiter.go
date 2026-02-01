@@ -5,7 +5,7 @@ import (
 	"log/slog"
 
 	"github.com/go-redis/redis/v8"
-	"github.com/racio/llmio/limiter"
+	"github.com/racio/orvion/limiter"
 )
 
 // 全局限流管理器

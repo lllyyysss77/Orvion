@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/racio/llmio/consts"
+	"github.com/racio/orvion/consts"
 )
 
 // Gemini 调用 Gemini 原生 REST API。

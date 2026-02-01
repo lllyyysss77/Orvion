@@ -2,8 +2,8 @@ package handler
 
 import (
 	"github.com/gin-gonic/gin"
-	"github.com/racio/llmio/common"
-	"github.com/racio/llmio/service"
+	"github.com/racio/orvion/common"
+	"github.com/racio/orvion/service"
 )
 
 // GetLimiterStats 获取限流器统计信息

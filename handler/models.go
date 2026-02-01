@@ -2,10 +2,10 @@ package handler
 
 import (
 	"github.com/gin-gonic/gin"
-	"github.com/racio/llmio/common"
-	"github.com/racio/llmio/consts"
-	"github.com/racio/llmio/providers"
-	"github.com/racio/llmio/service"
+	"github.com/racio/orvion/common"
+	"github.com/racio/orvion/consts"
+	"github.com/racio/orvion/providers"
+	"github.com/racio/orvion/service"
 )
 
 func OpenAIModelsHandler(c *gin.Context) {
@@ -21,7 +21,7 @@ func OpenAIModelsHandler(c *gin.Context) {
 			ID:      model.Name,
 			Object:  "model",
 			Created: model.CreatedAt.Unix(),
-			OwnedBy: "github.com/racio/llmio",
+			OwnedBy: "github.com/racio/orvion",
 		})
 	}
 	common.SuccessRaw(c, providers.ModelList{

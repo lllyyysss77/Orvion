@@ -9,10 +9,10 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/racio/llmio/common"
-	"github.com/racio/llmio/consts"
-	"github.com/racio/llmio/models"
-	"github.com/racio/llmio/pkg"
+	"github.com/racio/orvion/common"
+	"github.com/racio/orvion/consts"
+	"github.com/racio/orvion/models"
+	"github.com/racio/orvion/pkg"
 	"gorm.io/gorm"
 )
 

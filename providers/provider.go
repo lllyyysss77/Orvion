@@ -6,7 +6,7 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/racio/llmio/consts"
+	"github.com/racio/orvion/consts"
 )
 
 type ModelList struct {

@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/racio/llmio/consts"
+	"github.com/racio/orvion/consts"
 	"github.com/tidwall/sjson"
 )
 

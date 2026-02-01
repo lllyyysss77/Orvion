@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/racio/llmio/models"
+	"github.com/racio/orvion/models"
 	"golang.org/x/sync/singleflight"
 	"gorm.io/gorm"
 )

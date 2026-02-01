@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/racio/llmio/models"
+	"github.com/racio/orvion/models"
 	"github.com/tidwall/gjson"
 )
 

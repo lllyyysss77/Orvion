@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/racio/llmio/common"
-	"github.com/racio/llmio/consts"
-	"github.com/racio/llmio/service"
+	"github.com/racio/orvion/common"
+	"github.com/racio/orvion/consts"
+	"github.com/racio/orvion/service"
 )
 
 // 用于系统数据操作相关鉴权
