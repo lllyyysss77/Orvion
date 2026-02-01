@@ -4,7 +4,7 @@ import "gorm.io/gorm"
 
 type Config struct {
 	gorm.Model
-	Key   string // 配置类型
+	Key   string `gorm:"uniqueIndex"` // 配置类型
 	Value string // 配置内容
 }
 

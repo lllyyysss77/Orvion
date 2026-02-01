@@ -50,6 +50,8 @@ WORKDIR /app
 
 COPY --from=go-builder /out/orvion ./orvion
 
+RUN mkdir -p /app/data && chown -R orvion:orvion /app
+
 USER orvion
 
 EXPOSE 7070

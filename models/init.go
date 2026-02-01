@@ -3,6 +3,7 @@ package models
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,6 +62,11 @@ func Init(ctx context.Context, dsn string) {
 			panic(err)
 		}
 	}
+	if DB.Migrator().HasTable(&Config{}) {
+		if !DB.Migrator().HasIndex(&Config{}, "Key") {
+			_ = DB.Migrator().CreateIndex(&Config{}, "Key")
+		}
+	}
 
 	// 兼容性数据修复
 	if _, err := gorm.G[ModelWithProvider](DB).Where("status IS NULL").Update(ctx, "status", true); err != nil {
@@ -99,7 +105,9 @@ func buildDialector(dsn string) (gorm.Dialector, error) {
 	if sqliteDSN == "" {
 		return nil, errors.New("empty sqlite dsn")
 	}
-	ensureSQLiteDir(sqliteDSN)
+	if err := ensureSQLiteDir(sqliteDSN); err != nil {
+		return nil, err
+	}
 	return sqlite.Open(sqliteDSN), nil
 }
 
@@ -123,7 +131,7 @@ func normalizeSQLiteDSN(dsn string) string {
 	}
 }
 
-func ensureSQLiteDir(dsn string) {
+func ensureSQLiteDir(dsn string) error {
 	rawPath := dsn
 	if strings.HasPrefix(rawPath, "file:") {
 		rawPath = strings.TrimPrefix(rawPath, "file:")
@@ -132,11 +140,14 @@ func ensureSQLiteDir(dsn string) {
 		}
 	}
 	if rawPath == "" || rawPath == ":memory:" || strings.HasPrefix(rawPath, "file::memory:") {
-		return
+		return nil
 	}
 	dir := filepath.Dir(rawPath)
 	if dir == "." || dir == "" {
-		return
+		return nil
 	}
-	_ = os.MkdirAll(dir, 0o755)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("sqlite 数据目录不可写: %s: %w", dir, err)
+	}
+	return nil
 }

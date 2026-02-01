@@ -169,13 +169,17 @@ func RequestAmountTrend(c *gin.Context) {
 	}
 
 	type hourRow struct {
-		HourBucket time.Time `gorm:"column:hour_bucket"`
-		Requests   int64     `gorm:"column:requests"`
-		Amount     float64   `gorm:"column:amount"`
+		HourBucket int     `gorm:"column:hour_bucket"`
+		Requests   int64   `gorm:"column:requests"`
+		Amount     float64 `gorm:"column:amount"`
 	}
 	rows := make([]hourRow, 0)
+	hourExpr := "CAST(EXTRACT(HOUR FROM created_at) AS INTEGER)"
+	if models.DB.Dialector.Name() == "sqlite" {
+		hourExpr = "CAST(strftime('%H', created_at) AS INTEGER)"
+	}
 	if err := models.DB.Raw(
-		`SELECT date_trunc('hour', created_at) AS hour_bucket,
+		`SELECT `+hourExpr+` AS hour_bucket,
 		        COUNT(*) AS requests,
 		        COALESCE(SUM(total_cost),0) AS amount
 		   FROM chat_logs
@@ -192,7 +196,7 @@ func RequestAmountTrend(c *gin.Context) {
 
 	hourMap := make(map[int]hourRow, len(rows))
 	for _, row := range rows {
-		hourMap[row.HourBucket.In(now.Location()).Hour()] = row
+		hourMap[row.HourBucket] = row
 	}
 
 	points := make([]RequestAmountPoint, 0, 24)
