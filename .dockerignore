@@ -1,0 +1,13 @@
+.git
+.github
+.idea
+.DS_Store
+node_modules
+webui/node_modules
+webui/dist
+webui/.vite
+webui/.cache
+data
+*.log
+*.tmp
+*.swp

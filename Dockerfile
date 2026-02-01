@@ -11,7 +11,7 @@ LABEL "framework"="golang"
 WORKDIR /src/webui
 
 COPY webui/package.json webui/package-lock.json ./
-RUN npm ci
+RUN --mount=type=cache,target=/root/.npm npm ci
 
 COPY webui/ ./
 RUN npm run build
@@ -26,13 +26,17 @@ WORKDIR /src
 RUN apk add --no-cache git ca-certificates
 
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go mod download
 
 COPY . .
 
 COPY --from=webui-builder /src/webui/dist ./webui/dist
 
-RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/llmio .
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/orvion .
 
 ############################
 # 3) 运行镜像
@@ -40,14 +44,14 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/llmio .
 FROM alpine:3.20
 
 RUN apk add --no-cache ca-certificates && \
-    adduser -D -H -u 10001 llmio
+    adduser -D -H -u 10001 orvion
 
 WORKDIR /app
 
-COPY --from=go-builder /out/llmio ./llmio
+COPY --from=go-builder /out/orvion ./orvion
 
-USER llmio
+USER orvion
 
 EXPOSE 7070
 
-ENTRYPOINT ["./llmio"]
+ENTRYPOINT ["./orvion"]
