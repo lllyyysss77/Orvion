@@ -1,6 +1,7 @@
-import { useState, useEffect, type ReactNode } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef, memo, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -73,6 +74,7 @@ const DetailCard = ({ label, value, mono = false }: DetailCardProps) => (
   </div>
 );
 
+
 const formatDurationValue = (value?: number) => (typeof value === "number" ? formatDurationMs(value) : "-");
 const formatTokenValue = (value?: number) => (typeof value === "number" ? value.toLocaleString() : "-");
 const formatTpsValue = (value?: number) => (typeof value === "number" ? value.toFixed(2) : "-");
@@ -81,6 +83,120 @@ const formatCostValue = (value?: number) => {
   const trimmed = value.toFixed(6).replace(/\.?0+$/, "");
   return `$${trimmed}`;
 };
+
+type LogCardProps = {
+  log: ChatLog;
+  onOpenDetail: (log: ChatLog) => void;
+  onViewChatIO: (log: ChatLog) => void;
+};
+
+const LogCard = memo(({ log, onOpenDetail, onViewChatIO }: LogCardProps) => {
+  const durations = getLogDurationsMs(log);
+  const statusText = log.Status === "success" ? "成功" : "错误";
+  const statusClass = log.Status === "success"
+    ? "bg-emerald-100 text-emerald-700"
+    : "bg-rose-100 text-rose-700";
+  const createdAt = new Date(log.CreatedAt).toLocaleString();
+  const canViewChatIO = log.Status === "success" && log.ChatIO;
+
+  return (
+    <div className="rounded-2xl border border-border/60 bg-card/90 shadow-sm px-4 py-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-start gap-3 min-w-0">
+          <ModelIcon name={log.Name || ""} />
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2 min-w-0">
+              <span className="font-semibold truncate max-w-[26ch]" title={log.Name}>
+                {log.Name}
+              </span>
+              <span className="text-xs text-muted-foreground">-&gt;</span>
+              <span className="inline-flex items-center rounded-full bg-muted/70 px-2 py-0.5 text-xs text-muted-foreground">
+                {log.ProviderName || "-"}
+              </span>
+              <span className="text-xs text-muted-foreground truncate max-w-[26ch]" title={log.ProviderModel || "-"}>
+                {log.ProviderModel || "-"}
+              </span>
+              <span className="text-[11px] text-muted-foreground">{createdAt}</span>
+              {log.Style ? (
+                <span className="rounded-full bg-background/70 px-2 py-0.5 text-[11px] text-muted-foreground">
+                  {log.Style}
+                </span>
+              ) : null}
+              {log.key_name ? (
+                <span className="rounded-full bg-background/70 px-2 py-0.5 text-[11px] text-muted-foreground">
+                  {log.key_name}
+                </span>
+              ) : null}
+              <span className={`text-[11px] font-medium rounded-full px-2 py-0.5 ${statusClass}`}>
+                {statusText}
+              </span>
+            </div>
+            <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs sm:grid-cols-3 lg:grid-cols-5">
+              <div className="flex items-center gap-1.5">
+                <Timer className="size-3 text-sky-500" />
+                <span className="text-muted-foreground">首字</span>
+                <span className="tabular-nums text-foreground">
+                  {formatDurationValue(durations.first)}
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <Zap className="size-3 text-amber-500" />
+                <span className="text-muted-foreground">总耗时</span>
+                <span className="tabular-nums text-foreground">
+                  {formatDurationValue(durations.total)}
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <ArrowDown className="size-3 text-emerald-500" />
+                <span className="text-muted-foreground">输入</span>
+                <span className="tabular-nums text-foreground">
+                  {formatTokenValue(log.prompt_tokens)}
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <ArrowUp className="size-3 text-violet-500" />
+                <span className="text-muted-foreground">输出</span>
+                <span className="tabular-nums text-foreground">
+                  {formatTokenValue(log.completion_tokens)}
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <Coins className="size-3 text-emerald-600" />
+                <span className="text-muted-foreground">价格</span>
+                <span className="tabular-nums text-foreground">
+                  {formatCostValue(log.total_cost)}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8"
+            onClick={() => onOpenDetail(log)}
+            aria-label="查看详情"
+            title="查看详情"
+          >
+            <Eye className="h-4 w-4" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8"
+            onClick={() => onViewChatIO(log)}
+            disabled={!canViewChatIO}
+            aria-label="查看 IO"
+            title="查看 IO"
+          >
+            <EyeOff className="h-4 w-4" />
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+});
 
 const parsePromptTokensDetails = (value: ChatLog["prompt_tokens_details"]) => {
   if (!value) return { cached_tokens: 0 };
@@ -250,25 +366,89 @@ export default function LogsPage() {
       setIsCleanDialogOpen(false);
     }
   };
-  const openDetailDialog = (log: ChatLog) => {
+  const openDetailDialog = useCallback((log: ChatLog) => {
     setSelectedLog(log);
     setIsDialogOpen(true);
-  };
-  const canViewChatIO = (log: ChatLog) => log.Status === 'success' && log.ChatIO;
-  const handleViewChatIO = (log: ChatLog) => {
-    if (!canViewChatIO(log)) return;
+  }, []);
+  const handleViewChatIO = useCallback((log: ChatLog) => {
+    if (log.Status !== 'success' || !log.ChatIO) return;
     navigate(`/logs/${log.ID}/chat-io`);
-  };
+  }, [navigate]);
+  const logsList = useMemo(() => logs ?? [], [logs]);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const rowVirtualizer = useVirtualizer({
+    count: logsList.length,
+    getScrollElement: () => listRef.current,
+    estimateSize: () => 220,
+    overscan: 6,
+  });
   // 布局开始
   return (
     <div className="h-full min-h-0 flex flex-col gap-2 p-1">
       {/* 顶部标题和刷新 */}
       <div className="flex flex-col gap-2 flex-shrink-0">
-        <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="min-w-0">
             <h2 className="text-2xl font-bold tracking-tight">请求日志</h2>
           </div>
-          <div className="flex gap-2">
+          <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
+            <Label className="sr-only">模型名称</Label>
+            <Select value={modelFilter} onValueChange={setModelFilter}>
+              <SelectTrigger className="h-8 text-xs w-[160px] px-2">
+                <SelectValue placeholder="选择模型" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">全部</SelectItem>
+                {models.map((model) => (
+                  <SelectItem key={model.ID} value={model.Name}>{model.Name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Label className="sr-only">项目</Label>
+            <Select value={authKeyFilter} onValueChange={setAuthKeyFilter}>
+              <SelectTrigger className="h-8 text-xs w-[120px] px-2">
+                <SelectValue placeholder="项目" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">全部</SelectItem>
+                {authKeys.map((key) => (
+                  <SelectItem key={key.id} value={key.id.toString()}>{key.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Label className="sr-only">状态</Label>
+            <Select value={statusFilter} onValueChange={setStatusFilter}>
+              <SelectTrigger className="h-8 text-xs w-[120px] px-2">
+                <SelectValue placeholder="状态" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">全部</SelectItem>
+                <SelectItem value="success">成功</SelectItem>
+                <SelectItem value="error">错误</SelectItem>
+              </SelectContent>
+            </Select>
+            <Label className="sr-only">类型</Label>
+            <Select value={styleFilter} onValueChange={setStyleFilter}>
+              <SelectTrigger className="h-8 text-xs w-[120px] px-2">
+                <SelectValue placeholder="类型" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">全部</SelectItem>
+                {availableStyles.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <Label className="sr-only">提供商</Label>
+            <Select value={providerNameFilter} onValueChange={setProviderNameFilter}>
+              <SelectTrigger className="h-8 text-xs w-[140px] px-2">
+                <SelectValue placeholder="提供商" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">全部</SelectItem>
+                {providers.map((p) => (
+                  <SelectItem key={p.ID} value={p.Name}>{p.Name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <Button
               onClick={() => setIsCleanDialogOpen(true)}
               variant="outline"
@@ -292,194 +472,32 @@ export default function LogsPage() {
           </div>
         </div>
       </div>
-      {/* 筛选区域 */}
-      <div className="flex flex-col gap-2 flex-shrink-0">
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5 lg:gap-4">
-          <div className="flex flex-col gap-1 text-xs lg:min-w-0">
-            <Label className="text-[11px] text-muted-foreground uppercase tracking-wide">模型名称</Label>
-            <Select value={modelFilter} onValueChange={setModelFilter}>
-              <SelectTrigger className="h-8 text-xs w-full px-2">
-                <SelectValue placeholder="选择模型" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">全部</SelectItem>
-                {models.map((model) => (
-                  <SelectItem key={model.ID} value={model.Name}>{model.Name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="flex flex-col gap-1 text-xs lg:min-w-0">
-            <Label className="text-[11px] text-muted-foreground uppercase tracking-wide">项目</Label>
-            <Select value={authKeyFilter} onValueChange={setAuthKeyFilter}>
-              <SelectTrigger className="h-8 text-xs w-full px-2">
-                <SelectValue placeholder="选择项目" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">全部</SelectItem>
-                {authKeys.map((key) => (
-                  <SelectItem key={key.id} value={key.id.toString()}>{key.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="flex flex-col gap-1 text-xs lg:min-w-0">
-            <Label className="text-[11px] text-muted-foreground uppercase tracking-wide">状态</Label>
-            <Select value={statusFilter} onValueChange={setStatusFilter}>
-              <SelectTrigger className="h-8 text-xs w-full px-2">
-                <SelectValue placeholder="状态" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">全部</SelectItem>
-                <SelectItem value="success">成功</SelectItem>
-                <SelectItem value="error">错误</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="flex flex-col gap-1 text-xs lg:min-w-0">
-            <Label className="text-[11px] text-muted-foreground uppercase tracking-wide">类型</Label>
-            <Select value={styleFilter} onValueChange={setStyleFilter}>
-              <SelectTrigger className="h-8 text-xs w-full px-2">
-                <SelectValue placeholder="类型" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">全部</SelectItem>
-                {availableStyles.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="col-span-2 flex flex-col gap-1 text-xs lg:min-w-0 sm:col-span-1">
-            <Label className="text-[11px] text-muted-foreground uppercase tracking-wide">提供商</Label>
-            <Select value={providerNameFilter} onValueChange={setProviderNameFilter}>
-              <SelectTrigger className="h-8 text-xs w-full px-2">
-                <SelectValue placeholder="选择提供商" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">全部</SelectItem>
-                {providers.map((p) => (
-                  <SelectItem key={p.ID} value={p.Name}>{p.Name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
-      </div>
       {/* 列表区域 */}
       <div className="flex-1 min-h-0 border rounded-md bg-background shadow-sm">
         {loading ? (
           <div className="flex h-full items-center justify-center">
             <Loading message="加载日志数据" />
           </div>
-        ) : logs?.length === 0 ? (
+        ) : logsList.length === 0 ? (
           <div className="flex h-full items-center justify-center text-muted-foreground">
             暂无请求日志
           </div>
         ) : (
           <div className="h-full flex flex-col">
-            <div className="flex-1 overflow-y-auto p-3">
-              <div className="space-y-3">
-                {logs?.map((log) => {
-                  const durations = getLogDurationsMs(log);
-                  const statusText = log.Status === "success" ? "成功" : "错误";
-                  const statusClass = log.Status === "success"
-                    ? "bg-emerald-100 text-emerald-700"
-                    : "bg-rose-100 text-rose-700";
-                  const createdAt = new Date(log.CreatedAt).toLocaleString();
+            <div ref={listRef} className="flex-1 overflow-y-auto p-3">
+              <div className="relative w-full" style={{ height: rowVirtualizer.getTotalSize() }}>
+                {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+                  const log = logsList[virtualRow.index];
+                  if (!log) return null;
                   return (
-                    <div key={log.ID} className="rounded-2xl border border-border/60 bg-card/90 shadow-sm px-4 py-3">
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="flex items-start gap-3 min-w-0">
-                          <ModelIcon name={log.Name || ""} />
-                          <div className="min-w-0">
-                            <div className="flex flex-wrap items-center gap-2 min-w-0">
-                              <span className="font-semibold truncate max-w-[26ch]" title={log.Name}>
-                                {log.Name}
-                              </span>
-                              <span className="text-xs text-muted-foreground">-&gt;</span>
-                            <span className="inline-flex items-center rounded-full bg-muted/70 px-2 py-0.5 text-xs text-muted-foreground">
-                              {log.ProviderName || "-"}
-                            </span>
-                            <span className="text-xs text-muted-foreground truncate max-w-[26ch]" title={log.ProviderModel || "-"}>
-                              {log.ProviderModel || "-"}
-                            </span>
-                            <span className="text-[11px] text-muted-foreground">{createdAt}</span>
-                            {log.Style ? (
-                              <span className="rounded-full bg-background/70 px-2 py-0.5 text-[11px] text-muted-foreground">
-                                {log.Style}
-                              </span>
-                            ) : null}
-                            {log.key_name ? (
-                              <span className="rounded-full bg-background/70 px-2 py-0.5 text-[11px] text-muted-foreground">
-                                {log.key_name}
-                              </span>
-                            ) : null}
-                            <span className={`text-[11px] font-medium rounded-full px-2 py-0.5 ${statusClass}`}>
-                              {statusText}
-                            </span>
-                          </div>
-                          <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs sm:grid-cols-3 lg:grid-cols-5">
-                            <div className="flex items-center gap-1.5">
-                              <Zap className="size-3 text-amber-500" />
-                              <span className="text-muted-foreground">首字</span>
-                              <span className="tabular-nums text-foreground">
-                                {formatDurationMs(durations.first)}
-                              </span>
-                            </div>
-                            <div className="flex items-center gap-1.5">
-                              <Timer className="size-3 text-blue-500" />
-                              <span className="text-muted-foreground">总耗时</span>
-                              <span className="tabular-nums text-foreground">
-                                {formatDurationMs(durations.total)}
-                              </span>
-                            </div>
-                            <div className="flex items-center gap-1.5">
-                              <ArrowDown className="size-3 text-emerald-500" />
-                              <span className="text-muted-foreground">输入</span>
-                              <span className="tabular-nums text-foreground">
-                                {formatTokenValue(log.prompt_tokens)}
-                              </span>
-                            </div>
-                            <div className="flex items-center gap-1.5">
-                              <ArrowUp className="size-3 text-violet-500" />
-                              <span className="text-muted-foreground">输出</span>
-                              <span className="tabular-nums text-foreground">
-                                {formatTokenValue(log.completion_tokens)}
-                              </span>
-                            </div>
-                            <div className="flex items-center gap-1.5">
-                              <Coins className="size-3 text-emerald-600" />
-                              <span className="text-muted-foreground">价格</span>
-                              <span className="tabular-nums text-foreground">
-                                {formatCostValue(log.total_cost)}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-1">
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8"
-                            onClick={() => openDetailDialog(log)}
-                            aria-label="查看详情"
-                            title="查看详情"
-                          >
-                            <Eye className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8"
-                            onClick={() => handleViewChatIO(log)}
-                            disabled={!canViewChatIO(log)}
-                            aria-label="查看 IO"
-                            title="查看 IO"
-                          >
-                            <EyeOff className="h-4 w-4" />
-                          </Button>
-                        </div>
-                      </div>
+                    <div
+                      key={log.ID}
+                      data-index={virtualRow.index}
+                      ref={rowVirtualizer.measureElement}
+                      className="absolute left-0 top-0 w-full pb-3"
+                      style={{ transform: `translateY(${virtualRow.start}px)` }}
+                    >
+                      <LogCard log={log} onOpenDetail={openDetailDialog} onViewChatIO={handleViewChatIO} />
                     </div>
                   );
                 })}

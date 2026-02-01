@@ -9,12 +9,11 @@ import (
 
 type Provider struct {
 	gorm.Model
-	Name          string
-	Type          string
-	Config        string
-	Console       string // 控制台地址
-	RpmLimit      int    // 每分钟请求数限制
-	IpLockMinutes int    // IP 锁定时间（分钟）
+	Name     string
+	Type     string
+	Config   string
+	Console  string // 控制台地址
+	RpmLimit int    // 每分钟请求数限制
 }
 
 type AnthropicConfig struct {

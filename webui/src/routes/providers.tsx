@@ -50,6 +50,7 @@ import {
 import Loading from "@/components/loading";
 import { Label } from "@/components/ui/label";
 import ProviderConfigEditor from "@/components/provider-config-editor";
+import iconSvg from "@/assets/icon.svg";
 import {
   getProviders,
   createProvider,
@@ -119,7 +120,6 @@ const formSchema = z.object({
   config: z.string().min(1, { message: "配置不能为空" }),
   console: z.string().optional(),
   rpmLimit: z.number().min(0, { message: "RPM 限制必须大于等于 0" }).optional(),
-  ipLockMinutes: z.number().min(0, { message: "IP 锁定时间必须大于等于 0" }).optional(),
 });
 
 export default function ProvidersPage() {
@@ -140,9 +140,6 @@ export default function ProvidersPage() {
   const [providerStats, setProviderStats] = useState<Record<number, {
     rpmCount: number | null;
     rpmLoaded: boolean;
-    ipLockUntil: string | null;
-    ipLockLoaded: boolean;
-    ipLocked: boolean;
   }>>({});
 
   // 筛选条件
@@ -153,7 +150,7 @@ export default function ProvidersPage() {
   // 初始化表单
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
-    defaultValues: { name: "", type: "", config: "", console: "", rpmLimit: 0, ipLockMinutes: 0 },
+    defaultValues: { name: "", type: "", config: "", console: "", rpmLimit: 0 },
   });
   const selectedProviderType = form.watch("type");
 
@@ -241,18 +238,12 @@ export default function ProvidersPage() {
       const next: Record<number, {
         rpmCount: number | null;
         rpmLoaded: boolean;
-        ipLockUntil: string | null;
-        ipLockLoaded: boolean;
-        ipLocked: boolean;
       }> = {};
       for (const provider of items) {
         const existing = prev[provider.ID];
         next[provider.ID] = {
           rpmCount: existing?.rpmCount ?? null,
           rpmLoaded: false,
-          ipLockUntil: existing?.ipLockUntil ?? null,
-          ipLockLoaded: false,
-          ipLocked: existing?.ipLocked ?? false,
         };
       }
       return next;
@@ -272,15 +263,12 @@ export default function ProvidersPage() {
     }
 
     const statsMap = new Map(statsList.map((item) => [item.provider_id, item]));
-    const next: Record<number, { rpmCount: number | null; rpmLoaded: boolean; ipLockUntil: string | null; ipLockLoaded: boolean; ipLocked: boolean }> = {};
+    const next: Record<number, { rpmCount: number | null; rpmLoaded: boolean }> = {};
     for (const provider of items) {
       const item = statsMap.get(provider.ID);
       next[provider.ID] = {
         rpmCount: item ? item.rpm_count ?? null : null,
         rpmLoaded: item ? item.rpm_loaded ?? true : false,
-        ipLockUntil: item ? item.lock_until ?? null : null,
-        ipLockLoaded: item ? item.ip_lock_loaded ?? true : false,
-        ipLocked: item ? item.locked ?? false : false,
       };
     }
     setProviderStats(next);
@@ -348,11 +336,10 @@ export default function ProvidersPage() {
         config: values.config,
         console: values.console || "",
         rpm_limit: values.rpmLimit || 0,
-        ip_lock_minutes: values.ipLockMinutes || 0
       });
       setOpen(false);
       toast.success(`提供商 ${values.name} 创建成功`);
-      form.reset({ name: "", type: "", config: "", console: "", rpmLimit: 0, ipLockMinutes: 0 });
+      form.reset({ name: "", type: "", config: "", console: "", rpmLimit: 0 });
       fetchProviders();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -370,12 +357,11 @@ export default function ProvidersPage() {
         config: values.config,
         console: values.console || "",
         rpm_limit: values.rpmLimit || 0,
-        ip_lock_minutes: values.ipLockMinutes || 0
       });
       setOpen(false);
       toast.success(`提供商 ${values.name} 更新成功`);
       setEditingProvider(null);
-      form.reset({ name: "", type: "", config: "", console: "", rpmLimit: 0, ipLockMinutes: 0 });
+      form.reset({ name: "", type: "", config: "", console: "", rpmLimit: 0 });
       fetchProviders();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -408,7 +394,6 @@ export default function ProvidersPage() {
       config: provider.Config,
       console: provider.Console || "",
       rpmLimit: provider.RpmLimit || 0,
-      ipLockMinutes: provider.IpLockMinutes || 0,
     });
     setOpen(true);
   };
@@ -452,25 +437,17 @@ export default function ProvidersPage() {
             <h2 className="text-2xl font-bold tracking-tight">提供商管理</h2>
           </div>
           <div className="flex w-full sm:w-auto items-center justify-end gap-2">
-          </div>
-        </div>
-      </div>
-      <div className="flex flex-col gap-2 flex-shrink-0">
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:gap-4">
-          <div className="flex flex-col gap-1 text-xs">
-            <Label className="text-[11px] text-muted-foreground uppercase tracking-wide">提供商名称</Label>
+            <Label className="sr-only">提供商名称</Label>
             <Input
               placeholder="输入名称"
               value={nameFilter}
               onChange={(e) => setNameFilter(e.target.value)}
-              className="h-8 w-full text-xs px-2"
+              className="h-8 w-[160px] text-xs px-2"
             />
-          </div>
-          <div className="flex flex-col gap-1 text-xs">
-            <Label className="text-[11px] text-muted-foreground uppercase tracking-wide">类型</Label>
+            <Label className="sr-only">类型</Label>
             <Select value={typeFilter} onValueChange={setTypeFilter}>
-              <SelectTrigger className="h-8 w-full text-xs px-2">
-                <SelectValue placeholder="选择类型" />
+              <SelectTrigger className="h-8 w-[120px] text-xs px-2">
+                <SelectValue placeholder="全部" />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">全部</SelectItem>
@@ -481,11 +458,9 @@ export default function ProvidersPage() {
                 ))}
               </SelectContent>
             </Select>
-          </div>
-          <div className="flex items-end col-span-2 sm:col-span-1 sm:justify-end">
             <Button
               onClick={openCreateDialog}
-              className="h-8 w-full text-xs sm:w-auto sm:ml-auto"
+              className="h-8 w-full text-xs sm:w-auto"
               disabled={providerTemplates.length === 0}
             >
               添加提供商
@@ -514,18 +489,7 @@ export default function ProvidersPage() {
                   const rpmRatio = rpmLoaded
                     ? (rpmLimit > 0 ? Math.min(100, (rpmCurrent / rpmLimit) * 100) : 100)
                     : 0;
-                  const lockTotal = provider.IpLockMinutes || 0;
-                  const ipLockLoaded = stats?.ipLockLoaded ?? false;
-                  let lockRemaining = 0;
-                  if (ipLockLoaded && lockTotal > 0 && stats?.ipLocked && stats?.ipLockUntil) {
-                    const remainingMs = new Date(stats.ipLockUntil).getTime() - Date.now();
-                    if (remainingMs > 0) {
-                      lockRemaining = Math.ceil(remainingMs / 60000);
-                    }
-                  }
-                  const lockRatio = ipLockLoaded && lockTotal > 0 ? Math.min(100, (lockRemaining / lockTotal) * 100) : 0;
                   const rpmLabel = rpmLoaded ? (rpmLimit > 0 ? `${rpmCurrent}/${rpmLimit}` : `${rpmCurrent}/∞`) : "--/--";
-                  const lockLabel = ipLockLoaded ? (lockTotal > 0 ? `${lockRemaining}/${lockTotal}分` : "未启用") : "--/--";
                   return (
                     <Card key={provider.ID} className="py-4 shadow-sm">
                     <CardHeader className="pb-2 sm:px-4 px-3">
@@ -576,23 +540,6 @@ export default function ProvidersPage() {
                         </div>
                         <span className="text-[11px] text-muted-foreground tabular-nums w-16 text-right">
                           {rpmLabel}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-[11px] text-muted-foreground w-12">IP锁定</span>
-                        <div
-                          className="relative h-2 flex-1 rounded-full bg-muted/70 overflow-hidden"
-                          title={ipLockLoaded ? (lockTotal > 0 ? `剩余 ${lockRemaining} / ${lockTotal} 分钟` : "未启用") : "加载中"}
-                        >
-                          <div
-                            className={`h-full rounded-full ${lockTotal > 0 ? "bg-rose-500/60" : "bg-muted/40"}`}
-                            style={{
-                              width: `${lockTotal > 0 ? Math.round(lockRatio) : 0}%`
-                            }}
-                          />
-                        </div>
-                        <span className="text-[11px] text-muted-foreground tabular-nums w-16 text-right">
-                          {lockLabel}
                         </span>
                       </div>
                     </CardContent>
@@ -795,21 +742,21 @@ export default function ProvidersPage() {
 
               <FormField
                 control={form.control}
-                name="ipLockMinutes"
+                name="rpmLimit"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>IP 锁定时间（分钟）</FormLabel>
+                    <FormLabel>RPM 限制</FormLabel>
                     <FormControl>
                       <Input
                         type="number"
                         min={0}
-                        placeholder="0 表示不锁定"
+                        placeholder="0 表示无限制"
                         value={field.value ?? 0}
                         onChange={(e) => field.onChange(Number(e.target.value) || 0)}
                       />
                     </FormControl>
                     <p className="text-xs text-muted-foreground">
-                      IP锁定时间，0 表示不启用。启用后在指定时间内只允许首次访问的IP继续访问。
+                      每分钟最大请求数，0 表示无限制。达到限制后会自动切换到其他供应商。
                     </p>
                     <FormMessage />
                   </FormItem>
@@ -885,9 +832,13 @@ export default function ProvidersPage() {
                               variant="outline"
                               size="sm"
                               onClick={() => copyModelName(model.id)}
-                              className="min-w-12"
+                              className="min-w-12 gap-2 px-2"
                             >
-                              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true" className="h-4 w-4"><path stroke-linecap="round" stroke-linejoin="round" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3"></path></svg>
+                              <img
+                                src={iconSvg}
+                                alt="复制"
+                                className="h-4 w-4 opacity-80"
+                              />
                             </Button>
                           </TooltipTrigger>
                         </Tooltip>

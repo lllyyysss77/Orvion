@@ -9,7 +9,6 @@ export interface Provider {
   Config: string;
   Console: string;
   RpmLimit: number; // 每分钟请求数限制，0 表示无限制
-  IpLockMinutes: number; // IP 锁定时间（分钟），0 表示不锁定
 }
 
 export interface Model {
@@ -255,7 +254,6 @@ export async function createProvider(provider: {
   config: string;
   console: string;
   rpm_limit?: number;
-  ip_lock_minutes?: number;
 }): Promise<Provider> {
   return apiRequest<Provider>('/providers', {
     method: 'POST',
@@ -269,7 +267,6 @@ export async function updateProvider(id: number, provider: {
   config?: string;
   console?: string;
   rpm_limit?: number;
-  ip_lock_minutes?: number;
 }): Promise<Provider> {
   return apiRequest<Provider>(`/providers/${id}`, {
     method: 'PUT',
@@ -559,9 +556,6 @@ export interface ProviderStatsItem {
   provider_id: number;
   rpm_count: number;
   rpm_loaded: boolean;
-  locked: boolean;
-  ip_lock_loaded: boolean;
-  lock_until?: string;
 }
 
 export async function getProvidersStats(providerIds: number[]): Promise<ProviderStatsItem[]> {

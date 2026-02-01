@@ -1,12 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import Loading from "@/components/loading";
-import { useTheme } from "@/components/theme-provider";
 import { getChatIO, type ChatIO } from "@/lib/api";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
-import { duotoneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { duotoneLight } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { toast } from "sonner";
 
@@ -138,44 +136,7 @@ function JsonContent({ text, parsed, empty, syntaxStyle }: JsonContentProps) {
 }
 
 function useSyntaxStyle(): SyntaxStyle {
-  const { theme } = useTheme();
-
-  const defaultPrefersDark = useMemo(() => {
-    if (typeof window === "undefined") {
-      return false;
-    }
-    return window.matchMedia("(prefers-color-scheme: dark)").matches;
-  }, []);
-
-  const [isDark, setIsDark] = useState<boolean>(() => {
-    if (theme === "system") {
-      return defaultPrefersDark;
-    }
-    return theme === "dark";
-  });
-
-  useEffect(() => {
-    if (theme === "system") {
-      if (typeof window === "undefined") {
-        setIsDark(false);
-        return;
-      }
-      const media = window.matchMedia("(prefers-color-scheme: dark)");
-      const listener = (event: MediaQueryListEvent) => setIsDark(event.matches);
-      setIsDark(media.matches);
-      if (media.addEventListener) {
-        media.addEventListener("change", listener);
-        return () => media.removeEventListener("change", listener);
-      }
-      // 兼容旧浏览器
-      media.addListener(listener);
-      return () => media.removeListener(listener);
-    }
-    setIsDark(theme === "dark");
-    return undefined;
-  }, [theme]);
-
-  return isDark ? duotoneDark : duotoneLight;
+  return duotoneLight;
 }
 
 export default function LogChatPage() {

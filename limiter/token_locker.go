@@ -53,7 +53,11 @@ func (l *TokenLocker) CheckAndTouch(ctx context.Context, modelWithProviderID uin
 	}
 
 	if l.redis != nil {
-		return l.checkAndTouchRedis(ctx, modelWithProviderID, tokenID)
+		ok, err := l.checkAndTouchRedis(ctx, modelWithProviderID, tokenID)
+		if err == nil {
+			return ok, nil
+		}
+		return l.checkAndTouchMemory(modelWithProviderID, tokenID), nil
 	}
 	return l.checkAndTouchMemory(modelWithProviderID, tokenID), nil
 }

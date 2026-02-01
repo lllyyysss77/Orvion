@@ -8,15 +8,15 @@ const (
 	StyleAnthropic Style = "anthropic"
 	StyleGemini    Style = "gemini"
 
-	// Embeddings：用于在日志中区分请求类型（提供商类型仍沿用 openai / gemini）
+	// StyleOpenAIEmbeddings Embeddings：用于在日志中区分请求类型（提供商类型仍沿用 openai / gemini）
 	StyleOpenAIEmbeddings Style = "openai-embeddings"
 	StyleGeminiEmbeddings Style = "gemini-embeddings"
 )
 
 const (
-	// 按权重概率抽取，类似抽签。
+	// BalancerLottery 按权重概率抽取，类似抽签。
 	BalancerLottery = "lottery"
-	// 按顺序循环轮转，每次降低权重后移到队尾
+	// BalancerRotor 按顺序循环轮转，每次降低权重后移到队尾
 	BalancerRotor = "rotor"
 	// 默认策略
 	BalancerDefault = BalancerLottery

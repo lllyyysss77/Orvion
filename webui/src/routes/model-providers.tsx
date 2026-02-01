@@ -231,7 +231,7 @@ export function ModelProvidersPanel({ embedded = false, fixedModel = null }: Mod
         tool_call: false,
         structured_output: false,
         image: false,
-        with_header: false,
+        with_header: true,
         weight: 1,
         customer_headers: [],
       });
@@ -257,7 +257,7 @@ export function ModelProvidersPanel({ embedded = false, fixedModel = null }: Mod
         tool_call: false,
         structured_output: false,
         image: false,
-        with_header: false,
+        with_header: true,
         weight: 1,
         customer_headers: [],
       });
@@ -477,7 +477,7 @@ export function ModelProvidersPanel({ embedded = false, fixedModel = null }: Mod
       tool_call: false,
       structured_output: false,
       image: false,
-      with_header: false,
+      with_header: true,
       weight: 1,
       customer_headers: [],
     });

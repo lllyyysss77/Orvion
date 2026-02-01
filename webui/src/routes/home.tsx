@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, memo, useCallback } from "react";
+import { useState, useEffect, memo, useCallback, useMemo } from "react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -155,7 +155,7 @@ type SummaryCardProps = {
   items: [SummaryMetric, SummaryMetric];
 };
 
-const SummaryCard = ({ title, icon: TitleIcon, items }: SummaryCardProps) => {
+const SummaryCard = memo(({ title, icon: TitleIcon, items }: SummaryCardProps) => {
   return (
     <Card className={summaryCardClass}>
       <div className="flex h-full">
@@ -192,7 +192,7 @@ const SummaryCard = ({ title, icon: TitleIcon, items }: SummaryCardProps) => {
       </div>
     </Card>
   );
-};
+});
 
 const buildCurvePoints = (data: number[], width: number, height: number) => {
   if (data.length < 2) return [];
@@ -252,7 +252,7 @@ const buildSmoothLine = (points: { x: number; y: number }[]) => {
   return path.join(" ");
 };
 
-const RequestAmountCard = ({
+const RequestAmountCard = memo(({
   requestLabel,
   requestValue,
   amountLabel,
@@ -263,7 +263,10 @@ const RequestAmountCard = ({
 }: RequestAmountCardProps) => {
   const chartWidth = 520;
   const chartHeight = 120;
-  const chart = buildAreaCurve(curveData, chartWidth, chartHeight);
+  const chart = useMemo(
+    () => buildAreaCurve(curveData, chartWidth, chartHeight),
+    [curveData, chartWidth, chartHeight]
+  );
 
   return (
     <Card className={`${cardHoverClass} gap-3 lg:col-span-2`}>
@@ -305,7 +308,7 @@ const RequestAmountCard = ({
       </CardContent>
     </Card>
   );
-};
+});
 
 type AuthKeyDashboardProps = {
   summary: AuthKeySummary | null;

@@ -1,8 +1,6 @@
 package handler
 
 import (
-	"time"
-
 	"github.com/gin-gonic/gin"
 	"github.com/racio/llmio/common"
 	"github.com/racio/llmio/service"
@@ -20,15 +18,12 @@ type ProviderStatsRequest struct {
 }
 
 type ProviderStatsItem struct {
-	ProviderID   uint       `json:"provider_id"`
-	RPMCount     int        `json:"rpm_count"`
-	RPMLoaded    bool       `json:"rpm_loaded"`
-	Locked       bool       `json:"locked"`
-	IPLockLoaded bool       `json:"ip_lock_loaded"`
-	LockUntil    *time.Time `json:"lock_until,omitempty"`
+	ProviderID uint `json:"provider_id"`
+	RPMCount   int  `json:"rpm_count"`
+	RPMLoaded  bool `json:"rpm_loaded"`
 }
 
-// GetProvidersStats 批量获取提供商 RPM/IP 锁定状态
+// GetProvidersStats 批量获取提供商 RPM 状态
 func GetProvidersStats(c *gin.Context) {
 	var req ProviderStatsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -49,23 +44,10 @@ func GetProvidersStats(c *gin.Context) {
 			rpmCount = 0
 		}
 
-		status, ipErr := service.GetIPLockStatus(ctx, providerID)
-		ipLoaded := ipErr == nil
-		locked := false
-		var lockUntil *time.Time
-		if ipErr == nil && status != nil {
-			locked = true
-			lock := status.LockUntil
-			lockUntil = &lock
-		}
-
 		results = append(results, ProviderStatsItem{
-			ProviderID:   providerID,
-			RPMCount:     rpmCount,
-			RPMLoaded:    rpmLoaded,
-			Locked:       locked,
-			IPLockLoaded: ipLoaded,
-			LockUntil:    lockUntil,
+			ProviderID: providerID,
+			RPMCount:   rpmCount,
+			RPMLoaded:  rpmLoaded,
 		})
 	}
 

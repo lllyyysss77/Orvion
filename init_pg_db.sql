@@ -15,7 +15,6 @@ CREATE TABLE IF NOT EXISTS providers (
     config TEXT NOT NULL DEFAULT '{}',
     console VARCHAR(500) NOT NULL DEFAULT '',
     rpm_limit INTEGER NOT NULL DEFAULT 0,
-    ip_lock_minutes INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     deleted_at TIMESTAMPTZ
@@ -180,6 +179,6 @@ CREATE INDEX IF NOT EXISTS idx_chat_io_deleted_at ON chat_io(deleted_at);
 
 COMMIT;
 
-\echo '生产环境数据库初始化完成！'
-\echo '已创建所有必要的表和索引。'
-\echo '请通过管理界面或API添加服务提供商、模型和认证密钥。'
+echo '生产环境数据库初始化完成！'
+echo '已创建所有必要的表和索引。'
+echo '请通过管理界面或API添加服务提供商、模型和认证密钥。'

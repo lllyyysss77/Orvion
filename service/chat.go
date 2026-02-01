@@ -69,6 +69,8 @@ func safeBodyTextForLog(res *http.Response, body []byte) string {
 	return fmt.Sprintf("base64%s:%s", decodedLabel, b64)
 }
 
+const maxLogBodyBytes = 8 * 1024
+
 // BalanceChatWithLimiter 带限流功能的聊天负载均衡
 func BalanceChatWithLimiter(c *gin.Context, start time.Time, style string, before Before, providersWithMeta *ProvidersWithMeta, reqMeta models.ReqMeta) (*http.Response, *models.ChatLog, error) {
 	return balanceChatInternal(c, start, style, before, providersWithMeta, reqMeta, true)
@@ -164,18 +166,18 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, before B
 
 			provider := providerMap[modelWithProvider.ProviderID]
 
-			// 限流检查（fail-closed：依赖不可用直接拒绝）
-			if enableLimiter && c != nil {
-				canProceed, reason, err := CheckProviderLimits(ctx, c, provider.ID, provider.RpmLimit, provider.IpLockMinutes, modelWithProvider.ID, authKeyID)
-				if err != nil {
-					return nil, nil, err
-				}
-				if !canProceed {
-					slog.Info("Provider blocked by limiter", "provider", provider.Name, "reason", reason)
-					balancer.Reduce(id) // 降低权重，但不完全删除
-					continue
-				}
-			}
+			// 已按需求临时禁用限流检查
+			// if enableLimiter {
+			// 	canProceed, reason, err := CheckProviderLimits(ctx, provider.ID, provider.RpmLimit, modelWithProvider.ID, authKeyID)
+			// 	if err != nil {
+			// 		return nil, nil, err
+			// 	}
+			// 	if !canProceed {
+			// 		slog.Info("Provider blocked by limiter", "provider", provider.Name, "reason", reason)
+			// 		balancer.Reduce(id) // 降低权重，但不完全删除
+			// 		continue
+			// 	}
+			// }
 
 			chatModel, err := providers.New(provider.Type, provider.Config)
 			if err != nil {
@@ -247,11 +249,12 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, before B
 					lastStatus = res.StatusCode
 					lastWas429 = res.StatusCode == http.StatusTooManyRequests
 
-					byteBody, readErr := io.ReadAll(res.Body)
+					limitedBody, readErr := io.ReadAll(io.LimitReader(res.Body, maxLogBodyBytes))
 					if readErr != nil {
 						slog.Error("read body error", "error", readErr)
 					}
-					retryLog <- log.WithError(fmt.Errorf("status: %d, body: %s", res.StatusCode, safeBodyTextForLog(res, byteBody)))
+					_, _ = io.Copy(io.Discard, res.Body)
+					retryLog <- log.WithError(fmt.Errorf("status: %d, body: %s", res.StatusCode, safeBodyTextForLog(res, limitedBody)))
 					_ = res.Body.Close()
 
 					// 非可重试的 4xx：直接切换（不浪费同 provider 的 3 次机会）
@@ -265,9 +268,9 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, before B
 				// success
 				balancer.Success(id)
 
-				// 记录限流访问
+				//已按需求临时禁用限流访问记录
 				if enableLimiter && c != nil {
-					if err := RecordProviderAccess(ctx, c, provider.ID, provider.RpmLimit, provider.IpLockMinutes); err != nil {
+					if err := RecordProviderAccess(ctx, provider.ID, provider.RpmLimit); err != nil {
 						slog.Warn("Failed to record provider access", "provider", provider.Name, "error", err)
 					}
 				}
@@ -409,9 +412,10 @@ func calculateTotalCost(ctx context.Context, modelName string, usage models.Usag
 	}
 	billableInput := usage.PromptTokens - cachedTokens
 
-	total := float64(billableInput)*price.Input +
-		float64(usage.CompletionTokens)*price.Output +
-		float64(cachedTokens)*price.CacheRead
+	const perMillion = 1_000_000.0
+	total := float64(billableInput)/perMillion*price.Input +
+		float64(usage.CompletionTokens)/perMillion*price.Output +
+		float64(cachedTokens)/perMillion*price.CacheRead
 
 	if total < 0 {
 		return 0

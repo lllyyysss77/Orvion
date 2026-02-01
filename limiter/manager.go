@@ -7,14 +7,12 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	"github.com/go-redis/redis/v8"
 )
 
 // Manager 限流管理器
 type Manager struct {
 	rpmLimiter   *RPMLimiter
-	ipLocker     *IPLocker
 	tokenLocker  *TokenLocker
 	redisClient  *redis.Client
 	enabled      bool
@@ -31,7 +29,6 @@ func NewManager(redisClient *redis.Client) *Manager {
 	}
 	return &Manager{
 		rpmLimiter:   NewRPMLimiter(redisClient),
-		ipLocker:     NewIPLocker(redisClient),
 		tokenLocker:  NewTokenLocker(redisClient, 2*time.Minute),
 		redisClient:  redisClient,
 		enabled:      true,
@@ -82,31 +79,6 @@ func (m *Manager) RecordRPMRequest(ctx context.Context, providerID uint) error {
 	return m.rpmLimiter.RecordRequest(ctx, providerID)
 }
 
-// CheckIPAccess 检查IP访问权限
-func (m *Manager) CheckIPAccess(ctx context.Context, providerID uint, clientIP string, lockMinutes int) (bool, error) {
-	if !m.enabled {
-		return true, nil
-	}
-	ctx, cancel := m.withRedisTimeout(ctx)
-	defer cancel()
-	return m.ipLocker.CheckIPAccess(ctx, providerID, clientIP, lockMinutes)
-}
-
-// RecordIPAccess 记录IP访问
-func (m *Manager) RecordIPAccess(ctx context.Context, providerID uint, clientIP string, lockMinutes int) error {
-	if !m.enabled {
-		return nil
-	}
-	ctx, cancel := m.withRedisTimeout(ctx)
-	defer cancel()
-	return m.ipLocker.RecordIPAccess(ctx, providerID, clientIP, lockMinutes)
-}
-
-// GetClientIP 获取客户端IP
-func (m *Manager) GetClientIP(c *gin.Context) string {
-	return m.ipLocker.GetClientIP(c)
-}
-
 // GetRPMStats 获取RPM统计信息
 func (m *Manager) GetRPMStats(ctx context.Context) map[string]interface{} {
 	if !m.enabled {
@@ -119,24 +91,8 @@ func (m *Manager) GetRPMStats(ctx context.Context) map[string]interface{} {
 	return stats
 }
 
-// GetIPLockStatus 获取IP锁定状态
-func (m *Manager) GetIPLockStatus(ctx context.Context, providerID uint) (*IPLockRecord, error) {
-	if !m.enabled {
-		return nil, nil
-	}
-	return m.ipLocker.GetIPLockStatus(ctx, providerID)
-}
-
-// ClearIPLock 清除IP锁定
-func (m *Manager) ClearIPLock(ctx context.Context, providerID uint) error {
-	if !m.enabled {
-		return nil
-	}
-	return m.ipLocker.ClearIPLock(ctx, providerID)
-}
-
 // CheckProviderLimits 检查提供商的所有限制
-func (m *Manager) CheckProviderLimits(ctx context.Context, c *gin.Context, providerID uint, rpmLimit, ipLockMinutes int, modelWithProviderID uint, tokenID uint) (bool, string, error) {
+func (m *Manager) CheckProviderLimits(ctx context.Context, providerID uint, rpmLimit int, modelWithProviderID uint, tokenID uint) (bool, string, error) {
 	if !m.enabled {
 		return true, "", nil
 	}
@@ -153,7 +109,7 @@ func (m *Manager) CheckProviderLimits(ctx context.Context, c *gin.Context, provi
 		}
 	}
 
-	// token 独占锁：放在 IP 锁定之前（避免被伪造的 XFF 影响，也符合“同 token 独占供应商”的诉求）
+	// token 独占锁
 	if tokenID > 0 && modelWithProviderID > 0 && m.tokenLocker != nil {
 		ok, err := m.tokenLocker.CheckAndTouch(ctx, modelWithProviderID, tokenID)
 		if err != nil {
@@ -165,24 +121,11 @@ func (m *Manager) CheckProviderLimits(ctx context.Context, c *gin.Context, provi
 		}
 	}
 
-	// 检查IP锁定
-	if ipLockMinutes > 0 {
-		clientIP := m.GetClientIP(c)
-		canAccess, err := m.CheckIPAccess(ctx, providerID, clientIP, ipLockMinutes)
-		if err != nil {
-			slog.Warn("IP lock check failed", "provider_id", providerID, "client_ip", clientIP, "error", err)
-			// 用户选择 fail-closed：锁定依赖不可用时直接拒绝
-			return false, "limiter_unavailable", err
-		} else if !canAccess {
-			return false, "ip_access_denied", nil
-		}
-	}
-
 	return true, "", nil
 }
 
 // RecordProviderAccess 记录提供商访问
-func (m *Manager) RecordProviderAccess(ctx context.Context, c *gin.Context, providerID uint, rpmLimit, ipLockMinutes int) error {
+func (m *Manager) RecordProviderAccess(ctx context.Context, providerID uint, rpmLimit int) error {
 	if !m.enabled {
 		return nil
 	}
@@ -191,14 +134,6 @@ func (m *Manager) RecordProviderAccess(ctx context.Context, c *gin.Context, prov
 	if rpmLimit > 0 {
 		if err := m.RecordRPMRequest(ctx, providerID); err != nil {
 			slog.Warn("Failed to record RPM request", "provider_id", providerID, "error", err)
-		}
-	}
-
-	// 记录IP访问
-	if ipLockMinutes > 0 {
-		clientIP := m.GetClientIP(c)
-		if err := m.RecordIPAccess(ctx, providerID, clientIP, ipLockMinutes); err != nil {
-			slog.Warn("Failed to record IP access", "provider_id", providerID, "client_ip", clientIP, "error", err)
 		}
 	}
 
@@ -218,5 +153,4 @@ func (m *Manager) ClearMemoryData() {
 	if m.rpmLimiter != nil {
 		m.rpmLimiter.ClearMemoryData()
 	}
-	// IP锁定器的内存清理可以在需要时添加
 }

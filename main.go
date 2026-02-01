@@ -27,14 +27,12 @@ import (
 func init() {
 	// 加载 .env 文件（如果存在）
 	_ = godotenv.Load()
+	initLogging()
 
 	ctx := context.Background()
-	// 数据库支持 PostgreSQL
-	// - DATABASE_DSN：连接串（支持 key=value 或 URL）
+	// 数据库默认使用 SQLite，支持 PostgreSQL
+	// - DATABASE_DSN：连接串（支持 SQLite 路径 / sqlite:// / file: / Postgres URL / key=value）
 	dsn := strings.TrimSpace(os.Getenv("DATABASE_DSN"))
-	if dsn == "" {
-		dsn = "postgres://postgres:postgres@localhost:5432/llmio?sslmode=disable"
-	}
 	models.Init(ctx, dsn)
 
 	// 初始化首次部署时间（持久化到数据库 configs 表），用于跨重启统计系统总运行时间。
@@ -78,13 +76,33 @@ func init() {
 	slog.Info("TZ", "time.Local", time.Local.String())
 }
 
+func initLogging() {
+	level := slog.LevelInfo
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("LOG_LEVEL"))) {
+	case "debug":
+		level = slog.LevelDebug
+	case "warn", "warning":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	}
+
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: level,
+	})))
+
+	if level > slog.LevelDebug {
+		gin.SetMode(gin.ReleaseMode)
+	}
+}
+
 func main() {
 	router := gin.Default()
 
 	router.Use(gzip.Gzip(gzip.DefaultCompression, gzip.WithExcludedPaths([]string{"/openai", "/anthropic", "/gemini", "/v1"})))
 
-	// IP 锁定需要基于“访问中转站的真实客户端 IP”：
-	// - 默认不信任任何代理（避免客户端伪造 X-Forwarded-For 绕过/误伤）
+	// 为了获取真实客户端 IP：
+	// - 默认不信任任何代理（避免客户端伪造 X-Forwarded-For）
 	// - 如你在 Nginx/CF 等反代后面部署，请通过 TRUSTED_PROXIES 显式配置可信代理 IP/CIDR
 	//   示例：TRUSTED_PROXIES=127.0.0.1,::1,10.0.0.0/8
 	if v := strings.TrimSpace(os.Getenv("TRUSTED_PROXIES")); v == "" {

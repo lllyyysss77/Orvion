@@ -10,12 +10,8 @@ import {
   FaSignOutAlt,
   FaCog,
   FaKey,
-  FaSnowflake,
   FaHeartbeat,
-  FaAtom
 } from "react-icons/fa";
-import { useTheme } from "@/components/theme-provider";
-import { useSnow } from "@/components/snow-effect";
 import { getVersion, checkLatestRelease, type GitHubRelease } from "@/lib/api";
 import {
   Dialog,
@@ -29,8 +25,6 @@ export default function Layout() {
   const [version, setVersion] = useState("dev");
   const [latestRelease, setLatestRelease] = useState<GitHubRelease | null>(null);
   const [showUpdateDialog, setShowUpdateDialog] = useState(false);
-  const { theme, setTheme } = useTheme();
-  const { snowEnabled, setSnowEnabled } = useSnow();
   const navigate = useNavigate();
   const location = useLocation(); // 用于高亮当前选中的菜单
   const token = localStorage.getItem("authToken")?.trim() || "";
@@ -87,32 +81,47 @@ export default function Layout() {
     navigate("/login");
   };
 
-  const navItems = [
-    { to: "/", label: "首页", icon: <FaHome /> },
-    { to: "/health-ui", label: "健康监控", icon: <FaHeartbeat /> },
-    { to: "/providers", label: "提供商管理", icon: <FaCloud /> },
-    { to: "/models", label: "模型管理", icon: <FaRobot /> },
-    { to: "/logs", label: "请求日志", icon: <FaFileAlt /> },
-    { to: "/auth-keys", label: "API Key 管理", icon: <FaKey /> },
-    { to: "/config", label: "系统配置", icon: <FaCog /> },
+  const navSections = [
+    {
+      title: "01 概览",
+      items: [
+        { to: "/", label: "首页", icon: <FaHome /> },
+        { to: "/health-ui", label: "健康监控", icon: <FaHeartbeat /> },
+      ],
+    },
+    {
+      title: "02 运营",
+      items: [
+        { to: "/providers", label: "提供商管理", icon: <FaCloud /> },
+        { to: "/models", label: "模型管理", icon: <FaRobot /> },
+        { to: "/logs", label: "请求日志", icon: <FaFileAlt /> },
+        { to: "/auth-keys", label: "API Key 管理", icon: <FaKey /> },
+      ],
+    },
+    {
+      title: "03 系统",
+      items: [
+        { to: "/config", label: "系统配置", icon: <FaCog /> },
+      ],
+    },
   ];
 
   return (
     <div className="flex flex-col h-screen w-full dark:bg-gray-900 transition-colors duration-300">
       
       {/* 1. 顶部栏 Header */}
-      <header className="bg-background flex items-center flex-shrink-0 z-20">
-        <div className="mx-auto flex w-full max-w-[1200px] items-center justify-between px-3 py-3 md:px-4">
-          <div className="group flex items-center gap-2 text-xl font-bold">
-            <span className="inline-flex size-8 items-center justify-center rounded-full bg-primary/10 text-primary ring-1 ring-primary/20 transition-all duration-300 group-hover:bg-primary/20 group-hover:ring-primary/40 group-hover:shadow-md">
-              <FaAtom className="size-4 transition-transform duration-300 group-hover:rotate-12 group-hover:scale-105" />
-            </span>
-            <span
-              className="text-primary text-2xl transition-all duration-300 group-hover:text-transparent group-hover:bg-clip-text"
-              style={{ backgroundImage: "linear-gradient(90deg, hsl(var(--primary)), hsl(var(--foreground)))" }}
-            >
-              Orvion
-            </span> 
+      <header className="bg-background/80 backdrop-blur flex items-center flex-shrink-0 z-20 border-b border-border/70">
+        <div className="mx-auto flex w-full max-w-[1400px] items-center justify-between px-4 py-3">
+          <div className="flex items-center gap-3 ml-2">
+            <div>
+              <div className="text-lg font-semibold text-foreground">Orvion</div>
+              <div className="text-[11px] text-muted-foreground">多提供商网关</div>
+            </div>
+            {!isAuthKeyToken && (
+              <span className="ml-3 hidden items-center rounded-full bg-primary/10 px-3 py-1 text-[10px] font-semibold tracking-[0.2em] text-primary sm:inline-flex">
+                ADMIN MODE
+              </span>
+            )}
           </div>
 
           <div className="flex items-center gap-2">
@@ -127,36 +136,6 @@ export default function Layout() {
                 <span className="ml-1 text-xs text-red-500">●</span>
               )}
             </Badge>
-            <Button
-              variant="ghost"
-              size="icon"
-              className={`hover:bg-accent hover:text-accent-foreground ${snowEnabled ? 'text-blue-400' : ''}`}
-              onClick={() => setSnowEnabled(!snowEnabled)}
-              title={snowEnabled ? "关闭下雪效果" : "开启下雪效果"}
-            >
-              <FaSnowflake className="size-4" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="hover:bg-accent hover:text-accent-foreground"
-              onClick={() => setTheme(theme === "light" ? "dark" : "light")}
-            >
-            <svg 
-              xmlns="http://www.w3.org/2000/svg" 
-              width="24" height="24" viewBox="0 0 24 24" 
-              fill="none" stroke="currentColor" strokeWidth="2" 
-              strokeLinecap="round" strokeLinejoin="round" 
-              className="size-5"
-            >
-              <path stroke="none" d="M0 0h24v24H0z" fill="none"></path>
-              <path d="M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0 -18 0"></path>
-              <path d="M12 3l0 18"></path>
-              <path d="M12 9l4.65 -4.65"></path>
-              <path d="M12 14.3l7.37 -7.37"></path>
-              <path d="M12 19.6l8.85 -8.85"></path>
-            </svg>
-          </Button>
           
           <Button 
             variant="ghost" 
@@ -171,50 +150,52 @@ export default function Layout() {
 
       {/* 2. 下方主体区域 */}
       <div className="flex-1 min-w-0">
-        <div className="mx-auto flex h-full w-full max-w-[1200px] px-3 md:px-4">
-          <div className="flex w-full overflow-y-hidden min-w-0">
+        <div className="mx-auto flex h-full w-full max-w-[1400px] px-4">
+          <div className="flex w-full min-w-0 gap-4 py-4">
         
         {/* 左侧侧边栏 Sidebar */}
         {!isAuthKeyToken && (
-          <aside
-            className="mr-4 mt-3 md:mt-5 flex w-16 shrink-0 flex-col items-center self-start rounded-[30px] bg-card/90 py-5 shadow-[0_12px_32px_rgba(0,0,0,0.12)] ring-1 ring-border/40 backdrop-blur-sm"
-          >
-            <nav>
-              <ul className="flex flex-col items-center gap-3">
-                {navItems.map((item) => {
-                  const isActive = location.pathname === item.to;
-                  return (
-                    <li key={item.to}>
-                      <Link to={item.to}>
-                        <div
-                          className={`
-                            group relative flex size-11 items-center justify-center rounded-2xl transition-all duration-200
-                            ${isActive
-                              ? "bg-amber-100 text-amber-900 shadow-sm ring-1 ring-amber-200/80 dark:bg-amber-200/10 dark:text-amber-200 dark:ring-amber-200/30"
-                              : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
-                            }
-                          `}
-                          title={item.label}
-                          aria-label={item.label}
-                        >
-                          <span className="text-lg transition-transform duration-200 group-hover:scale-105">
-                            {item.icon}
-                          </span>
-                          <span className="sr-only">{item.label}</span>
-                        </div>
-                      </Link>
-                    </li>
-                  );
-                })}
-              </ul>
+          <aside className="w-60 shrink-0 self-start rounded-3xl border border-sidebar-border bg-sidebar/90 p-4 shadow-[0_18px_40px_rgba(0,0,0,0.06)]">
+            <div className="mb-6 rounded-2xl bg-sidebar-accent/80 px-3 py-3">
+              <div className="text-xs font-semibold text-muted-foreground">Orvion</div>
+              <div className="text-[11px] text-muted-foreground">多提供商网关</div>
+            </div>
+            <nav className="space-y-6">
+              {navSections.map((section) => (
+                <div key={section.title} className="space-y-2">
+                  <div className="text-[11px] font-semibold tracking-[0.2em] text-muted-foreground">
+                    {section.title}
+                  </div>
+                  <ul className="space-y-1">
+                    {section.items.map((item) => {
+                      const isActive = location.pathname === item.to;
+                      return (
+                        <li key={item.to}>
+                          <Link
+                            to={item.to}
+                            className={`group flex items-center gap-3 rounded-2xl px-3 py-2 text-sm transition-colors ${
+                              isActive
+                                ? "bg-primary/10 text-primary ring-1 ring-primary/20"
+                                : "text-muted-foreground hover:bg-sidebar-accent/70 hover:text-foreground"
+                            }`}
+                          >
+                            <span className="text-base">{item.icon}</span>
+                            <span className="font-medium">{item.label}</span>
+                          </Link>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              ))}
             </nav>
           </aside>
         )}
 
         {/* 右侧主内容区域 */}
-        <main className="flex-1 min-w-0 bg-muted/20 p-2 md:p-4 transition-all duration-300">
+        <main className="flex-1 min-w-0 rounded-3xl border border-border/60 bg-card/60 p-3 md:p-5">
           <div className="mx-auto max-w-full h-full min-w-0 overflow-x-hidden">
-             <Outlet />
+            <Outlet />
           </div>
         </main>
           </div>

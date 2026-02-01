@@ -4,7 +4,6 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/gin-gonic/gin"
 	"github.com/go-redis/redis/v8"
 	"github.com/racio/llmio/limiter"
 )
@@ -27,19 +26,19 @@ func GetRedisClient() *redis.Client {
 }
 
 // CheckProviderLimits 检查提供商限制
-func CheckProviderLimits(ctx context.Context, c *gin.Context, providerID uint, rpmLimit, ipLockMinutes int, modelWithProviderID uint, tokenID uint) (bool, string, error) {
+func CheckProviderLimits(ctx context.Context, providerID uint, rpmLimit int, modelWithProviderID uint, tokenID uint) (bool, string, error) {
 	if globalLimiterManager == nil {
 		return true, "", nil
 	}
-	return globalLimiterManager.CheckProviderLimits(ctx, c, providerID, rpmLimit, ipLockMinutes, modelWithProviderID, tokenID)
+	return globalLimiterManager.CheckProviderLimits(ctx, providerID, rpmLimit, modelWithProviderID, tokenID)
 }
 
 // RecordProviderAccess 记录提供商访问
-func RecordProviderAccess(ctx context.Context, c *gin.Context, providerID uint, rpmLimit, ipLockMinutes int) error {
+func RecordProviderAccess(ctx context.Context, providerID uint, rpmLimit int) error {
 	if globalLimiterManager == nil {
 		return nil
 	}
-	return globalLimiterManager.RecordProviderAccess(ctx, c, providerID, rpmLimit, ipLockMinutes)
+	return globalLimiterManager.RecordProviderAccess(ctx, providerID, rpmLimit)
 }
 
 // GetCurrentRPMCount 获取当前RPM计数
@@ -59,20 +58,4 @@ func GetRPMStats(ctx context.Context) map[string]interface{} {
 		}
 	}
 	return globalLimiterManager.GetRPMStats(ctx)
-}
-
-// GetIPLockStatus 获取IP锁定状态
-func GetIPLockStatus(ctx context.Context, providerID uint) (*limiter.IPLockRecord, error) {
-	if globalLimiterManager == nil {
-		return nil, nil
-	}
-	return globalLimiterManager.GetIPLockStatus(ctx, providerID)
-}
-
-// ClearIPLock 清除IP锁定
-func ClearIPLock(ctx context.Context, providerID uint) error {
-	if globalLimiterManager == nil {
-		return nil
-	}
-	return globalLimiterManager.ClearIPLock(ctx, providerID)
 }

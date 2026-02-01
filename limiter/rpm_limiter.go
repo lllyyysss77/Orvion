@@ -40,7 +40,11 @@ func (r *RPMLimiter) CheckRPMLimit(ctx context.Context, providerID uint, rpmLimi
 	windowStart := now - 60 // 1分钟前
 
 	if r.redis != nil {
-		return r.checkRPMLimitRedis(ctx, providerID, rpmLimit, now, windowStart)
+		ok, err := r.checkRPMLimitRedis(ctx, providerID, rpmLimit, now, windowStart)
+		if err == nil {
+			return ok, nil
+		}
+		return r.checkRPMLimitMemory(providerID, rpmLimit, now, windowStart), nil
 	}
 
 	return r.checkRPMLimitMemory(providerID, rpmLimit, now, windowStart), nil
@@ -51,7 +55,11 @@ func (r *RPMLimiter) RecordRequest(ctx context.Context, providerID uint) error {
 	now := time.Now().Unix()
 
 	if r.redis != nil {
-		return r.recordRequestRedis(ctx, providerID, now)
+		if err := r.recordRequestRedis(ctx, providerID, now); err == nil {
+			return nil
+		}
+		r.recordRequestMemory(providerID, now)
+		return nil
 	}
 
 	r.recordRequestMemory(providerID, now)
@@ -64,7 +72,11 @@ func (r *RPMLimiter) GetCurrentRPMCount(ctx context.Context, providerID uint) (i
 	windowStart := now - 60
 
 	if r.redis != nil {
-		return r.getCurrentRPMCountRedis(ctx, providerID, windowStart, now)
+		count, err := r.getCurrentRPMCountRedis(ctx, providerID, windowStart, now)
+		if err == nil {
+			return count, nil
+		}
+		return r.getCurrentRPMCountMemory(providerID, windowStart), nil
 	}
 
 	return r.getCurrentRPMCountMemory(providerID, windowStart), nil
@@ -253,6 +265,7 @@ func (r *RPMLimiter) GetStats(ctx context.Context) map[string]interface{} {
 				}
 			}
 			stats["providers"] = providerStats
+			return stats
 		}
 	} else {
 		// 内存统计
@@ -268,5 +281,17 @@ func (r *RPMLimiter) GetStats(ctx context.Context) map[string]interface{} {
 		stats["providers"] = providerStats
 	}
 
+	// Redis 不可用时回退内存统计
+	providerStats := make(map[string]int)
+	r.memory.Range(func(key, value interface{}) bool {
+		if keyStr, ok := key.(string); ok {
+			if record, ok := value.(*RequestRecord); ok {
+				providerStats[keyStr] = len(record.Timestamps)
+			}
+		}
+		return true
+	})
+	stats["storage_type"] = "memory"
+	stats["providers"] = providerStats
 	return stats
 }

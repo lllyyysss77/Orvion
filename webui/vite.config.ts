@@ -35,7 +35,7 @@ export default defineConfig({
           ],
 
           // 图表库
-          'charts-vendor': ['recharts', 'lucide-react'],
+          'charts-vendor': ['lucide-react'],
 
           // 表单和验证
           'form-vendor': ['react-hook-form', '@hookform/resolvers', 'zod'],

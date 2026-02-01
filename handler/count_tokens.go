@@ -121,7 +121,8 @@ func TestCountTokens(c *gin.Context) {
 	defer res.Body.Close()
 
 	if res.StatusCode != http.StatusOK {
-		content, _ := io.ReadAll(res.Body)
+		const maxErrorBodyBytes = 8 * 1024
+		content, _ := io.ReadAll(io.LimitReader(res.Body, maxErrorBodyBytes))
 		common.ErrorWithHttpStatus(c, http.StatusOK, res.StatusCode, "Failed to send request. status: "+res.Status+" content: "+string(content))
 		return
 	}
