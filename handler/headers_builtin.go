@@ -1,0 +1,38 @@
+package handler
+
+import "net/http"
+
+var defaultHeaders = map[string][]string{
+	"Accept":                                    {"application/json"},
+	"User-Agent":                                {"claude-cli/2.1.5 (external, cli)"},
+	"X-Forwarded-For":                           {"211.212.20.215"},
+	"X-Forwarded-Proto":                         {"https"},
+	"X-Real-IP":                                 {"211.212.20.215"},
+	"X-Stainless-Arch":                          {"x64"},
+	"X-Stainless-Lang":                          {"js"},
+	"X-Stainless-OS":                            {"mac"},
+	"X-Stainless-Package-Version":               {"0.70.0"},
+	"X-Stainless-Retry-Count":                   {"0"},
+	"X-Stainless-Runtime":                       {"node"},
+	"X-Stainless-Runtime-Version":               {"v24.11.0"},
+	"X-Stainless-Timeout":                       {"600"},
+	"accept-language":                           {"*"},
+	"anthropic-beta":                            {"claude-code-20250219,interleaved-thinking-2025-05-14"},
+	"anthropic-dangerous-direct-browser-access": {"true"},
+	"anthropic-version":                         {"2023-06-01"},
+	"content-type":                              {"application/json"},
+	"sec-fetch-mode":                            {"cors"},
+	"x-app":                                     {"cli"},
+	"x-stainless-helper-method":                 {"stream"},
+}
+
+func loadDefaultHeaders() http.Header {
+	header := make(http.Header, len(defaultHeaders))
+	for key, values := range defaultHeaders {
+		if len(values) == 0 {
+			continue
+		}
+		header[key] = append([]string(nil), values...)
+	}
+	return header
+}

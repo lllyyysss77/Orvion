@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -146,11 +145,7 @@ func ProviderTestHandler(c *gin.Context) {
 		withHeader = *chatModel.WithHeader
 	}
 	header := service.BuildHeaders(c.Request.Header, withHeader, chatModel.CustomerHeaders, false)
-	extraHeaders, err := loadHeadersFromFile("headers.json")
-	if err != nil {
-		common.InternalServerError(c, "Failed to load headers.json: "+err.Error())
-		return
-	}
+	extraHeaders := loadDefaultHeaders()
 	if header == nil {
 		header = http.Header{}
 	}
@@ -308,46 +303,6 @@ func TestReactHandler(c *gin.Context) {
 		return
 	}
 	c.SSEvent("success", fmt.Sprintf("成功通过测试, 耗时: %.2fs", time.Since(start).Seconds()))
-}
-
-func loadHeadersFromFile(path string) (http.Header, error) {
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var raw map[string]any
-	if err := json.Unmarshal(content, &raw); err != nil {
-		return nil, err
-	}
-	header := make(http.Header, len(raw))
-	for key, value := range raw {
-		switch typed := value.(type) {
-		case string:
-			if typed == "" {
-				continue
-			}
-			header.Set(key, typed)
-		case []any:
-			values := make([]string, 0, len(typed))
-			for _, item := range typed {
-				str, ok := item.(string)
-				if !ok || str == "" {
-					continue
-				}
-				values = append(values, str)
-			}
-			if len(values) == 0 {
-				continue
-			}
-			header[key] = values
-		case []string:
-			if len(typed) == 0 {
-				continue
-			}
-			header[key] = append([]string(nil), typed...)
-		}
-	}
-	return header, nil
 }
 
 func mergeHeaders(dst http.Header, extra http.Header, skipKeys map[string]struct{}) {

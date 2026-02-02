@@ -302,7 +302,7 @@ func RecordRetryLog(ctx context.Context, retryLog chan models.ChatLog) {
 	}
 }
 
-func RecordLog(ctx context.Context, reqStart time.Time, reader io.ReadCloser, processer Processer, logId uint, before Before, ioLog bool) {
+func RecordLog(ctx context.Context, reqStart time.Time, reader io.ReadCloser, processer Processer, logId uint, before Before, ioLog bool, style string) {
 	recordFunc := func() error {
 		defer reader.Close()
 		if ioLog {
@@ -316,6 +316,13 @@ func RecordLog(ctx context.Context, reqStart time.Time, reader io.ReadCloser, pr
 		log, output, err := processer(ctx, reader, before.Stream, reqStart)
 		if err != nil {
 			return err
+		}
+		if log.Usage.PromptTokens == 0 && log.Usage.CompletionTokens == 0 && log.Usage.TotalTokens == 0 {
+			fallback := estimateUsageFromIO(style, before.Model, before.raw, output)
+			log.Usage = mergeUsage(log.Usage, fallback)
+		}
+		if log.Usage.TotalTokens == 0 {
+			log.Usage.TotalTokens = log.Usage.PromptTokens + log.Usage.CompletionTokens
 		}
 		log.TotalCost = calculateTotalCost(ctx, before.Model, log.Usage)
 		if _, err := gorm.G[models.ChatLog](models.DB).Where("id = ?", logId).Updates(ctx, *log); err != nil {
@@ -340,6 +347,22 @@ func RecordLog(ctx context.Context, reqStart time.Time, reader io.ReadCloser, pr
 	if err := recordFunc(); err != nil {
 		slog.Error("record log error", "error", err)
 	}
+}
+
+func mergeUsage(current models.Usage, fallback models.Usage) models.Usage {
+	if current.PromptTokens == 0 {
+		current.PromptTokens = fallback.PromptTokens
+	}
+	if current.CompletionTokens == 0 {
+		current.CompletionTokens = fallback.CompletionTokens
+	}
+	if current.TotalTokens == 0 {
+		current.TotalTokens = fallback.TotalTokens
+	}
+	if current.PromptTokensDetails == "" && fallback.PromptTokensDetails != "" {
+		current.PromptTokensDetails = fallback.PromptTokensDetails
+	}
+	return current
 }
 
 func SaveChatLog(ctx context.Context, log models.ChatLog) (uint, error) {

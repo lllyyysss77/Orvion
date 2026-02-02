@@ -135,7 +135,7 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 	pr, pw := io.Pipe()
 	tee := io.TeeReader(res.Body, pw)
 	// 异步处理输出并记录 tokens
-	go service.RecordLog(context.Background(), startReq, pr, postProcessor, logId, *before, providersWithMeta.IOLog)
+	go service.RecordLog(context.Background(), startReq, pr, postProcessor, logId, *before, providersWithMeta.IOLog, logStyle)
 
 	writeHeader(c, before.Stream, res.Header)
 	if _, err := io.Copy(c.Writer, tee); err != nil {

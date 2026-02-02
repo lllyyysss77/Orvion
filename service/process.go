@@ -60,8 +60,14 @@ func ProcesserOpenAI(ctx context.Context, pr io.Reader, stream bool, start time.
 		// }
 
 		usage := gjson.Get(chunk, "usage")
-		if usage.Exists() && usage.Get("total_tokens").Int() != 0 {
-			usageStr = usage.String()
+		if usage.Exists() {
+			if usage.Get("total_tokens").Int() != 0 ||
+				usage.Get("prompt_tokens").Int() != 0 ||
+				usage.Get("completion_tokens").Int() != 0 ||
+				usage.Get("input_tokens").Int() != 0 ||
+				usage.Get("output_tokens").Int() != 0 {
+				usageStr = usage.String()
+			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -69,13 +75,7 @@ func ProcesserOpenAI(ctx context.Context, pr io.Reader, stream bool, start time.
 	}
 
 	// token用量
-	var openaiUsage models.Usage
-	usage := []byte(usageStr)
-	if json.Valid(usage) {
-		if err := json.Unmarshal(usage, &openaiUsage); err != nil {
-			return nil, nil, err
-		}
-	}
+	openaiUsage := parseOpenAIUsage(usageStr)
 
 	chunkTime := time.Since(start) - firstChunkTime
 
@@ -154,6 +154,9 @@ func ProcesserOpenAiRes(ctx context.Context, pr io.Reader, stream bool, start ti
 			return nil, nil, err
 		}
 	}
+	if openAIResUsage.TotalTokens == 0 {
+		openAIResUsage.TotalTokens = openAIResUsage.InputTokens + openAIResUsage.OutputTokens
+	}
 
 	chunkTime := time.Since(start) - firstChunkTime
 
@@ -180,6 +183,43 @@ func ProcesserOpenAiRes(ctx context.Context, pr io.Reader, stream bool, start ti
 		Tps:  float64(openAIResUsage.TotalTokens) / chunkTime.Seconds(),
 		Size: size,
 	}, &output, nil
+}
+
+func parseOpenAIUsage(usageStr string) models.Usage {
+	var usage models.Usage
+	raw := []byte(usageStr)
+	if !json.Valid(raw) {
+		return usage
+	}
+	if err := json.Unmarshal(raw, &usage); err == nil {
+		if usage.PromptTokensDetails != "" || usage.PromptTokens != 0 || usage.CompletionTokens != 0 || usage.TotalTokens != 0 {
+			if usage.TotalTokens == 0 && (usage.PromptTokens != 0 || usage.CompletionTokens != 0) {
+				usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+			}
+			return usage
+		}
+	}
+	var alt OpenAIResUsage
+	if err := json.Unmarshal(raw, &alt); err != nil {
+		return usage
+	}
+	if alt.InputTokens != 0 || alt.OutputTokens != 0 || alt.TotalTokens != 0 {
+		usage.PromptTokens = alt.InputTokens
+		usage.CompletionTokens = alt.OutputTokens
+		usage.TotalTokens = alt.TotalTokens
+		if usage.TotalTokens == 0 {
+			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+		}
+		if alt.InputTokensDetails.CachedTokens > 0 {
+			details := models.PromptTokensDetails{
+				CachedTokens: alt.InputTokensDetails.CachedTokens,
+			}
+			if jsonBytes, err := json.Marshal(details); err == nil {
+				usage.PromptTokensDetails = string(jsonBytes)
+			}
+		}
+	}
+	return usage
 }
 
 func ProcesserAnthropic(ctx context.Context, pr io.Reader, stream bool, start time.Time) (*models.ChatLog, *models.OutputUnion, error) {
