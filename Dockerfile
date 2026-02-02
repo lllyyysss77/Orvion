@@ -49,9 +49,9 @@ WORKDIR /app
 
 COPY --from=go-builder /out/orvion ./orvion
 
-RUN mkdir -p /app/data && chown -R orvion:orvion /app  && chmod -R 775 /app
+RUN mkdir -p /app/data && chown -R nobody:nobody /app && chmod -R 775 /app
 
-USER orvion
+USER nobody
 
 EXPOSE 7070
 
