@@ -451,7 +451,7 @@ func UpdateModel(c *gin.Context) {
 		"strategy":  updates.Strategy,
 		"breaker":   updates.Breaker,
 	}
-	if _, err := gorm.G[models.Model](models.DB).Where("id = ?", id).Updates(c.Request.Context(), updateMap); err != nil {
+	if err := models.DB.WithContext(c.Request.Context()).Model(&models.Model{}).Where("id = ?", id).Updates(updateMap).Error; err != nil {
 		common.InternalServerError(c, "Failed to update model: "+err.Error())
 		return
 	}
