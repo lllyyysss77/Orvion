@@ -24,6 +24,7 @@ FROM golang:1.25-alpine AS go-builder
 WORKDIR /src
 
 RUN apk add --no-cache git ca-certificates
+ENV GOPROXY=https://proxy.golang.org,direct
 
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod \
