@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS auth_keys (
     models TEXT NOT NULL DEFAULT '[]',
     expires_at TIMESTAMPTZ,
     usage_count BIGINT NOT NULL DEFAULT 0,
+    total_cost DOUBLE PRECISION NOT NULL DEFAULT 0,
     last_used_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),

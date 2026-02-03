@@ -128,6 +128,7 @@ type AuthKey struct {
 	Models     string     // 允许的模型列表 (JSON 数组字符串)
 	ExpiresAt  *time.Time // nil=永不过期，有值=具体过期时间
 	UsageCount int64      // 使用次数统计
+	TotalCost  float64    `gorm:"column:total_cost"` // 累计费用
 	LastUsedAt *time.Time // 最后使用时间
 }
 

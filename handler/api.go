@@ -441,7 +441,17 @@ func UpdateModel(c *gin.Context) {
 		Breaker:  breaker,
 	}
 
-	if _, err := gorm.G[models.Model](models.DB).Where("id = ?", id).Updates(c.Request.Context(), updates); err != nil {
+	// 使用 map 更新，避免 GORM 忽略 0 值（例如 IOLog 关闭）
+	updateMap := map[string]any{
+		"name":      updates.Name,
+		"remark":    updates.Remark,
+		"max_retry": updates.MaxRetry,
+		"time_out":  updates.TimeOut,
+		"io_log":    updates.IOLog,
+		"strategy":  updates.Strategy,
+		"breaker":   updates.Breaker,
+	}
+	if _, err := gorm.G[models.Model](models.DB).Where("id = ?", id).Updates(c.Request.Context(), updateMap); err != nil {
 		common.InternalServerError(c, "Failed to update model: "+err.Error())
 		return
 	}

@@ -317,6 +317,12 @@ func RecordLog(ctx context.Context, reqStart time.Time, reader io.ReadCloser, pr
 		if err != nil {
 			return err
 		}
+		if log.Usage.PromptTokens == 0 {
+			log.Usage.PromptTokens = estimatePromptTokensFromInput(style, before.raw)
+		}
+		if log.Size == 0 {
+			log.Size = estimateOutputSize(output)
+		}
 		if log.Usage.PromptTokens == 0 && log.Usage.CompletionTokens == 0 && log.Usage.TotalTokens == 0 {
 			fallback := estimateUsageFromIO(style, before.Model, before.raw, output)
 			log.Usage = mergeUsage(log.Usage, fallback)
@@ -325,6 +331,9 @@ func RecordLog(ctx context.Context, reqStart time.Time, reader io.ReadCloser, pr
 			log.Usage.TotalTokens = log.Usage.PromptTokens + log.Usage.CompletionTokens
 		}
 		log.TotalCost = calculateTotalCost(ctx, before.Model, log.Usage)
+		if log.AuthKeyID > 0 && log.TotalCost > 0 {
+			KeyCostUpdate(log.AuthKeyID, log.TotalCost, time.Now())
+		}
 		if _, err := gorm.G[models.ChatLog](models.DB).Where("id = ?", logId).Updates(ctx, *log); err != nil {
 			return err
 		}
@@ -363,6 +372,23 @@ func mergeUsage(current models.Usage, fallback models.Usage) models.Usage {
 		current.PromptTokensDetails = fallback.PromptTokensDetails
 	}
 	return current
+}
+
+func estimateOutputSize(output *models.OutputUnion) int {
+	if output == nil {
+		return 0
+	}
+	if output.OfString != "" {
+		return len(output.OfString)
+	}
+	if len(output.OfStringArray) == 0 {
+		return 0
+	}
+	size := 0
+	for _, item := range output.OfStringArray {
+		size += len(item)
+	}
+	return size
 }
 
 func SaveChatLog(ctx context.Context, log models.ChatLog) (uint, error) {

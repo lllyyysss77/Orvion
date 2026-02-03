@@ -30,6 +30,7 @@ func GetAuthKey(ctx context.Context, key string) (*models.AuthKey, error) {
 
 type KeyUpdateItem struct {
 	Count  int
+	Cost   float64
 	UsedAt time.Time
 }
 
@@ -41,13 +42,33 @@ var (
 
 func KeyUpdate(keyID uint, usedAt time.Time) {
 	mu.Lock()
-	updateCounts[keyID] = KeyUpdateItem{
-		Count:  updateCounts[keyID].Count + 1,
-		UsedAt: usedAt,
+	item := updateCounts[keyID]
+	item.Count++
+	if item.UsedAt.IsZero() || usedAt.After(item.UsedAt) {
+		item.UsedAt = usedAt
 	}
+	updateCounts[keyID] = item
 	mu.Unlock()
 
 	// 确保后台刷新协程只启动一次
+	startOnce.Do(func() {
+		go backgroundFlush()
+	})
+}
+
+func KeyCostUpdate(keyID uint, cost float64, usedAt time.Time) {
+	if keyID == 0 || cost <= 0 {
+		return
+	}
+	mu.Lock()
+	item := updateCounts[keyID]
+	item.Cost += cost
+	if item.UsedAt.IsZero() || usedAt.After(item.UsedAt) {
+		item.UsedAt = usedAt
+	}
+	updateCounts[keyID] = item
+	mu.Unlock()
+
 	startOnce.Do(func() {
 		go backgroundFlush()
 	})
@@ -68,10 +89,14 @@ func backgroundFlush() {
 
 		ctx := context.Background()
 		for keyID, item := range pending {
-			if err := models.DB.Model(&models.AuthKey{}).WithContext(ctx).Where("id = ?", keyID).Updates(map[string]any{
+			updates := map[string]any{
 				"usage_count":  gorm.Expr("usage_count + ?", item.Count),
 				"last_used_at": item.UsedAt,
-			}).Error; err != nil {
+			}
+			if item.Cost != 0 {
+				updates["total_cost"] = gorm.Expr("total_cost + ?", item.Cost)
+			}
+			if err := models.DB.Model(&models.AuthKey{}).WithContext(ctx).Where("id = ?", keyID).Updates(updates).Error; err != nil {
 				slog.Error("Failed to update auth key usage count", "error", err)
 			}
 		}

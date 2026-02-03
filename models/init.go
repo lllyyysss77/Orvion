@@ -67,6 +67,11 @@ func Init(ctx context.Context, dsn string) {
 			_ = DB.Migrator().CreateIndex(&Config{}, "Key")
 		}
 	}
+	if DB.Migrator().HasTable(&AuthKey{}) {
+		if !DB.Migrator().HasColumn(&AuthKey{}, "total_cost") {
+			_ = DB.Migrator().AddColumn(&AuthKey{}, "TotalCost")
+		}
+	}
 
 	// 兼容性数据修复
 	if _, err := gorm.G[ModelWithProvider](DB).Where("status IS NULL").Update(ctx, "status", true); err != nil {
