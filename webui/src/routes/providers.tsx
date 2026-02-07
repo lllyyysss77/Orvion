@@ -75,6 +75,24 @@ const parseConfigJson = (raw?: string | null): Record<string, unknown> | null =>
   }
 };
 
+const AUTH_PROVIDER_TYPE_SET = new Set(["iflow", "codex-auths"]);
+
+const isAuthProviderTemplate = (template?: ProviderTemplate, fallbackType?: string): boolean => {
+  if (template?.auth_mode === true) return true;
+  if ((template?.category || "").toLowerCase() === "auth") return true;
+  if (fallbackType) return AUTH_PROVIDER_TYPE_SET.has(fallbackType);
+  return false;
+};
+
+const ensureAuthTemplateConfig = (template?: ProviderTemplate, providerType?: string): string => {
+  if (template?.template) {
+    const parsed = parseConfigJson(template.template);
+    if (parsed) return JSON.stringify(parsed, null, 2);
+  }
+  const fallbackType = providerType || "auth";
+  return JSON.stringify({ auth_mode: fallbackType }, null, 2);
+};
+
 const getConsoleFavicon = (consoleUrl?: string): string => {
   if (!consoleUrl) return "";
   try {
@@ -146,6 +164,9 @@ export default function ProvidersPage() {
   const [nameFilter, setNameFilter] = useState<string>("");
   const [typeFilter, setTypeFilter] = useState<string>("all");
   const [availableTypes, setAvailableTypes] = useState<string[]>([]);
+  const providerTypeDisplayMap = new Map(
+    providerTemplates.map((item) => [item.type, item.display_name || item.type])
+  );
 
   // 初始化表单
   const form = useForm<z.infer<typeof formSchema>>({
@@ -153,6 +174,8 @@ export default function ProvidersPage() {
     defaultValues: { name: "", type: "", config: "", console: "", rpmLimit: 0 },
   });
   const selectedProviderType = form.watch("type");
+  const selectedTemplate = providerTemplates.find((item) => item.type === selectedProviderType);
+  const selectedIsAuthType = isAuthProviderTemplate(selectedTemplate, selectedProviderType);
 
   useEffect(() => {
     fetchProviders();
@@ -189,18 +212,30 @@ export default function ProvidersPage() {
     if (!nextConfig && type) {
       const template = providerTemplates.find((item) => item.type === type);
       if (template) {
-        const parsedTemplate = parseConfigJson(template.template);
-        nextConfig = parsedTemplate ? JSON.stringify(parsedTemplate, null, 2) : template.template;
+        if (isAuthProviderTemplate(template, type)) {
+          nextConfig = ensureAuthTemplateConfig(template, type);
+        } else {
+          const parsedTemplate = parseConfigJson(template.template);
+          nextConfig = parsedTemplate ? JSON.stringify(parsedTemplate, null, 2) : template.template;
+        }
       }
     }
 
-    if (!nextConfig) nextConfig = defaultConfig;
+    const selectedTemplateMeta = providerTemplates.find((item) => item.type === type);
+    const isAuthType = isAuthProviderTemplate(selectedTemplateMeta, type);
+    if (!nextConfig) {
+      nextConfig = isAuthType ? ensureAuthTemplateConfig(selectedTemplateMeta, type) : defaultConfig;
+    }
 
-    setStructuredConfigEnabled(true);
+    setStructuredConfigEnabled(!isAuthType);
     if (type) {
       configCacheRef.current[type] = nextConfig;
     }
     form.setValue("config", nextConfig);
+    if (isAuthType) {
+      form.setValue("console", "");
+      form.setValue("rpmLimit", 0);
+    }
   }, [
     open,
     selectedProviderType,
@@ -330,12 +365,14 @@ export default function ProvidersPage() {
 
   const handleCreate = async (values: z.infer<typeof formSchema>) => {
     try {
+      const templateMeta = providerTemplates.find((item) => item.type === values.type);
+      const isAuthType = isAuthProviderTemplate(templateMeta, values.type);
       await createProvider({
         name: values.name,
         type: values.type,
-        config: values.config,
-        console: values.console || "",
-        rpm_limit: values.rpmLimit || 0,
+        config: isAuthType ? ensureAuthTemplateConfig(templateMeta, values.type) : values.config,
+        console: isAuthType ? "" : (values.console || ""),
+        rpm_limit: isAuthType ? 0 : (values.rpmLimit || 0),
       });
       setOpen(false);
       toast.success(`提供商 ${values.name} 创建成功`);
@@ -351,12 +388,14 @@ export default function ProvidersPage() {
   const handleUpdate = async (values: z.infer<typeof formSchema>) => {
     if (!editingProvider) return;
     try {
+      const templateMeta = providerTemplates.find((item) => item.type === values.type);
+      const isAuthType = isAuthProviderTemplate(templateMeta, values.type);
       await updateProvider(editingProvider.ID, {
         name: values.name,
         type: values.type,
-        config: values.config,
-        console: values.console || "",
-        rpm_limit: values.rpmLimit || 0,
+        config: isAuthType ? ensureAuthTemplateConfig(templateMeta, values.type) : values.config,
+        console: isAuthType ? "" : (values.console || ""),
+        rpm_limit: isAuthType ? 0 : (values.rpmLimit || 0),
       });
       setOpen(false);
       toast.success(`提供商 ${values.name} 更新成功`);
@@ -453,7 +492,7 @@ export default function ProvidersPage() {
                 <SelectItem value="all">全部</SelectItem>
                 {availableTypes.map((type) => (
                   <SelectItem key={type} value={type}>
-                    {type}
+                    {providerTypeDisplayMap.get(type) || type}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -501,7 +540,7 @@ export default function ProvidersPage() {
                           <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
                             <span className="inline-flex items-center gap-1">
                               <ProviderFavicon consoleUrl={provider.Console} fallback={provider.Type || "?"} />
-                              <span>类型: {provider.Type || "未知"}</span>
+                              <span>类型: {providerTypeDisplayMap.get(provider.Type) || provider.Type || "未知"}</span>
                             </span>
                           </div>
                         </div>
@@ -585,11 +624,9 @@ export default function ProvidersPage() {
             <DialogTitle>
               {editingProvider ? "编辑提供商" : "添加提供商"}
             </DialogTitle>
-            <DialogDescription>
-              {editingProvider
-                ? "修改提供商信息"
-                : "添加一个新的提供商"}
-            </DialogDescription>
+            {editingProvider && (
+              <DialogDescription>修改提供商信息</DialogDescription>
+            )}
           </DialogHeader>
 
           <Form {...form}>
@@ -626,6 +663,12 @@ export default function ProvidersPage() {
                         } as ProviderTemplate,
                       ]
                       : providerTemplates;
+                  const apiKeyTemplates = templateOptions.filter(
+                    (item) => !isAuthProviderTemplate(item, item.type)
+                  );
+                  const authTemplates = templateOptions.filter(
+                    (item) => isAuthProviderTemplate(item, item.type)
+                  );
 
                   return (
                     <FormItem>
@@ -639,35 +682,78 @@ export default function ProvidersPage() {
                           <RadioGroup
                             value={currentValue}
                             onValueChange={(value) => field.onChange(value)}
-                            className="flex flex-wrap gap-2"
+                            className="space-y-3"
                           >
-                            {templateOptions.map((template) => {
-                              const radioId = `provider-type-${template.type}`;
-                              const selected = currentValue === template.type;
-                              return (
-                                <label
-                                  key={template.type}
-                                  htmlFor={radioId}
-                                  className={`flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm ${selected
-                                      ? "border-primary bg-primary/10"
-                                      : "border-border"
-                                    }`}
-                                >
-                                  <RadioGroupItem
-                                    id={radioId}
-                                    value={template.type}
-                                    className="sr-only"
-                                  />
-                                  <Checkbox
-                                    checked={selected}
-                                    aria-hidden="true"
-                                    tabIndex={-1}
-                                    className="pointer-events-none"
-                                  />
-                                  <span className="select-none">{template.type}</span>
-                                </label>
-                              );
-                            })}
+                            {apiKeyTemplates.length > 0 && (
+                              <div className="space-y-2">
+                                <p className="text-xs font-semibold text-muted-foreground">APIKey 类型</p>
+                                <div className="flex flex-wrap gap-2">
+                                  {apiKeyTemplates.map((template) => {
+                                    const radioId = `provider-type-${template.type}`;
+                                    const selected = currentValue === template.type;
+                                    const displayName = template.display_name || template.type;
+                                    return (
+                                      <label
+                                        key={template.type}
+                                        htmlFor={radioId}
+                                        className={`flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm ${selected
+                                          ? "border-primary bg-primary/10"
+                                          : "border-border"
+                                          }`}
+                                      >
+                                        <RadioGroupItem
+                                          id={radioId}
+                                          value={template.type}
+                                          className="sr-only"
+                                        />
+                                        <Checkbox
+                                          checked={selected}
+                                          aria-hidden="true"
+                                          tabIndex={-1}
+                                          className="pointer-events-none"
+                                        />
+                                        <span className="select-none">{displayName}</span>
+                                      </label>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            )}
+                            {authTemplates.length > 0 && (
+                              <div className="space-y-2">
+                                <p className="text-xs font-semibold text-muted-foreground">Auth 类型</p>
+                                <div className="flex flex-wrap gap-2">
+                                  {authTemplates.map((template) => {
+                                    const radioId = `provider-type-${template.type}`;
+                                    const selected = currentValue === template.type;
+                                    const displayName = template.display_name || template.type;
+                                    return (
+                                      <label
+                                        key={template.type}
+                                        htmlFor={radioId}
+                                        className={`flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm ${selected
+                                          ? "border-primary bg-primary/10"
+                                          : "border-border"
+                                          }`}
+                                      >
+                                        <RadioGroupItem
+                                          id={radioId}
+                                          value={template.type}
+                                          className="sr-only"
+                                        />
+                                        <Checkbox
+                                          checked={selected}
+                                          aria-hidden="true"
+                                          tabIndex={-1}
+                                          className="pointer-events-none"
+                                        />
+                                        <span className="select-none">{displayName}</span>
+                                      </label>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            )}
                           </RadioGroup>
                         )}
                       </FormControl>
@@ -684,84 +770,70 @@ export default function ProvidersPage() {
                 }}
               />
 
-              <FormField
-                control={form.control}
-                name="config"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>配置</FormLabel>
-                    {structuredConfigEnabled ? (
-                      <ProviderConfigEditor value={field.value} onChange={handleStructuredConfigChange} providerType={selectedProviderType} />
-                    ) : (
-                      <FormControl>
-                        {/* 避免 api_key 等超长字段撑破弹窗宽度 */}
-                        <Textarea {...field} className="resize-none w-full max-w-full min-w-0 whitespace-pre-wrap break-all overflow-x-auto [field-sizing:fixed]" />
-                      </FormControl>
+              {!selectedIsAuthType && (
+                <>
+                  <FormField
+                    control={form.control}
+                    name="config"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>配置</FormLabel>
+                        {structuredConfigEnabled ? (
+                          <ProviderConfigEditor value={field.value} onChange={handleStructuredConfigChange} providerType={selectedProviderType} />
+                        ) : (
+                          <FormControl>
+                            {/* 避免 api_key 等超长字段撑破弹窗宽度 */}
+                            <Textarea {...field} className="resize-none w-full max-w-full min-w-0 whitespace-pre-wrap break-all overflow-x-auto [field-sizing:fixed]" />
+                          </FormControl>
+                        )}
+                        <FormMessage />
+                      </FormItem>
                     )}
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
+                  />
 
-              <FormField
-                control={form.control}
-                name="console"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>控制台地址</FormLabel>
-                    <FormControl>
-                      <Input {...field} placeholder="https://example.com/console" />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
+                  <FormField
+                    control={form.control}
+                    name="console"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>控制台地址</FormLabel>
+                        <FormControl>
+                          <Input {...field} placeholder="https://example.com/console" />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
 
-              <FormField
-                control={form.control}
-                name="rpmLimit"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>RPM 限制</FormLabel>
-                    <FormControl>
-                      <Input
-                        type="number"
-                        min={0}
-                        placeholder="0 表示无限制"
-                        value={field.value ?? 0}
-                        onChange={(e) => field.onChange(Number(e.target.value) || 0)}
-                      />
-                    </FormControl>
-                    <p className="text-xs text-muted-foreground">
-                      每分钟最大请求数，0 表示无限制。达到限制后会自动切换到其他供应商。
-                    </p>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-
-              <FormField
-                control={form.control}
-                name="rpmLimit"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>RPM 限制</FormLabel>
-                    <FormControl>
-                      <Input
-                        type="number"
-                        min={0}
-                        placeholder="0 表示无限制"
-                        value={field.value ?? 0}
-                        onChange={(e) => field.onChange(Number(e.target.value) || 0)}
-                      />
-                    </FormControl>
-                    <p className="text-xs text-muted-foreground">
-                      每分钟最大请求数，0 表示无限制。达到限制后会自动切换到其他供应商。
-                    </p>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
+                  <FormField
+                    control={form.control}
+                    name="rpmLimit"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>RPM 限制</FormLabel>
+                        <FormControl>
+                          <Input
+                            type="number"
+                            min={0}
+                            placeholder="0 表示无限制"
+                            value={field.value ?? 0}
+                            onChange={(e) => field.onChange(Number(e.target.value) || 0)}
+                          />
+                        </FormControl>
+                        <p className="text-xs text-muted-foreground">
+                          每分钟最大请求数，0 表示无限制。达到限制后会自动切换到其他供应商。
+                        </p>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </>
+              )}
+              {selectedIsAuthType && (
+                <div className="rounded-md border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
+                  Auth 类型将自动使用订阅凭据，不需要手动填写 APIKey、URL、Console 和 RPM。
+                </div>
+              )}
 
               <DialogFooter>
                 <Button type="button" variant="outline" onClick={() => setOpen(false)}>

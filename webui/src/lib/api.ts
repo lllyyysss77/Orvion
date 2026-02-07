@@ -81,7 +81,108 @@ export interface AuthKey {
   Models: string[] | null;
   ExpiresAt: string | null;
   UsageCount: number;
+  TotalCost: number;
   LastUsedAt: string | null;
+}
+
+export interface CodexSubscription {
+  id: string;
+  file_name: string;
+  email?: string;
+  plan_type?: string;
+  account_id?: string;
+  subscription_active_start?: string;
+  subscription_active_until?: string;
+  last_refresh?: string;
+  expired?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface IFlowSubscription {
+  id: string;
+  file_name: string;
+  email?: string;
+  expired?: string;
+  last_refresh?: string;
+  type?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface IFlowModel {
+  id: string;
+  object?: string;
+  created?: number;
+  owned_by?: string;
+  type?: string;
+  display_name?: string;
+}
+
+export interface IFlowOAuthStartResult {
+  state: string;
+  auth_url: string;
+  expires_at: string;
+}
+
+export interface IFlowOAuthStatusResult {
+  state: string;
+  status: "wait" | "ok" | "error";
+  message?: string;
+  credential?: IFlowSubscription;
+}
+
+export interface CodexOAuthStartResult {
+  state: string;
+  auth_url: string;
+  expires_at: string;
+}
+
+export interface CodexOAuthStatusResult {
+  state: string;
+  status: "wait" | "ok" | "error";
+  message?: string;
+  credential?: CodexSubscription;
+}
+
+export interface CodexModel {
+  id: string;
+  object: string;
+  created: number;
+  owned_by: string;
+}
+
+export interface CodexQuotaWindow {
+  id: string;
+  label: string;
+  used_percent?: number;
+  remaining_percent?: number;
+  limit_window_seconds?: number;
+  reset_after_seconds?: number;
+  reset_at?: string;
+  reset_label?: string;
+}
+
+export interface CodexTeamQuota {
+  subscription_id: string;
+  model: string;
+  probe_url: string;
+  http_status: number;
+  plan_type?: string;
+  windows?: CodexQuotaWindow[];
+  request_limit?: number;
+  request_remaining?: number;
+  request_reset?: string;
+  request_reset_at?: string;
+  token_limit?: number;
+  token_remaining?: number;
+  token_reset?: string;
+  token_reset_at?: string;
+  reset_time?: string;
+  reset_at?: string;
+  message?: string;
+  source?: string;
+  raw_rate_limit_hints?: unknown[];
 }
 
 const toBoolean = (value: unknown): boolean => value === true || value === 1 || value === "1";
@@ -230,6 +331,63 @@ export async function getVersion(): Promise<string> {
 
 export async function getAuthKeySummary(): Promise<AuthKeySummary> {
   return authKeyRequest<AuthKeySummary>('/auth-key/summary');
+}
+
+export async function getCodexSubscriptions(): Promise<CodexSubscription[]> {
+  return apiRequest<CodexSubscription[]>('/codex/subscriptions');
+}
+
+export async function getIFlowSubscriptions(): Promise<IFlowSubscription[]> {
+  return apiRequest<IFlowSubscription[]>('/iflow/subscriptions');
+}
+
+export async function getIFlowSubscriptionModels(id: string): Promise<IFlowModel[]> {
+  return apiRequest<IFlowModel[]>(`/iflow/subscriptions/${encodeURIComponent(id)}/models`);
+}
+
+export async function startIFlowOAuth(): Promise<IFlowOAuthStartResult> {
+  return apiRequest<IFlowOAuthStartResult>('/iflow/oauth/start');
+}
+
+export async function getIFlowOAuthStatus(state: string): Promise<IFlowOAuthStatusResult> {
+  const params = new URLSearchParams({ state });
+  return apiRequest<IFlowOAuthStatusResult>(`/iflow/oauth/status?${params.toString()}`);
+}
+
+export async function addIFlowSubscriptionByCookie(cookie: string): Promise<IFlowSubscription> {
+  return apiRequest<IFlowSubscription>('/iflow/subscriptions/cookie', {
+    method: 'POST',
+    body: JSON.stringify({ cookie }),
+  });
+}
+
+export async function deleteIFlowSubscription(id: string): Promise<{ id: string }> {
+  return apiRequest<{ id: string }>(`/iflow/subscriptions/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function startCodexOAuth(): Promise<CodexOAuthStartResult> {
+  return apiRequest<CodexOAuthStartResult>('/codex/oauth/start');
+}
+
+export async function getCodexOAuthStatus(state: string): Promise<CodexOAuthStatusResult> {
+  const params = new URLSearchParams({ state });
+  return apiRequest<CodexOAuthStatusResult>(`/codex/oauth/status?${params.toString()}`);
+}
+
+export async function deleteCodexSubscription(id: string): Promise<{ id: string }> {
+  return apiRequest<{ id: string }>(`/codex/subscriptions/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function getCodexSubscriptionModels(id: string): Promise<CodexModel[]> {
+  return apiRequest<CodexModel[]>(`/codex/subscriptions/${encodeURIComponent(id)}/models`);
+}
+
+export async function getCodexSubscriptionTeamQuota(id: string): Promise<CodexTeamQuota> {
+  return apiRequest<CodexTeamQuota>(`/codex/subscriptions/${encodeURIComponent(id)}/team-quota`);
 }
 
 // Provider API functions
@@ -545,6 +703,10 @@ export async function testModelProvider(id: number): Promise<any> {
 // Provider Templates API functions
 export interface ProviderTemplate {
   type: string;
+  display_name?: string;
+  category?: "apikey" | "auth" | string;
+  auth_mode?: boolean;
+  hide_config?: boolean;
   template: string;
 }
 
@@ -634,6 +796,7 @@ export interface ChatLog {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+  cached_tokens: number;
   total_cost: number;
   // 后端存的是 JSON 字符串（或空字符串）；前端使用时需要做解析/兜底
   prompt_tokens_details: PromptTokensDetails | string | null;
@@ -654,6 +817,11 @@ export interface ChatIO {
   OfString?: string | null;
   OfStringArray?: string[] | null;
 }
+
+type RawChatIO = ChatIO & {
+  OutputString?: string | null;
+  OutputStringArray?: unknown;
+};
 
 export interface LogsResponse {
   data: ChatLog[];
@@ -711,8 +879,46 @@ export async function getRequestAmountTrend(): Promise<RequestAmountSummary> {
 }
 
 export async function getChatIO(logId: number | string): Promise<ChatIO> {
-  return apiRequest<ChatIO>(`/logs/${logId}/chat-io`);
+  const raw = await apiRequest<RawChatIO>(`/logs/${logId}/chat-io`);
+  return normalizeChatIO(raw);
 }
+
+const parseChatIOStringArray = (value: unknown): string[] => {
+  if (!value) return [];
+  if (Array.isArray(value)) return value.filter((item): item is string => typeof item === "string");
+  if (typeof value !== "string") return [];
+
+  const trimmed = value.trim();
+  if (!trimmed) return [];
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (Array.isArray(parsed)) {
+      return parsed.filter((item): item is string => typeof item === "string");
+    }
+    if (typeof parsed === "string" && parsed.trim() !== "") {
+      return [parsed];
+    }
+    return [];
+  } catch {
+    return [trimmed];
+  }
+};
+
+const normalizeChatIO = (raw: RawChatIO): ChatIO => {
+  const ofString = typeof raw.OfString === "string"
+    ? raw.OfString
+    : (typeof raw.OutputString === "string" ? raw.OutputString : "");
+
+  const ofStringArray = parseChatIOStringArray(
+    raw.OfStringArray ?? raw.OutputStringArray
+  );
+
+  return {
+    ...raw,
+    OfString: ofString || null,
+    OfStringArray: ofStringArray.length > 0 ? ofStringArray : null,
+  };
+};
 
 // Clean logs API
 export interface CleanLogsResult {

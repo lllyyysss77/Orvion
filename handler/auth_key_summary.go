@@ -40,6 +40,7 @@ type authKeyTokenAgg struct {
 	Model      string `gorm:"column:model"`
 	Prompt     int64  `gorm:"column:prompt"`
 	Completion int64  `gorm:"column:completion"`
+	Cached     int64  `gorm:"column:cached"`
 }
 
 // AuthKeySummary 返回 API Key 视角的概览数据
@@ -113,7 +114,7 @@ func AuthKeySummary(c *gin.Context) {
 
 	modelAgg := make([]authKeyTokenAgg, 0)
 	if err := base.Select(
-		"LOWER(name) AS model, COALESCE(SUM(prompt_tokens),0) AS prompt, COALESCE(SUM(completion_tokens),0) AS completion",
+		"LOWER(name) AS model, COALESCE(SUM(prompt_tokens),0) AS prompt, COALESCE(SUM(completion_tokens),0) AS completion, COALESCE(SUM(cached_tokens),0) AS cached",
 	).Group("LOWER(name)").Scan(&modelAgg).Error; err != nil {
 		common.InternalServerError(c, "Failed to aggregate tokens: "+err.Error())
 		return
@@ -141,16 +142,28 @@ func AuthKeySummary(c *gin.Context) {
 
 			priceMap := make(map[string]models.ModelPrice, len(prices))
 			for _, price := range prices {
-				priceMap[price.ModelID] = price
+				priceMap[strings.ToLower(strings.TrimSpace(price.ModelID))] = price
 			}
 
+			const perMillion = 1_000_000.0
 			for _, item := range modelAgg {
-				price, ok := priceMap[item.Model]
+				modelName := strings.ToLower(strings.TrimSpace(item.Model))
+				price, ok := priceMap[modelName]
 				if !ok {
 					continue
 				}
-				inputCost += float64(item.Prompt) * price.Input
-				outputCost += float64(item.Completion) * price.Output
+				cached := item.Cached
+				if cached < 0 {
+					cached = 0
+				}
+				if cached > item.Prompt {
+					cached = item.Prompt
+				}
+
+				billablePrompt := item.Prompt - cached
+				inputCost += float64(billablePrompt)/perMillion*price.Input +
+					float64(cached)/perMillion*price.CacheRead
+				outputCost += float64(item.Completion) / perMillion * price.Output
 			}
 		}
 	}

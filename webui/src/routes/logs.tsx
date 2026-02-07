@@ -9,7 +9,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Input } from "@/components/ui/input";
 import Loading from "@/components/loading";
 import { getLogs, getProviders, getModelOptions, getAuthKeysList, type ChatLog, type Provider, type Model, type AuthKeyItem, getProviderTemplates, cleanLogs } from "@/lib/api";
-import { ChevronLeft, ChevronRight, RefreshCw, Trash2, Eye, EyeOff, Timer, ArrowDown, ArrowUp, Zap, Coins } from "lucide-react";
+import { ChevronLeft, ChevronRight, RefreshCw, Trash2, Eye, EyeOff, Timer, ArrowDown, ArrowUp, Zap, Coins, Database } from "lucide-react";
 import hunyuanIcon from "@/assets/modelIcon/hunyuan.svg";
 import doubaoIcon from "@/assets/modelIcon/doubao.svg";
 import grokIcon from "@/assets/modelIcon/grok.svg";
@@ -19,6 +19,8 @@ import openaiIcon from "@/assets/modelIcon/openai.svg";
 import claudeIcon from "@/assets/modelIcon/claude.svg";
 import geminiIcon from "@/assets/modelIcon/gemini.svg";
 import deepseekIcon from "@/assets/modelIcon/deepseek.svg";
+import glmIcon from "@/assets/modelIcon/glm.svg";
+import kimiIcon from "@/assets/modelIcon/kimi.svg";
 
 // 格式化耗时显示（后端字段单位为毫秒）
 const formatDurationMs = (milliseconds: number): string => {
@@ -90,6 +92,24 @@ type LogCardProps = {
   onViewChatIO: (log: ChatLog) => void;
 };
 
+type MetricItemProps = {
+  icon: ReactNode;
+  label: string;
+  value: string;
+};
+
+const MetricItem = ({ icon, label, value }: MetricItemProps) => (
+  <div className="flex items-center justify-between gap-2 rounded-lg border border-border/60 bg-muted/20 px-2.5 py-2">
+    <span className="inline-flex shrink-0 items-center gap-1.5 text-[11px] text-muted-foreground whitespace-nowrap">
+      {icon}
+      <span>{label}</span>
+    </span>
+    <span className="min-w-[4.8rem] text-right tabular-nums text-sm font-medium text-foreground whitespace-nowrap">
+      {value}
+    </span>
+  </div>
+);
+
 const LogCard = memo(({ log, onOpenDetail, onViewChatIO }: LogCardProps) => {
   const durations = getLogDurationsMs(log);
   const statusText = log.Status === "success" ? "成功" : "错误";
@@ -131,42 +151,37 @@ const LogCard = memo(({ log, onOpenDetail, onViewChatIO }: LogCardProps) => {
                 {statusText}
               </span>
             </div>
-            <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs sm:grid-cols-3 lg:grid-cols-5">
-              <div className="flex items-center gap-1.5">
-                <Timer className="size-3 text-sky-500" />
-                <span className="text-muted-foreground">首字</span>
-                <span className="tabular-nums text-foreground">
-                  {formatDurationValue(durations.first)}
-                </span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <Zap className="size-3 text-amber-500" />
-                <span className="text-muted-foreground">总耗时</span>
-                <span className="tabular-nums text-foreground">
-                  {formatDurationValue(durations.total)}
-                </span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <ArrowDown className="size-3 text-emerald-500" />
-                <span className="text-muted-foreground">输入</span>
-                <span className="tabular-nums text-foreground">
-                  {formatTokenValue(log.prompt_tokens)}
-                </span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <ArrowUp className="size-3 text-violet-500" />
-                <span className="text-muted-foreground">输出</span>
-                <span className="tabular-nums text-foreground">
-                  {formatTokenValue(log.completion_tokens)}
-                </span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <Coins className="size-3 text-emerald-600" />
-                <span className="text-muted-foreground">价格</span>
-                <span className="tabular-nums text-foreground">
-                  {formatCostValue(log.total_cost)}
-                </span>
-              </div>
+            <div className="mt-2 grid grid-cols-2 gap-2 text-xs sm:grid-cols-3 lg:grid-cols-6">
+              <MetricItem
+                icon={<Timer className="size-3 text-sky-500" />}
+                label="首字"
+                value={formatDurationValue(durations.first)}
+              />
+              <MetricItem
+                icon={<Zap className="size-3 text-amber-500" />}
+                label="总耗时"
+                value={formatDurationValue(durations.total)}
+              />
+              <MetricItem
+                icon={<ArrowDown className="size-3 text-emerald-500" />}
+                label="输入"
+                value={formatTokenValue(log.prompt_tokens)}
+              />
+              <MetricItem
+                icon={<ArrowUp className="size-3 text-violet-500" />}
+                label="输出"
+                value={formatTokenValue(log.completion_tokens)}
+              />
+              <MetricItem
+                icon={<Database className="size-3 text-cyan-600" />}
+                label="缓存"
+                value={formatTokenValue(getCachedTokensFromLog(log))}
+              />
+              <MetricItem
+                icon={<Coins className="size-3 text-emerald-600" />}
+                label="价格"
+                value={formatCostValue(log.total_cost)}
+              />
             </div>
           </div>
         </div>
@@ -212,6 +227,19 @@ const parsePromptTokensDetails = (value: ChatLog["prompt_tokens_details"]) => {
   }
 };
 
+const getCachedTokensFromLog = (log: ChatLog) => {
+  const raw = log as unknown as Record<string, unknown>;
+  const directValue = toFiniteNumber(raw.cached_tokens);
+  if (typeof directValue === "number" && directValue > 0) {
+    return directValue;
+  }
+  const details = parsePromptTokensDetails(log.prompt_tokens_details);
+  if (typeof details.cached_tokens === "number" && Number.isFinite(details.cached_tokens)) {
+    return details.cached_tokens;
+  }
+  return 0;
+};
+
 type ModelIconConfig = {
   test: RegExp;
   src: string;
@@ -227,6 +255,8 @@ const modelIconConfigs: ModelIconConfig[] = [
   { test: /openai|gpt|o1|o3|o4/i, src: openaiIcon, alt: "OpenAI" },
   { test: /claude|anthropic/i, src: claudeIcon, alt: "Claude" },
   { test: /gemini|google/i, src: geminiIcon, alt: "Gemini" },
+  { test: /glm|zhipu/i, src: glmIcon, alt: "GLM" },
+  { test: /kimi|moonshot/i, src: kimiIcon, alt: "Kimi" },
   { test: /deepseek/i, src: deepseekIcon, alt: "DeepSeek" },
 ];
 
@@ -606,13 +636,13 @@ export default function LogsPage() {
 
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 {(() => {
-                  const details = parsePromptTokensDetails(selectedLog.prompt_tokens_details);
+                  const cachedTokens = getCachedTokensFromLog(selectedLog);
                   return (
                     <>
                       <DetailCard label="输入" value={formatTokenValue(selectedLog.prompt_tokens)} />
                       <DetailCard label="输出" value={formatTokenValue(selectedLog.completion_tokens)} />
                       <DetailCard label="总计" value={formatTokenValue(selectedLog.total_tokens)} />
-                      <DetailCard label="缓存" value={formatTokenValue(details.cached_tokens)} />
+                      <DetailCard label="缓存" value={formatTokenValue(cachedTokens)} />
                       <DetailCard label="价格" value={formatCostValue(selectedLog.total_cost)} />
                     </>
                   );

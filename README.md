@@ -9,6 +9,7 @@
 - 多协议代理：OpenAI `/v1/chat/completions`、`/v1/responses`、`/v1/embeddings`，Anthropic `/v1/messages`，Gemini 原生接口
 - 多提供商/多模型：同一模型可挂载多个提供商模型，支持权重与能力标记
 - 统一管理：提供商、模型、模型关联、API Key、系统配置
+- Codex 官方订阅：OAuth 添加订阅、查看重置时间与可用模型
 - 请求日志：耗时/Token/费用统计与详情查看
 - 健康监控：提供商与模型健康状态可视化
 - 价格同步：按配置定时同步模型价格（仅同步已配置模型）
@@ -54,6 +55,12 @@ go run .
 - `LLMIO_SERVER_PORT`：服务端口（默认 `7070`）
 - `TRUSTED_PROXIES`：可信代理 IP/CIDR（反代部署时获取真实客户端 IP）
 - `LOG_LEVEL`：日志级别（debug/info/warn/error，默认 info）
+- `CODEX_SUBSCRIPTION_DIR`：Codex 订阅凭据目录（默认 `data/codex-auths`）
+- `CODEX_OAUTH_CLIENT_ID`：Codex OAuth Client ID（未设置时使用内置默认值）
+- `CODEX_OAUTH_REDIRECT_URL`：Codex OAuth 回调地址（默认 `http://localhost:1455/auth/callback`）
+- `CODEX_OAUTH_ENABLE_FORWARDER`：是否启用本地回调转发器（默认 true）
+- `CODEX_USAGE_URL`：查询 team 额度使用的接口地址（默认 `https://chatgpt.com/backend-api/wham/usage`）
+- `Codex token 自动刷新`：系统会按过期时间提前刷新（默认提前 5 天），并在请求时按需兜底刷新
 
 示例：
 ```env
@@ -118,6 +125,8 @@ WebUI 提供：
 - 模型管理（模型、价格显示）
 - 模型-提供商关联（权重、能力开关、Header 透传）
 - API Key 管理与用量统计
+- Codex 官方（已有订阅、添加订阅、重置时间、可用模型）
+- Codex Team 额度查询（请求额度、Token 额度、重置时间）
 - 请求日志与详细追踪
 - 健康监控与模型健康详情
 - 系统配置（全局代理 IP、价格同步）

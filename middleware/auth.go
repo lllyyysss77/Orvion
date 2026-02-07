@@ -53,7 +53,7 @@ func AuthOpenAI(adminToken string) gin.HandlerFunc {
 		if len(parts) == 2 && parts[0] == "Bearer" {
 			tokenString = parts[1]
 		}
-		checkAuthKey(c, tokenString, adminToken)
+		checkAuthKey(c, tokenString, adminToken, true)
 	}
 }
 
@@ -68,22 +68,14 @@ func AuthAnthropic(adminToken string) gin.HandlerFunc {
 				key = parts[1]
 			}
 		}
-		checkAuthKey(c, key, adminToken)
+		checkAuthKey(c, key, adminToken, true)
 	}
 }
 
-// 用于Gemini原生接口鉴权
-func AuthGemini(adminToken string) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		key := c.GetHeader("x-goog-api-key")
-		checkAuthKey(c, key, adminToken)
-	}
-}
-
-func checkAuthKey(c *gin.Context, key string, adminToken string) {
+func checkAuthKey(c *gin.Context, key string, adminToken string, allowAdminBypass bool) {
 	ctx := c.Request.Context()
 	// 如果系统中未配置Token 或者使用的是最高权限的token 则允许访问所有模型
-	if adminToken == "" || key == adminToken {
+	if allowAdminBypass && (adminToken == "" || key == adminToken) {
 		ctx = context.WithValue(ctx, consts.ContextKeyAllowAllModel, true)
 		c.Request = c.Request.WithContext(ctx)
 		return

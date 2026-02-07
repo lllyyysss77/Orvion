@@ -7,5 +7,6 @@ llmio
 webui/dist
 webui/node_modules
 .tmp/
+/data
 
 .DS_Store

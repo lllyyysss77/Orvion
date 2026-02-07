@@ -67,14 +67,14 @@ const isModelEnabled = (value?: number | null): boolean =>
 const normalizeProviderType = (raw: string): ProviderTypeKey | null => {
   const lower = (raw || "").trim().toLowerCase();
   if (!lower) return null;
-  if (lower === "codex") return "openai_res";
+  if (lower === "codex" || lower === "codex-auths") return "openai_res";
   if (providerTypeOrder.includes(lower as ProviderTypeKey)) {
     return lower as ProviderTypeKey;
   }
   return null;
 };
 
-const AUTH_KEY_PREFIX = "sk-github.com/racio/llmio-";
+const AUTH_KEY_PREFIXES = ["sk-github.com/racio/orvion-", "sk-github.com/racio/llmio-"];
 
 const formatFixedNumber = (value: number | null | undefined, digits = 2) => {
   if (value == null || !Number.isFinite(value)) {
@@ -83,11 +83,18 @@ const formatFixedNumber = (value: number | null | undefined, digits = 2) => {
   return value.toFixed(digits);
 };
 
-const formatMoney = (value: number | null | undefined, digits = 2) => {
+const formatMoney = (value: number | null | undefined, digits?: number) => {
   if (value == null || !Number.isFinite(value)) {
     return "--";
   }
-  return `$${value.toFixed(digits)}`;
+  if (typeof digits === "number") {
+    return `$${value.toFixed(digits)}`;
+  }
+  const abs = Math.abs(value);
+  if (abs === 0) return "$0";
+  if (abs >= 1) return `$${value.toFixed(2).replace(/\.?0+$/, "")}`;
+  if (abs >= 0.01) return `$${value.toFixed(4).replace(/\.?0+$/, "")}`;
+  return `$${value.toFixed(6).replace(/\.?0+$/, "")}`;
 };
 
 const formatDate = (value: string | null | undefined) => {
@@ -214,10 +221,14 @@ type RequestAmountCardProps = {
   amountValue: string;
   rangeLabel: string;
   rangeValue: string;
-  curveData: number[];
+  curvePoints: RequestAmountPointView[];
 };
 
-const requestAmountCurveData = [0, 2, 6, 4, 7, 3, 5, 2, 6, 4, 5, 8, 3, 6, 5, 7];
+type RequestAmountPointView = {
+  hour: number;
+  requests: number;
+  amount: number;
+};
 
 const buildAreaCurve = (data: number[], width: number, height: number) => {
   const points = buildCurvePoints(data, width, height);
@@ -259,14 +270,29 @@ const RequestAmountCard = memo(({
   amountValue,
   rangeLabel,
   rangeValue,
-  curveData,
+  curvePoints,
 }: RequestAmountCardProps) => {
   const chartWidth = 520;
   const chartHeight = 120;
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+  const curveData = useMemo(
+    () => curvePoints.map((point) => point.requests),
+    [curvePoints]
+  );
+  const chartPoints = useMemo(
+    () => buildCurvePoints(curveData, chartWidth, chartHeight),
+    [curveData, chartWidth, chartHeight]
+  );
   const chart = useMemo(
     () => buildAreaCurve(curveData, chartWidth, chartHeight),
     [curveData, chartWidth, chartHeight]
   );
+  const safeHoveredIndex = hoveredIndex == null || chartPoints.length === 0
+    ? null
+    : Math.max(0, Math.min(hoveredIndex, chartPoints.length - 1));
+  const hoveredPoint = safeHoveredIndex == null ? null : chartPoints[safeHoveredIndex];
+  const hoveredData = safeHoveredIndex == null ? null : curvePoints[safeHoveredIndex];
+  const tooltipLeft = hoveredPoint ? `${(hoveredPoint.x / chartWidth) * 100}%` : "0%";
 
   return (
     <Card className={`${cardHoverClass} gap-3 lg:col-span-2`}>
@@ -299,11 +325,52 @@ const RequestAmountCard = memo(({
             <span>16:00</span>
           </div>
           <div className="mt-2">
-            <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} className="h-28 w-full">
+            <svg
+              viewBox={`0 0 ${chartWidth} ${chartHeight}`}
+              className="h-28 w-full"
+              onMouseLeave={() => setHoveredIndex(null)}
+              onMouseMove={(event) => {
+                if (curvePoints.length <= 1) return;
+                const rect = event.currentTarget.getBoundingClientRect();
+                if (rect.width <= 0) return;
+                const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+                const index = Math.round(ratio * (curvePoints.length - 1));
+                setHoveredIndex(index);
+              }}
+            >
               <path d={chart.area} className="fill-emerald-200/60" />
               <path d={chart.line} className="stroke-emerald-600" fill="none" strokeWidth="2" />
+              {hoveredPoint && (
+                <>
+                  <line
+                    x1={hoveredPoint.x}
+                    y1={0}
+                    x2={hoveredPoint.x}
+                    y2={chartHeight}
+                    className="stroke-emerald-500/50"
+                    strokeDasharray="4 4"
+                  />
+                  <circle
+                    cx={hoveredPoint.x}
+                    cy={hoveredPoint.y}
+                    r="4"
+                    className="fill-emerald-600 stroke-card"
+                    strokeWidth="2"
+                  />
+                </>
+              )}
             </svg>
           </div>
+          {hoveredData && (
+            <div
+              className="pointer-events-none absolute top-7 z-10 -translate-x-1/2 rounded-lg border border-border/70 bg-card px-2 py-1 text-[11px] shadow"
+              style={{ left: tooltipLeft }}
+            >
+              <div className="text-muted-foreground">{hoveredData.hour.toString().padStart(2, "0")}:00</div>
+              <div className="font-semibold text-foreground">请求 {hoveredData.requests}</div>
+              <div className="font-semibold text-foreground">金额 ${formatAmountValue(hoveredData.amount)}</div>
+            </div>
+          )}
         </div>
       </CardContent>
     </Card>
@@ -380,7 +447,7 @@ const AuthKeyDashboard = ({ summary, errorMessage }: AuthKeyDashboardProps) => {
               </div>
               <div className="flex items-center justify-between text-[11px] text-muted-foreground">
                 <span>0</span>
-                <span>{formatMoney(costMax)}</span>
+                <span>∞</span>
               </div>
             </div>
           </CardContent>
@@ -528,7 +595,11 @@ const formatCompactValue = (value: number) => {
 
 const formatAmountValue = (value: number) => {
   if (!Number.isFinite(value)) return "0";
-  return value.toFixed(2).replace(/\.?0+$/, "");
+  const abs = Math.abs(value);
+  if (abs === 0) return "0";
+  if (abs >= 1) return value.toFixed(2).replace(/\.?0+$/, "");
+  if (abs >= 0.01) return value.toFixed(4).replace(/\.?0+$/, "");
+  return value.toFixed(6).replace(/\.?0+$/, "");
 };
 
 type HomeHeaderProps = {
@@ -681,7 +752,7 @@ export default function Home() {
   const load = useCallback(async () => {
     setLoading(true);
     const token = localStorage.getItem("authToken")?.trim() || "";
-    const isAuthKeyToken = token.startsWith(AUTH_KEY_PREFIX);
+    const isAuthKeyToken = AUTH_KEY_PREFIXES.some((prefix) => token.startsWith(prefix));
 
     if (isAuthKeyToken) {
       setAuthKeyMode(true);
@@ -702,9 +773,17 @@ export default function Home() {
     void load();
   }, [load]);
 
-  const requestCurveData = requestAmount.points.length > 0
-    ? requestAmount.points.map((point) => point.requests)
-    : requestAmountCurveData;
+  const requestCurvePoints: RequestAmountPointView[] = requestAmount.points.length > 0
+    ? requestAmount.points.map((point) => ({
+      hour: point.hour,
+      requests: point.requests,
+      amount: point.amount,
+    }))
+    : Array.from({ length: 24 }, (_, hour) => ({
+      hour,
+      requests: 0,
+      amount: 0,
+    }));
   const requestValue = formatCompactValue(requestAmount.total_requests);
   const amountValue = formatAmountValue(requestAmount.total_amount);
   const rangeValue = requestAmount.range === "today" ? "今天" : requestAmount.range;
@@ -805,7 +884,7 @@ export default function Home() {
                 amountValue={amountValue}
                 rangeLabel="时间范围"
                 rangeValue={rangeValue}
-                curveData={requestCurveData}
+                curvePoints={requestCurvePoints}
               />
 
               <Card className={`${cardHoverClass} gap-3 lg:col-span-2`}>

@@ -1,6 +1,7 @@
-package handler
+package admin
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -14,6 +15,7 @@ import (
 	"github.com/racio/orvion/consts"
 	"github.com/racio/orvion/models"
 	"github.com/racio/orvion/providers"
+	"github.com/racio/orvion/service/subscription"
 	"github.com/samber/lo"
 	"gorm.io/gorm"
 )
@@ -116,17 +118,85 @@ func GetProviderModels(c *gin.Context) {
 		common.InternalServerError(c, err.Error())
 		return
 	}
-	chatModel, err := providers.New(provider.Type, provider.Config)
-	if err != nil {
-		common.InternalServerError(c, "Failed to get models: "+err.Error())
+
+	switch provider.Type {
+	case consts.StyleIFlow, consts.StyleIFlowAuths:
+		modelList, modelErr := listIFlowProviderModels(c.Request.Context())
+		if modelErr != nil {
+			common.NotFound(c, "Failed to get models: "+modelErr.Error())
+			return
+		}
+		common.Success(c, modelList)
 		return
-	}
-	models, err := chatModel.Models(c.Request.Context())
-	if err != nil {
-		common.NotFound(c, "Failed to get models: "+err.Error())
+	case consts.StyleCodexAuths:
+		modelList, modelErr := listCodexProviderModels(c.Request.Context())
+		if modelErr != nil {
+			common.NotFound(c, "Failed to get models: "+modelErr.Error())
+			return
+		}
+		common.Success(c, modelList)
 		return
+	default:
+		chatModel, modelErr := providers.New(provider.Type, provider.Config)
+		if modelErr != nil {
+			common.InternalServerError(c, "Failed to get models: "+modelErr.Error())
+			return
+		}
+		modelList, modelErr := chatModel.Models(c.Request.Context())
+		if modelErr != nil {
+			common.NotFound(c, "Failed to get models: "+modelErr.Error())
+			return
+		}
+		common.Success(c, modelList)
 	}
-	common.Success(c, models)
+}
+
+func listIFlowProviderModels(ctx context.Context) ([]providers.Model, error) {
+	subscriptions, err := subscription.GetIFlowSubscriptionManager().ListSubscriptions()
+	if err != nil {
+		return nil, err
+	}
+	if len(subscriptions) == 0 {
+		return nil, subscription.ErrIFlowSubscriptionNotFound
+	}
+	modelList, err := subscription.GetIFlowSubscriptionManager().ListAvailableModels(ctx, subscriptions[0].ID)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]providers.Model, 0, len(modelList))
+	for _, model := range modelList {
+		result = append(result, providers.Model{
+			ID:      model.ID,
+			Object:  "model",
+			Created: model.Created,
+			OwnedBy: model.OwnedBy,
+		})
+	}
+	return result, nil
+}
+
+func listCodexProviderModels(ctx context.Context) ([]providers.Model, error) {
+	subscriptions, err := subscription.GetCodexSubscriptionManager().ListSubscriptions()
+	if err != nil {
+		return nil, err
+	}
+	if len(subscriptions) == 0 {
+		return nil, subscription.ErrCodexSubscriptionNotFound
+	}
+	modelList, err := subscription.GetCodexSubscriptionManager().ListAvailableModels(ctx, subscriptions[0].ID)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]providers.Model, 0, len(modelList))
+	for _, model := range modelList {
+		result = append(result, providers.Model{
+			ID:      model.ID,
+			Object:  model.Object,
+			Created: model.Created,
+			OwnedBy: model.OwnedBy,
+		})
+	}
+	return result, nil
 }
 
 // CreateProvider 创建提供商
@@ -524,38 +594,70 @@ func DeleteModel(c *gin.Context) {
 }
 
 type ProviderTemplate struct {
-	Type     string `json:"type"`
-	Template string `json:"template"`
+	Type        string `json:"type"`
+	DisplayName string `json:"display_name,omitempty"`
+	Category    string `json:"category,omitempty"` // apikey | auth
+	AuthMode    bool   `json:"auth_mode,omitempty"`
+	HideConfig  bool   `json:"hide_config,omitempty"`
+	Template    string `json:"template"`
 }
 
 var template = []ProviderTemplate{
 	{
-		Type: "openai",
+		Type:        "openai",
+		DisplayName: "openai",
+		Category:    "apikey",
 		Template: `{
 			"base_url": "https://api.openai.com/v1",
 			"api_key": "YOUR_API_KEY"
 		}`,
 	},
 	{
-		Type: "gemini",
+		Type:        "anthropic",
+		DisplayName: "anthropic",
+		Category:    "apikey",
+		Template: `{
+			"base_url": "https://api.anthropic.com/v1",
+			"api_key": "YOUR_API_KEY",
+			"version": "2023-06-01"
+		}`,
+	},
+	{
+		Type:        "codex",
+		DisplayName: "codex",
+		Category:    "apikey",
+		Template: `{
+			"base_url": "https://api.openai.com/v1",
+			"api_key": "YOUR_API_KEY"
+		}`,
+	},
+	{
+		Type:        "gemini",
+		DisplayName: "gemini",
+		Category:    "apikey",
 		Template: `{
 			"base_url": "https://generativelanguage.googleapis.com/v1beta",
 			"api_key": "YOUR_GEMINI_API_KEY"
 		}`,
 	},
 	{
-		Type: "codex",
+		Type:        "iflow",
+		DisplayName: "iflow",
+		Category:    "auth",
+		AuthMode:    true,
+		HideConfig:  true,
 		Template: `{
-			"base_url": "https://api.openai.com/v1",
-			"api_key": "YOUR_API_KEY"
+			"auth_mode": "iflow"
 		}`,
 	},
 	{
-		Type: "anthropic",
+		Type:        "codex-auths",
+		DisplayName: "codex",
+		Category:    "auth",
+		AuthMode:    true,
+		HideConfig:  true,
 		Template: `{
-			"base_url": "https://api.anthropic.com/v1",
-			"api_key": "YOUR_API_KEY",
-			"version": "2023-06-01"
+			"auth_mode": "codex"
 		}`,
 	},
 }

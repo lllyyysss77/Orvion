@@ -73,6 +73,8 @@ import minimaxIcon from "@/assets/modelIcon/minimax.svg";
 import openaiIcon from "@/assets/modelIcon/openai.svg";
 import claudeIcon from "@/assets/modelIcon/claude.svg";
 import geminiIcon from "@/assets/modelIcon/gemini.svg";
+import glmIcon from "@/assets/modelIcon/glm.svg";
+import kimiIcon from "@/assets/modelIcon/kimi.svg";
 
 type ModelIconConfig = {
   test: RegExp;
@@ -89,6 +91,8 @@ const modelIconConfigs: ModelIconConfig[] = [
   { test: /openai|gpt|o1|o3|o4/i, src: openaiIcon, alt: "OpenAI" },
   { test: /claude|anthropic/i, src: claudeIcon, alt: "Claude" },
   { test: /gemini|google/i, src: geminiIcon, alt: "Gemini" },
+  { test: /glm|zhipu/i, src: glmIcon, alt: "GLM" },
+  { test: /kimi|moonshot/i, src: kimiIcon, alt: "Kimi" },
 ];
 
 const ModelIcon = ({ name }: { name: string }) => {

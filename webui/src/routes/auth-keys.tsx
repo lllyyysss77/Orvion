@@ -58,6 +58,7 @@ import Loading from "@/components/loading";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { Calendar } from "@/components/ui/calendar";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   getAuthKeys,
   createAuthKey,
@@ -106,6 +107,49 @@ const MobileInfoItem = ({ label, value, mono = false }: MobileInfoItemProps) => 
     </div>
   </div>
 );
+
+const maskApiKey = (key: string): string => {
+  const trimmed = (key || "").trim();
+  if (!trimmed) return "***...****";
+  const suffix = trimmed.slice(-4).padStart(4, "*");
+  return `***...${suffix}`;
+};
+
+const formatCost = (value: number | null | undefined): string => {
+  const amount = typeof value === "number" && Number.isFinite(value) ? value : 0;
+  return `$${amount.toFixed(6).replace(/\.?0+$/, "")}`;
+};
+
+const renderModelScope = (allowAll: boolean, models: string[] | null) => {
+  if (allowAll) {
+    return <Badge>全部模型</Badge>;
+  }
+
+  const modelList = (models ?? []).filter((model) => model && model.trim() !== "");
+  if (modelList.length === 0) {
+    return <Badge variant="outline">部分模型</Badge>;
+  }
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Badge variant="outline" className="cursor-help">
+          部分模型
+        </Badge>
+      </TooltipTrigger>
+      <TooltipContent side="top" align="start" className="max-w-[360px] p-2.5">
+        <div className="text-[11px] font-semibold mb-1">可用模型</div>
+        <div className="max-h-52 overflow-y-auto space-y-0.5">
+          {modelList.map((model) => (
+            <div key={model} className="font-mono text-[11px] leading-5">
+              {model}
+            </div>
+          ))}
+        </div>
+      </TooltipContent>
+    </Tooltip>
+  );
+};
 
 
 export default function AuthKeysPage() {
@@ -411,6 +455,7 @@ export default function AuthKeysPage() {
                         <TableHead>使用范围</TableHead>
                         <TableHead>有效期至</TableHead>
                         <TableHead>使用次数</TableHead>
+                        <TableHead>已消耗金额</TableHead>
                         <TableHead>最后使用时间</TableHead>
                         <TableHead>状态</TableHead>
                         <TableHead>操作</TableHead>
@@ -418,14 +463,10 @@ export default function AuthKeysPage() {
                     </TableHeader>
                     <TableBody>
                       {authKeys.map((item) => {
-                        const modelsToShow = item.Models ?? [];
-                        const hasMoreModels = modelsToShow.length > 3;
                         const expired = item.ExpiresAt ? new Date(item.ExpiresAt) < new Date() : false;
                         const toggleDisabled = toggleLoadingId === item.ID;
                         const isKeyVisible = Boolean(revealedKeys[item.ID]);
-                        const lastSix = item.Key.slice(-6);
-                        const hiddenLength = Math.max(0, item.Key.length - 6);
-                        const maskedKey = `${"*".repeat(hiddenLength)}${lastSix}`;
+                        const maskedKey = maskApiKey(item.Key);
                         const displayKey = isKeyVisible ? item.Key : maskedKey;
                         return (
                           <TableRow key={item.ID}>
@@ -457,20 +498,7 @@ export default function AuthKeysPage() {
                               </div>
                             </TableCell>
                             <TableCell>
-                              {item.AllowAll ? (
-                                <Badge>全部模型</Badge>
-                              ) : (
-                                <div>
-                                  {modelsToShow.slice(0, 3).map((model) => (
-                                    <Badge key={model} variant="outline">
-                                      {model}
-                                    </Badge>
-                                  ))}
-                                  {hasMoreModels && (
-                                    <Badge variant="outline">+{modelsToShow.length - 3}</Badge>
-                                  )}
-                                </div>
-                              )}
+                              {renderModelScope(item.AllowAll, item.Models)}
                             </TableCell>
                             <TableCell>
                               <span className={cn(
@@ -484,6 +512,9 @@ export default function AuthKeysPage() {
                               <div className="flex flex-col">
                                 <span>{item.UsageCount}</span>
                               </div>
+                            </TableCell>
+                            <TableCell>
+                              <span className="font-mono text-sm">{formatCost(item.TotalCost)}</span>
                             </TableCell>
                             <TableCell>
                               {item.LastUsedAt ? new Date(item.LastUsedAt).toLocaleString() : "未使用"}
@@ -521,14 +552,10 @@ export default function AuthKeysPage() {
               </div>
               <div className="sm:hidden flex-1 min-h-0 overflow-y-auto px-2 py-3 divide-y divide-border">
                 {authKeys.map((item) => {
-                  const modelsToShow = item.Models ?? [];
-                  const hasMoreModels = modelsToShow.length > 3;
                   const expired = item.ExpiresAt ? new Date(item.ExpiresAt) < new Date() : false;
                   const toggleDisabled = toggleLoadingId === item.ID;
                   const isKeyVisible = Boolean(revealedKeys[item.ID]);
-                  const lastSix = item.Key.slice(-6);
-                  const hiddenLength = Math.max(0, item.Key.length - 6);
-                  const maskedKey = `${"*".repeat(hiddenLength)}${lastSix}`;
+                  const maskedKey = maskApiKey(item.Key);
                   const displayKey = isKeyVisible ? item.Key : maskedKey;
 
                   return (
@@ -575,7 +602,7 @@ export default function AuthKeysPage() {
                       <div className="grid grid-cols-2 gap-3 text-xs">
                         <MobileInfoItem
                           label="使用范围"
-                          value={item.AllowAll ? <Badge>全部模型</Badge> : <Badge variant="outline">指定模型</Badge>}
+                          value={renderModelScope(item.AllowAll, item.Models)}
                         />
                         <MobileInfoItem
                           label="有效期至"
@@ -586,18 +613,9 @@ export default function AuthKeysPage() {
                           }
                         />
                         <MobileInfoItem label="使用次数" value={item.UsageCount} />
+                        <MobileInfoItem label="已消耗金额" value={formatCost(item.TotalCost)} />
                         <MobileInfoItem label="最后使用" value={item.LastUsedAt ? new Date(item.LastUsedAt).toLocaleString() : "未使用"} />
                       </div>
-                      {!item.AllowAll && modelsToShow.length > 0 && (
-                        <div className="flex flex-wrap gap-1.5">
-                          {modelsToShow.slice(0, 3).map((model) => (
-                            <Badge key={model} variant="outline">
-                              {model}
-                            </Badge>
-                          ))}
-                          {hasMoreModels && <Badge variant="outline">+{modelsToShow.length - 3}</Badge>}
-                        </div>
-                      )}
                       <div className="flex items-center justify-between rounded-md border bg-muted/30 px-3 py-2">
                         <p className="text-xs text-muted-foreground">启用状态</p>
                         <div className="flex items-center gap-2">

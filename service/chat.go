@@ -1,10 +1,7 @@
 package service
 
 import (
-	"bytes"
-	"compress/gzip"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,63 +10,17 @@ import (
 	"net/http"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
-	"github.com/racio/orvion/balancers"
 	"github.com/racio/orvion/consts"
 	"github.com/racio/orvion/models"
 	"github.com/racio/orvion/pkg"
 	"github.com/racio/orvion/providers"
+	runtimesvc "github.com/racio/orvion/service/runtime"
+	"github.com/racio/orvion/service/subscription"
 	"github.com/samber/lo"
 	"gorm.io/gorm"
 )
-
-func safeBodyTextForLog(res *http.Response, body []byte) string {
-	if len(body) == 0 {
-		return ""
-	}
-
-	decoded := body
-	decodedLabel := ""
-
-	contentEncoding := strings.ToLower(strings.TrimSpace(res.Header.Get("Content-Encoding")))
-	isGzip := contentEncoding == "gzip" || (len(body) >= 2 && body[0] == 0x1f && body[1] == 0x8b)
-	if isGzip {
-		if zr, err := gzip.NewReader(bytes.NewReader(body)); err == nil {
-			if b, err := io.ReadAll(zr); err == nil {
-				decoded = b
-				decodedLabel = " (gzip 解压后)"
-			}
-			_ = zr.Close()
-		}
-	}
-
-	const maxBytes = 4096
-	truncated := false
-	totalBytes := len(decoded)
-	if totalBytes > maxBytes {
-		decoded = decoded[:maxBytes]
-		truncated = true
-	}
-
-	if utf8.Valid(decoded) {
-		text := string(decoded)
-		if truncated {
-			return fmt.Sprintf("%s%s...(已截断，总计 %d 字节)", text, decodedLabel, totalBytes)
-		}
-		return text + decodedLabel
-	}
-
-	// 非 UTF-8 内容：用 base64 保存（避免 PostgreSQL UTF8 编码错误）
-	b64 := base64.StdEncoding.EncodeToString(decoded)
-	if truncated {
-		return fmt.Sprintf("base64%s:%s...(已截断，总计 %d 字节)", decodedLabel, b64, totalBytes)
-	}
-	return fmt.Sprintf("base64%s:%s", decodedLabel, b64)
-}
-
-const maxLogBodyBytes = 8 * 1024
 
 // BalanceChatWithLimiter 带限流功能的聊天负载均衡
 func BalanceChatWithLimiter(c *gin.Context, start time.Time, style string, before Before, providersWithMeta *ProvidersWithMeta, reqMeta models.ReqMeta) (*http.Response, *models.ChatLog, error) {
@@ -91,7 +42,7 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, before B
 	providerMap := providersWithMeta.ProviderMap
 
 	var proxyIP string
-	if cfg, ok := loadAnthropicProxyIPConfig(ctx); ok {
+	if cfg, ok := runtimesvc.LoadAnthropicProxyIPConfig(ctx); ok {
 		proxyIP = cfg.ProxyIP
 	}
 
@@ -101,21 +52,8 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, before B
 
 	go RecordRetryLog(context.Background(), retryLog)
 
-	// 选择负载均衡策略
-	var balancer balancers.Balancer
-	switch providersWithMeta.Strategy {
-	case consts.BalancerLottery:
-		balancer = balancers.NewLottery(providersWithMeta.WeightItems)
-	case consts.BalancerRotor:
-		balancer = balancers.NewRotor(providersWithMeta.WeightItems)
-	default:
-		balancer = balancers.NewLottery(providersWithMeta.WeightItems)
-	}
-
-	// 是否开启熔断
-	if providersWithMeta.Breaker {
-		balancer = balancers.BalancerWrapperBreaker(balancer)
-	}
+	// 选择负载均衡策略（含可选熔断包装）
+	balancer := runtimesvc.NewBalancer(providersWithMeta.Strategy, providersWithMeta.Breaker, providersWithMeta.WeightItems)
 
 	// 设置请求超时
 	responseHeaderTimeout := time.Second * time.Duration(providersWithMeta.TimeOut)
@@ -131,17 +69,6 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, before B
 	defer timer.Stop()
 	// 同一 provider 失败时先重试 N 次，再切换到其它 provider
 	const perProviderMaxAttempts = 2
-
-	isRetryableStatus := func(code int) bool {
-		// 可重试：限流/超时/服务端错误
-		if code == http.StatusTooManyRequests || code == http.StatusRequestTimeout {
-			return true
-		}
-		if code >= 500 && code <= 599 {
-			return true
-		}
-		return false
-	}
 
 	attempt := 0
 	for attempt < providersWithMeta.MaxRetry {
@@ -179,11 +106,6 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, before B
 			// 	}
 			// }
 
-			chatModel, err := providers.New(provider.Type, provider.Config)
-			if err != nil {
-				return nil, nil, err
-			}
-
 			slog.Info("using provider", "provider", provider.Name, "model", modelWithProvider.ProviderModel)
 
 			// 根据请求原始请求头 是否透传请求头 自定义请求头 构建新的请求头
@@ -195,7 +117,7 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, before B
 					slog.Error("parse custom headers error", "error", err)
 				}
 			}
-			header := BuildHeaders(reqMeta.Header, withHeader, customHeaders, before.Stream)
+			header := runtimesvc.BuildHeaders(reqMeta.Header, withHeader, customHeaders, before.Stream)
 			if proxyIP != "" {
 				header.Set("X-Forwarded-For", proxyIP)
 				header.Set("X-Real-IP", proxyIP)
@@ -227,6 +149,23 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, before B
 					ProxyTimeMs:   int(time.Since(start).Milliseconds()),
 				}
 
+				resolvedConfig, err := subscription.ResolveProviderConfigForRequest(provider.ID, provider.Type, provider.Config)
+				if err != nil {
+					retryLog <- log.WithError(fmt.Errorf("resolve provider config error: %w", err))
+					// 凭据不可用时切换 provider，避免在同一 provider 无意义重试。
+					lastStatus = 0
+					lastWas429 = false
+					break
+				}
+
+				chatModel, err := providers.New(provider.Type, resolvedConfig)
+				if err != nil {
+					retryLog <- log.WithError(err)
+					lastStatus = 0
+					lastWas429 = false
+					break
+				}
+
 				req, err := chatModel.BuildReq(ctx, header, modelWithProvider.ProviderModel, before.raw)
 				if err != nil {
 					retryLog <- log.WithError(err)
@@ -249,16 +188,16 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, before B
 					lastStatus = res.StatusCode
 					lastWas429 = res.StatusCode == http.StatusTooManyRequests
 
-					limitedBody, readErr := io.ReadAll(io.LimitReader(res.Body, maxLogBodyBytes))
+					limitedBody, readErr := io.ReadAll(io.LimitReader(res.Body, runtimesvc.MaxLogBodyBytes))
 					if readErr != nil {
 						slog.Error("read body error", "error", readErr)
 					}
 					_, _ = io.Copy(io.Discard, res.Body)
-					retryLog <- log.WithError(fmt.Errorf("status: %d, body: %s", res.StatusCode, safeBodyTextForLog(res, limitedBody)))
+					retryLog <- log.WithError(fmt.Errorf("status: %d, body: %s", res.StatusCode, runtimesvc.SafeBodyTextForLog(res, limitedBody)))
 					_ = res.Body.Close()
 
 					// 非可重试的 4xx：直接切换（不浪费同 provider 的 3 次机会）
-					if !isRetryableStatus(res.StatusCode) {
+					if !runtimesvc.IsRetryableStatus(res.StatusCode) {
 						break
 					}
 					// 429/5xx/408：继续重试同一 provider
@@ -302,7 +241,7 @@ func RecordRetryLog(ctx context.Context, retryLog chan models.ChatLog) {
 	}
 }
 
-func RecordLog(ctx context.Context, reqStart time.Time, reader io.ReadCloser, processer Processer, logId uint, before Before, ioLog bool, style string) {
+func RecordLog(ctx context.Context, reqStart time.Time, reader io.ReadCloser, processer Processer, logId uint, authKeyID uint, before Before, ioLog bool, style string) {
 	recordFunc := func() error {
 		defer reader.Close()
 		if ioLog {
@@ -318,21 +257,28 @@ func RecordLog(ctx context.Context, reqStart time.Time, reader io.ReadCloser, pr
 			return err
 		}
 		if log.Usage.PromptTokens == 0 {
-			log.Usage.PromptTokens = estimatePromptTokensFromInput(style, before.raw)
+			log.Usage.PromptTokens = estimatePromptTokensFromInputWithModel(style, before.Model, before.raw)
 		}
 		if log.Size == 0 {
-			log.Size = estimateOutputSize(output)
+			log.Size = runtimesvc.EstimateOutputSize(output)
 		}
 		if log.Usage.PromptTokens == 0 && log.Usage.CompletionTokens == 0 && log.Usage.TotalTokens == 0 {
 			fallback := estimateUsageFromIO(style, before.Model, before.raw, output)
-			log.Usage = mergeUsage(log.Usage, fallback)
+			log.Usage = runtimesvc.MergeUsage(log.Usage, fallback)
 		}
 		if log.Usage.TotalTokens == 0 {
 			log.Usage.TotalTokens = log.Usage.PromptTokens + log.Usage.CompletionTokens
 		}
-		log.TotalCost = calculateTotalCost(ctx, before.Model, log.Usage)
-		if log.AuthKeyID > 0 && log.TotalCost > 0 {
-			KeyCostUpdate(log.AuthKeyID, log.TotalCost, time.Now())
+		log.TotalCost = runtimesvc.CalculateTotalCost(ctx, before.Model, log.Usage)
+		effectiveAuthKeyID := log.AuthKeyID
+		if effectiveAuthKeyID == 0 {
+			effectiveAuthKeyID = authKeyID
+		}
+		if log.AuthKeyID == 0 && authKeyID > 0 {
+			log.AuthKeyID = authKeyID
+		}
+		if effectiveAuthKeyID > 0 && log.TotalCost > 0 {
+			KeyCostUpdate(effectiveAuthKeyID, log.TotalCost, time.Now())
 		}
 		if _, err := gorm.G[models.ChatLog](models.DB).Where("id = ?", logId).Updates(ctx, *log); err != nil {
 			return err
@@ -356,39 +302,6 @@ func RecordLog(ctx context.Context, reqStart time.Time, reader io.ReadCloser, pr
 	if err := recordFunc(); err != nil {
 		slog.Error("record log error", "error", err)
 	}
-}
-
-func mergeUsage(current models.Usage, fallback models.Usage) models.Usage {
-	if current.PromptTokens == 0 {
-		current.PromptTokens = fallback.PromptTokens
-	}
-	if current.CompletionTokens == 0 {
-		current.CompletionTokens = fallback.CompletionTokens
-	}
-	if current.TotalTokens == 0 {
-		current.TotalTokens = fallback.TotalTokens
-	}
-	if current.PromptTokensDetails == "" && fallback.PromptTokensDetails != "" {
-		current.PromptTokensDetails = fallback.PromptTokensDetails
-	}
-	return current
-}
-
-func estimateOutputSize(output *models.OutputUnion) int {
-	if output == nil {
-		return 0
-	}
-	if output.OfString != "" {
-		return len(output.OfString)
-	}
-	if len(output.OfStringArray) == 0 {
-		return 0
-	}
-	size := 0
-	for _, item := range output.OfStringArray {
-		size += len(item)
-	}
-	return size
 }
 
 func SaveChatLog(ctx context.Context, log models.ChatLog) (uint, error) {
@@ -422,101 +335,7 @@ func SaveChatLog(ctx context.Context, log models.ChatLog) (uint, error) {
 }
 
 func BuildHeaders(source http.Header, withHeader bool, customHeaders map[string]string, stream bool) http.Header {
-	header := http.Header{}
-	if withHeader {
-		header = source.Clone()
-	}
-
-	if stream {
-		header.Set("X-Accel-Buffering", "no")
-	}
-
-	header.Del("Authorization")
-	header.Del("X-Api-Key")
-	header.Del("X-Goog-Api-Key")
-
-	for key, value := range customHeaders {
-		header.Set(key, value)
-	}
-
-	return header
-}
-
-func calculateTotalCost(ctx context.Context, modelName string, usage models.Usage) float64 {
-	modelName = strings.ToLower(strings.TrimSpace(modelName))
-	if modelName == "" {
-		return 0
-	}
-	price, err := loadModelPrice(ctx, modelName)
-	if err != nil {
-		if !errors.Is(err, gorm.ErrRecordNotFound) {
-			slog.Warn("获取模型价格失败", "model", modelName, "error", err)
-		}
-		return 0
-	}
-
-	cachedTokens := parseCachedTokens(usage.PromptTokensDetails)
-	if cachedTokens > usage.PromptTokens {
-		cachedTokens = usage.PromptTokens
-	}
-	billableInput := usage.PromptTokens - cachedTokens
-
-	const perMillion = 1_000_000.0
-	total := float64(billableInput)/perMillion*price.Input +
-		float64(usage.CompletionTokens)/perMillion*price.Output +
-		float64(cachedTokens)/perMillion*price.CacheRead
-
-	if total < 0 {
-		return 0
-	}
-	return total
-}
-
-func loadModelPrice(ctx context.Context, modelName string) (models.ModelPrice, error) {
-	price, err := gorm.G[models.ModelPrice](models.DB).Where("model_id = ?", modelName).First(ctx)
-	return price, err
-}
-
-func parseCachedTokens(details string) int64 {
-	raw := strings.TrimSpace(details)
-	if raw == "" {
-		return 0
-	}
-	var parsed models.PromptTokensDetails
-	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
-		return 0
-	}
-	if parsed.CachedTokens < 0 {
-		return 0
-	}
-	return parsed.CachedTokens
-}
-
-func loadAnthropicProxyIPConfig(ctx context.Context) (models.AnthropicProxyIPConfig, bool) {
-	config, err := gorm.G[models.Config](models.DB).
-		Where("key = ?", models.KeyAnthropicProxyIP).
-		First(ctx)
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return models.AnthropicProxyIPConfig{}, false
-		}
-		slog.Error("读取全局代理 IP 配置失败", "error", err)
-		return models.AnthropicProxyIPConfig{}, false
-	}
-	raw := strings.TrimSpace(config.Value)
-	if raw == "" {
-		return models.AnthropicProxyIPConfig{}, false
-	}
-	var cfg models.AnthropicProxyIPConfig
-	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
-		slog.Error("解析全局代理 IP 配置失败", "error", err)
-		return models.AnthropicProxyIPConfig{}, false
-	}
-	cfg.ProxyIP = strings.TrimSpace(cfg.ProxyIP)
-	if !cfg.Enabled || cfg.ProxyIP == "" {
-		return models.AnthropicProxyIPConfig{}, false
-	}
-	return cfg, true
+	return runtimesvc.BuildHeaders(source, withHeader, customHeaders, stream)
 }
 
 type ProvidersWithMeta struct {
@@ -584,10 +403,19 @@ func ProvidersWithMetaBymodelsName(ctx context.Context, providerType string, log
 
 	modelWithProviderMap := lo.KeyBy(modelWithProviders, func(mp models.ModelWithProvider) uint { return mp.ID })
 
-	providers, err := gorm.G[models.Provider](models.DB).
-		Where("id IN ?", lo.Map(modelWithProviders, func(mp models.ModelWithProvider, _ int) uint { return mp.ProviderID })).
-		Where("type = ?", providerType).
-		Find(ctx)
+	providerQuery := gorm.G[models.Provider](models.DB).
+		Where("id IN ?", lo.Map(modelWithProviders, func(mp models.ModelWithProvider, _ int) uint { return mp.ProviderID }))
+	if providerType == consts.StyleOpenAIRes {
+		// Codex 请求允许命中 codex 与 codex-auths 两类 provider。
+		providerQuery = providerQuery.Where("type IN ?", []string{consts.StyleOpenAIRes, consts.StyleCodexAuths})
+	} else if providerType == consts.StyleOpenAI {
+		// OpenAI 请求允许命中 openai 与 iflow/iflow-auths 三类 provider。
+		providerQuery = providerQuery.Where("type IN ?", []string{consts.StyleOpenAI, consts.StyleIFlow, consts.StyleIFlowAuths})
+	} else {
+		providerQuery = providerQuery.Where("type = ?", providerType)
+	}
+
+	providers, err := providerQuery.Find(ctx)
 	if err != nil {
 		return nil, err
 	}

@@ -90,11 +90,11 @@ func backgroundFlush() {
 		ctx := context.Background()
 		for keyID, item := range pending {
 			updates := map[string]any{
-				"usage_count":  gorm.Expr("usage_count + ?", item.Count),
+				"usage_count":  gorm.Expr("COALESCE(usage_count, 0) + ?", item.Count),
 				"last_used_at": item.UsedAt,
 			}
 			if item.Cost != 0 {
-				updates["total_cost"] = gorm.Expr("total_cost + ?", item.Cost)
+				updates["total_cost"] = gorm.Expr("COALESCE(total_cost, 0) + ?", item.Cost)
 			}
 			if err := models.DB.Model(&models.AuthKey{}).WithContext(ctx).Where("id = ?", keyID).Updates(updates).Error; err != nil {
 				slog.Error("Failed to update auth key usage count", "error", err)

@@ -5,8 +5,14 @@ type Style = string
 const (
 	StyleOpenAI    Style = "openai"
 	StyleOpenAIRes Style = "codex"
-	StyleAnthropic Style = "anthropic"
-	StyleGemini    Style = "gemini"
+	// StyleIFlow 统一 iFlow Auth 类型（凭据来自订阅池，不要求手填 api_key/base_url）。
+	StyleIFlow Style = "iflow"
+	// StyleCodexAuths 专用于 Codex OAuth 订阅凭据（auth_files）轮询注入。
+	StyleCodexAuths Style = "codex-auths"
+	// StyleIFlowAuths 专用于 iFlow 订阅凭据（auth_files）轮询注入。
+	StyleIFlowAuths Style = "iflow-auths"
+	StyleAnthropic  Style = "anthropic"
+	StyleGemini     Style = "gemini"
 
 	// StyleOpenAIEmbeddings Embeddings：用于在日志中区分请求类型（提供商类型仍沿用 openai / gemini）
 	StyleOpenAIEmbeddings Style = "openai-embeddings"

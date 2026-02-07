@@ -11,6 +11,8 @@ import {
   FaCog,
   FaKey,
   FaHeartbeat,
+  FaCrown,
+  FaUserShield,
 } from "react-icons/fa";
 import { getVersion, checkLatestRelease, type GitHubRelease } from "@/lib/api";
 import {
@@ -28,7 +30,9 @@ export default function Layout() {
   const navigate = useNavigate();
   const location = useLocation(); // 用于高亮当前选中的菜单
   const token = localStorage.getItem("authToken")?.trim() || "";
-  const isAuthKeyToken = token.startsWith("sk-github.com/racio/llmio-");
+  const isAuthKeyToken = ["sk-github.com/racio/orvion-", "sk-github.com/racio/llmio-"].some((prefix) =>
+    token.startsWith(prefix)
+  );
 
   useEffect(() => {
     if (isAuthKeyToken) {
@@ -95,12 +99,19 @@ export default function Layout() {
         { to: "/providers", label: "提供商管理", icon: <FaCloud /> },
         { to: "/models", label: "模型管理", icon: <FaRobot /> },
         { to: "/logs", label: "请求日志", icon: <FaFileAlt /> },
-        { to: "/auth-keys", label: "API Key 管理", icon: <FaKey /> },
       ],
     },
     {
-      title: "03 系统",
+      title: "03 Auth订阅",
       items: [
+        { to: "/codex-official", label: "Codex 官方", icon: <FaCrown /> },
+        { to: "/iflow-auth", label: "iFlow 认证", icon: <FaUserShield /> },
+      ],
+    },
+    {
+      title: "04 系统",
+      items: [
+        { to: "/auth-keys", label: "API Key 管理", icon: <FaKey /> },
         { to: "/config", label: "系统配置", icon: <FaCog /> },
       ],
     },
@@ -156,10 +167,6 @@ export default function Layout() {
         {/* 左侧侧边栏 Sidebar */}
         {!isAuthKeyToken && (
           <aside className="w-60 shrink-0 self-start rounded-3xl border border-sidebar-border bg-sidebar/90 p-4 shadow-[0_18px_40px_rgba(0,0,0,0.06)]">
-            <div className="mb-6 rounded-2xl bg-sidebar-accent/80 px-3 py-3">
-              <div className="text-xs font-semibold text-muted-foreground">Orvion</div>
-              <div className="text-[11px] text-muted-foreground">多提供商网关</div>
-            </div>
             <nav className="space-y-6">
               {navSections.map((section) => (
                 <div key={section.title} className="space-y-2">

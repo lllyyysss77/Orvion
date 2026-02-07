@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -20,19 +21,6 @@ const (
 	defaultPriceSyncIntervalMinutes = 1440
 	defaultPriceSyncURL             = "https://models.dev/api.json"
 )
-
-var priceProviders = []string{
-	"openai",
-	"anthropic",
-	"google",
-	"deepseek",
-	"xai",
-	"alibaba",
-	"zhipuai",
-	"minimax",
-	"moonshotai",
-	"v0",
-}
 
 var modelAliases = map[string][]string{}
 
@@ -116,14 +104,6 @@ func loadPriceSyncConfig(ctx context.Context) (models.ModelPriceSyncConfig, erro
 }
 
 func syncModelPrices(ctx context.Context, sourceURL string) error {
-	allowedModels, err := loadExistingModelNames(ctx)
-	if err != nil {
-		return err
-	}
-	if len(allowedModels) == 0 {
-		return nil
-	}
-
 	client := &http.Client{Timeout: 20 * time.Second}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sourceURL, nil)
 	if err != nil {
@@ -145,20 +125,38 @@ func syncModelPrices(ctx context.Context, sourceURL string) error {
 		return err
 	}
 
-	prices := make([]models.ModelPrice, 0, len(allowedModels))
+	providerNames := make([]string, 0, len(raw))
+	for provider := range raw {
+		provider = strings.ToLower(strings.TrimSpace(provider))
+		if provider == "" {
+			continue
+		}
+		providerNames = append(providerNames, provider)
+	}
+	sort.Strings(providerNames)
+
+	prices := make([]models.ModelPrice, 0)
 	seen := make(map[string]struct{})
 
-	for _, provider := range priceProviders {
+	for _, provider := range providerNames {
 		providerData, ok := raw[provider]
 		if !ok {
 			continue
 		}
-		for _, modelData := range providerData.Models {
+
+		modelKeys := make([]string, 0, len(providerData.Models))
+		for modelKey := range providerData.Models {
+			modelKeys = append(modelKeys, modelKey)
+		}
+		sort.Strings(modelKeys)
+
+		for _, modelKey := range modelKeys {
+			modelData := providerData.Models[modelKey]
 			modelID := strings.ToLower(strings.TrimSpace(modelData.ID))
 			if modelID == "" {
 				continue
 			}
-			appendPriceEntry(&prices, seen, allowedModels, provider, modelID, modelData.Cost)
+			appendPriceEntry(&prices, seen, provider, modelID, modelData.Cost)
 
 			aliases := make([]string, 0)
 			aliases = append(aliases, generateClaudeAliases(modelID)...)
@@ -171,7 +169,7 @@ func syncModelPrices(ctx context.Context, sourceURL string) error {
 				if alias == "" {
 					continue
 				}
-				appendPriceEntry(&prices, seen, allowedModels, provider, alias, modelData.Cost)
+				appendPriceEntry(&prices, seen, provider, alias, modelData.Cost)
 			}
 		}
 	}
@@ -186,10 +184,7 @@ func syncModelPrices(ctx context.Context, sourceURL string) error {
 	}).Create(&prices).Error
 }
 
-func appendPriceEntry(target *[]models.ModelPrice, seen map[string]struct{}, allowed map[string]struct{}, provider, modelID string, cost priceAPICost) {
-	if _, ok := allowed[modelID]; !ok {
-		return
-	}
+func appendPriceEntry(target *[]models.ModelPrice, seen map[string]struct{}, provider, modelID string, cost priceAPICost) {
 	if _, ok := seen[modelID]; ok {
 		return
 	}
@@ -202,22 +197,6 @@ func appendPriceEntry(target *[]models.ModelPrice, seen map[string]struct{}, all
 		CacheRead:  normalizePriceValue(cost.CacheRead),
 		CacheWrite: normalizePriceValue(cost.CacheWrite),
 	})
-}
-
-func loadExistingModelNames(ctx context.Context) (map[string]struct{}, error) {
-	var names []string
-	if err := models.DB.Model(&models.Model{}).Pluck("name", &names).Error; err != nil {
-		return nil, err
-	}
-	allowed := make(map[string]struct{}, len(names))
-	for _, name := range names {
-		clean := strings.ToLower(strings.TrimSpace(name))
-		if clean == "" {
-			continue
-		}
-		allowed[clean] = struct{}{}
-	}
-	return allowed, nil
 }
 
 func normalizePriceValue(value *float64) float64 {

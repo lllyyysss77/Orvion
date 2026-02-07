@@ -2,25 +2,20 @@ package main
 
 import (
 	"context"
-	"embed"
-	"io/fs"
 	"log/slog"
-	"net/http"
 	"os"
 	"strings"
 	"time"
 	_ "time/tzdata"
 
-	"github.com/gin-contrib/gzip"
 	"github.com/gin-gonic/gin"
 	"github.com/go-redis/redis/v8"
 	"github.com/joho/godotenv"
 	"github.com/racio/orvion/consts"
-	"github.com/racio/orvion/handler"
 	"github.com/racio/orvion/limiter"
-	"github.com/racio/orvion/middleware"
 	"github.com/racio/orvion/models"
 	"github.com/racio/orvion/service"
+	"github.com/racio/orvion/service/subscription"
 	_ "golang.org/x/crypto/x509roots/fallback"
 )
 
@@ -97,192 +92,21 @@ func initLogging() {
 }
 
 func main() {
-	router := gin.Default()
-
-	router.Use(gzip.Gzip(gzip.DefaultCompression, gzip.WithExcludedPaths([]string{"/openai", "/anthropic", "/gemini", "/v1"})))
-
-	// 为了获取真实客户端 IP：
-	// - 默认不信任任何代理（避免客户端伪造 X-Forwarded-For）
-	// - 如你在 Nginx/CF 等反代后面部署，请通过 TRUSTED_PROXIES 显式配置可信代理 IP/CIDR
-	//   示例：TRUSTED_PROXIES=127.0.0.1,::1,10.0.0.0/8
-	if v := strings.TrimSpace(os.Getenv("TRUSTED_PROXIES")); v == "" {
-		if err := router.SetTrustedProxies(nil); err != nil {
-			slog.Warn("Failed to disable trusted proxies", "error", err)
-		}
-	} else {
-		parts := strings.Split(v, ",")
-		proxies := make([]string, 0, len(parts))
-		for _, p := range parts {
-			p = strings.TrimSpace(p)
-			if p == "" {
-				continue
-			}
-			proxies = append(proxies, p)
-		}
-		if err := router.SetTrustedProxies(proxies); err != nil {
-			slog.Warn("Failed to set trusted proxies", "error", err, "TRUSTED_PROXIES", v)
-		}
-	}
-
 	token := os.Getenv("TOKEN")
-
-	// 健康检查接口（无需认证）
-	router.GET("/health", handler.HealthCheck)
-	router.GET("/health/live", handler.LivenessCheck)
-	router.GET("/health/ready", handler.ReadinessCheck)
-	router.GET("/health/detail", handler.GetSystemHealthDetail)
-	// 兼容性路由
-	router.GET("/healthz", handler.HealthCheck)
-	router.GET("/livez", handler.LivenessCheck)
-	router.GET("/readyz", handler.ReadinessCheck)
-
-	// API健康检查接口（无需认证，为了兼容前端）
-	router.GET("/api/health/detail", handler.GetSystemHealthDetail)
-
-	authOpenAI := middleware.AuthOpenAI(token)
-	authAnthropic := middleware.AuthAnthropic(token)
-	authGemini := middleware.AuthGemini(token)
-
-	// openai
-	openai := router.Group("/openai", authOpenAI)
-	{
-		v1 := openai.Group("/v1")
-		{
-			v1.GET("/models", handler.OpenAIModelsHandler)
-			v1.POST("/chat/completions", handler.ChatCompletionsHandler)
-			v1.POST("/responses", handler.ResponsesHandler)
-			v1.POST("/embeddings", handler.EmbeddingsHandler)
-		}
-	}
-
-	// anthropic
-	anthropic := router.Group("/anthropic", authAnthropic)
-	{
-		v1 := anthropic.Group("/v1")
-		{
-			v1.GET("/models", handler.AnthropicModelsHandler)
-			v1.POST("/messages", handler.Messages)
-			v1.POST("/messages/count_tokens", handler.CountTokens)
-		}
-	}
-
-	// gemini
-	gemini := router.Group("/gemini", authGemini)
-	{
-		v1beta := gemini.Group("/v1beta")
-		v1beta.GET("/models", handler.GeminiModelsHandler)
-		v1beta.POST("/models/*modelAction", handler.GeminiGenerateContentHandler)
-	}
-
-	// 兼容性保留
-	v1 := router.Group("/v1")
-	{
-		v1.GET("/models", authOpenAI, handler.OpenAIModelsHandler)
-		v1.POST("/chat/completions", authOpenAI, handler.ChatCompletionsHandler)
-		v1.POST("/responses", authOpenAI, handler.ResponsesHandler)
-		v1.POST("/embeddings", authOpenAI, handler.EmbeddingsHandler)
-		v1.POST("/messages", authAnthropic, handler.Messages)
-		v1.POST("/messages/count_tokens", authAnthropic, handler.CountTokens)
-	}
-
-	// API Key 概览（用于前端在 API Key 登录时展示）
-	authKey := router.Group("/auth-key", authOpenAI)
-	{
-		authKey.GET("/summary", handler.AuthKeySummary)
-	}
-
-	api := router.Group("/api")
-	{
-		api.Use(middleware.Auth(token))
-		api.GET("/metrics/use/:days", handler.Metrics)
-		api.GET("/metrics/summary", handler.MetricsSummary)
-		api.GET("/metrics/counts", handler.Counts)
-		api.GET("/metrics/projects", handler.ProjectCounts)
-		api.GET("/metrics/request-amount", handler.RequestAmountTrend)
-
-		// Provider management
-		api.GET("/providers/template", handler.GetProviderTemplates)
-		api.GET("/providers", handler.GetProviders)
-		api.GET("/providers/models/:id", handler.GetProviderModels)
-		api.POST("/providers", handler.CreateProvider)
-		api.PUT("/providers/:id", handler.UpdateProvider)
-		api.DELETE("/providers/:id", handler.DeleteProvider)
-
-		// Model management
-		api.GET("/models", handler.GetModels)
-		api.GET("/models/select", handler.GetModelList)
-		api.POST("/models", handler.CreateModel)
-		api.PUT("/models/:id", handler.UpdateModel)
-		api.PATCH("/models/:id/status", handler.UpdateModelStatus)
-		api.DELETE("/models/:id", handler.DeleteModel)
-
-		// Model-provider association management
-		api.GET("/model-providers", handler.GetModelProviders)
-		api.GET("/model-providers/status", handler.GetModelProviderStatus)
-		api.POST("/model-providers", handler.CreateModelProvider)
-		api.PUT("/model-providers/:id", handler.UpdateModelProvider)
-		api.PATCH("/model-providers/:id/status", handler.UpdateModelProviderStatus)
-		api.DELETE("/model-providers/:id", handler.DeleteModelProvider)
-
-		// System status and monitoring
-		api.GET("/version", handler.GetVersion)
-		api.GET("/logs", handler.GetRequestLogs)
-		api.GET("/logs/:id/chat-io", handler.GetChatIO)
-		api.GET("/user-agents", handler.GetUserAgents)
-		api.POST("/logs/cleanup", handler.CleanLogs)
-
-		// Auth key management
-		api.GET("/auth-keys", handler.GetAuthKeys)
-		api.GET("/auth-keys/list", handler.GetAuthKeysList)
-		api.POST("/auth-keys", handler.CreateAuthKey)
-		api.PUT("/auth-keys/:id", handler.UpdateAuthKey)
-		api.PATCH("/auth-keys/:id/status", handler.ToggleAuthKeyStatus)
-		api.DELETE("/auth-keys/:id", handler.DeleteAuthKey)
-
-		// Config management
-		api.GET("/config/:key", handler.GetConfigByKey)
-		api.PUT("/config/:key", handler.UpdateConfigByKey)
-
-		// Limiter management and monitoring
-		api.GET("/limiter/stats", handler.GetLimiterStats)
-		api.GET("/limiter/health", handler.GetLimiterHealth)
-		api.POST("/providers/stats", handler.GetProvidersStats)
-
-		// Provider connectivity test
-		api.GET("/test/:id", handler.ProviderTestHandler)
-		api.GET("/test/react/:id", handler.TestReactHandler)
-		api.GET("/test/count_tokens", handler.TestCountTokens)
-	}
-	setwebui(router)
-
-	service.StartPriceSync(context.Background())
+	router := buildRouter(token)
+	startBackgroundWorkers(context.Background())
 
 	port := os.Getenv("LLMIO_SERVER_PORT")
 	if port == "" {
 		port = consts.DefaultPort
 	}
-	router.Run(":" + port)
+	if err := router.Run(":" + port); err != nil {
+		slog.Error("Server startup failed", "error", err)
+	}
 }
 
-//go:embed webui/dist
-var distFiles embed.FS
-
-//go:embed webui/dist/index.html
-var indexHTML []byte
-
-func setwebui(r *gin.Engine) {
-	subFS, err := fs.Sub(distFiles, "webui/dist/assets")
-	if err != nil {
-		panic(err)
-	}
-
-	r.StaticFS("/assets", http.FS(subFS))
-
-	r.NoRoute(func(c *gin.Context) {
-		if c.Request.Method == http.MethodGet && !strings.HasPrefix(c.Request.URL.Path, "/api/") && !strings.HasPrefix(c.Request.URL.Path, "/v1/") {
-			c.Data(http.StatusOK, "text/html; charset=utf-8", indexHTML)
-			return
-		}
-		c.Data(http.StatusNotFound, "text/html; charset=utf-8", []byte("404 Not Found"))
-	})
+func startBackgroundWorkers(ctx context.Context) {
+	service.StartPriceSync(ctx)
+	subscription.StartCodexOAuthWorker(ctx)
+	subscription.StartCodexOAuthCallbackForwarder(ctx)
 }

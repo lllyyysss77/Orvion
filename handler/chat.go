@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -17,6 +16,7 @@ import (
 	"github.com/racio/orvion/limiter"
 	"github.com/racio/orvion/models"
 	"github.com/racio/orvion/service"
+	runtimesvc "github.com/racio/orvion/service/runtime"
 )
 
 func ChatCompletionsHandler(c *gin.Context) {
@@ -40,41 +40,6 @@ func EmbeddingsHandler(c *gin.Context) {
 	chatHandler(c, service.BeforerOpenAI, service.ProcesserOpenAI, consts.StyleOpenAI, consts.StyleOpenAIEmbeddings)
 }
 
-// GeminiGenerateContentHandler 转发 Gemini 原生接口:
-// POST /v1beta/models/{model}:generateContent
-func GeminiGenerateContentHandler(c *gin.Context) {
-	modelAction := strings.TrimPrefix(c.Param("modelAction"), "/")
-	model, method, ok := strings.Cut(modelAction, ":")
-	if !ok || model == "" || method == "" {
-		common.BadRequest(c, "Invalid Gemini model action")
-		return
-	}
-	stream := false
-	logStyle := consts.StyleGemini
-	switch method {
-	case "generateContent":
-		stream = false
-	case "streamGenerateContent":
-		stream = true
-	case "embedContent", "batchEmbedContents":
-		// Embeddings 不支持 SSE，这里强制非流式，并在日志中标注为 embeddings
-		stream = false
-		logStyle = consts.StyleGeminiEmbeddings
-	default:
-		common.BadRequest(c, "Unsupported Gemini method: "+method)
-		return
-	}
-
-	ctx := context.WithValue(c.Request.Context(), consts.ContextKeyGeminiStream, stream)
-	// 让 provider 端按 method 路由到正确的 Gemini REST 方法（embedContent/batchEmbedContents）
-	if logStyle == consts.StyleGeminiEmbeddings {
-		ctx = context.WithValue(ctx, consts.ContextKeyGeminiMethod, method)
-	}
-	c.Request = c.Request.WithContext(ctx)
-
-	chatHandler(c, service.NewBeforerGemini(model, stream), service.ProcesserGemini, consts.StyleGemini, logStyle)
-}
-
 func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor service.Processer, providerType string, logStyle string) {
 	// 读取原始请求体
 	reqBody, err := io.ReadAll(c.Request.Body)
@@ -92,7 +57,7 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 
 	ctx := c.Request.Context()
 	// 校验 authKey 是否有权限使用该模型
-	valid, err := validateAuthKey(ctx, before.Model)
+	valid, err := ValidateAuthKey(ctx, before.Model)
 	if err != nil {
 		common.InternalServerError(c, err.Error())
 		return
@@ -133,18 +98,44 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 	}
 
 	pr, pw := io.Pipe()
-	tee := io.TeeReader(res.Body, pw)
 	// 异步处理输出并记录 tokens
-	go service.RecordLog(context.Background(), startReq, pr, postProcessor, logId, *before, providersWithMeta.IOLog, logStyle)
+	go service.RecordLog(context.Background(), startReq, pr, postProcessor, logId, log.AuthKeyID, *before, providersWithMeta.IOLog, logStyle)
 
 	writeHeader(c, before.Stream, res.Header)
-	if _, err := io.Copy(c.Writer, tee); err != nil {
-		pw.CloseWithError(err)
-		slog.Error("io copy", "err:", err)
+	mirror := io.MultiWriter(c.Writer, pw)
+	if logStyle == consts.StyleOpenAI {
+		if before.Stream {
+			if err := runtimesvc.CopyStreamWithTransform(res.Body, mirror, runtimesvc.NormalizeOpenAIStreamLine); err != nil {
+				_ = pw.CloseWithError(err)
+				slog.Error("stream copy", "err", err)
+				return
+			}
+		} else {
+			body, readErr := io.ReadAll(res.Body)
+			if readErr != nil {
+				_ = pw.CloseWithError(readErr)
+				slog.Error("read response body", "err", readErr)
+				return
+			}
+			normalized := runtimesvc.NormalizeOpenAIChatCompletionPayload(body, false)
+			if _, writeErr := mirror.Write(normalized); writeErr != nil {
+				_ = pw.CloseWithError(writeErr)
+				slog.Error("write response body", "err", writeErr)
+				return
+			}
+		}
+		_ = pw.Close()
 		return
 	}
 
-	pw.Close()
+	tee := io.TeeReader(res.Body, pw)
+	if _, err := io.Copy(c.Writer, tee); err != nil {
+		_ = pw.CloseWithError(err)
+		slog.Error("io copy", "err", err)
+		return
+	}
+
+	_ = pw.Close()
 }
 
 func writeHeader(c *gin.Context, stream bool, header http.Header) {
@@ -172,7 +163,7 @@ func formatHeadersJSON(header http.Header) string {
 }
 
 // 校验auhtKey的模型使用权限
-func validateAuthKey(ctx context.Context, model string) (bool, error) {
+func ValidateAuthKey(ctx context.Context, model string) (bool, error) {
 	// 验证是否为允许全部模型
 	allowAll, ok := ctx.Value(consts.ContextKeyAllowAllModel).(bool)
 	if !ok {

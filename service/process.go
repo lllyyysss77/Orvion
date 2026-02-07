@@ -118,7 +118,6 @@ func ProcesserOpenAiRes(ctx context.Context, pr io.Reader, stream bool, start ti
 
 	scanner := bufio.NewScanner(pr)
 	scanner.Buffer(make([]byte, 0, InitScannerBufferSize), MaxScannerBufferSize)
-	var event string
 	for chunk, chunkSize := range ScannerToken(scanner) {
 		size += chunkSize
 		once.Do(func() {
@@ -126,21 +125,35 @@ func ProcesserOpenAiRes(ctx context.Context, pr io.Reader, stream bool, start ti
 		})
 		if !stream {
 			output.OfString = chunk
-			usageStr = gjson.Get(chunk, "usage").String()
+			usageNode := gjson.Get(chunk, "usage")
+			if !usageNode.Exists() {
+				usageNode = gjson.Get(chunk, "response.usage")
+			}
+			usageStr = usageNode.String()
 			break
 		}
 
-		if after, ok := strings.CutPrefix(chunk, "event: "); ok {
-			event = after
+		if _, ok := strings.CutPrefix(chunk, "event: "); ok {
 			continue
 		}
 		content := strings.TrimPrefix(chunk, "data: ")
 		if content == "" {
 			continue
 		}
+		if content == "[DONE]" {
+			break
+		}
 		output.OfStringArray = append(output.OfStringArray, content)
-		if event == "response.completed" {
-			usageStr = gjson.Get(content, "response.usage").String()
+
+		usageNode := gjson.Get(content, "usage")
+		if !usageNode.Exists() {
+			usageNode = gjson.Get(content, "response.usage")
+		}
+		if usageNode.Exists() {
+			usageCandidate := usageNode.String()
+			if usageStr == "" || responseUsageHasTokens(usageNode) {
+				usageStr = usageCandidate
+			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -157,19 +170,9 @@ func ProcesserOpenAiRes(ctx context.Context, pr io.Reader, stream bool, start ti
 	if openAIResUsage.TotalTokens == 0 {
 		openAIResUsage.TotalTokens = openAIResUsage.InputTokens + openAIResUsage.OutputTokens
 	}
+	cachedTokens := normalizeCachedTokens(openAIResUsage.InputTokensDetails.CachedTokens)
 
 	chunkTime := time.Since(start) - firstChunkTime
-
-	// 构建 PromptTokensDetails JSON 字符串
-	promptTokensDetailsJSON := ""
-	if openAIResUsage.InputTokensDetails.CachedTokens > 0 {
-		details := models.PromptTokensDetails{
-			CachedTokens: openAIResUsage.InputTokensDetails.CachedTokens,
-		}
-		if jsonBytes, err := json.Marshal(details); err == nil {
-			promptTokensDetailsJSON = string(jsonBytes)
-		}
-	}
 
 	return &models.ChatLog{
 		FirstChunkTimeMs: int(firstChunkTime.Milliseconds()),
@@ -178,46 +181,75 @@ func ProcesserOpenAiRes(ctx context.Context, pr io.Reader, stream bool, start ti
 			PromptTokens:        openAIResUsage.InputTokens,
 			CompletionTokens:    openAIResUsage.OutputTokens,
 			TotalTokens:         openAIResUsage.TotalTokens,
-			PromptTokensDetails: promptTokensDetailsJSON,
+			CachedTokens:        cachedTokens,
+			PromptTokensDetails: buildPromptTokensDetailsJSON(cachedTokens),
 		},
 		Tps:  float64(openAIResUsage.TotalTokens) / chunkTime.Seconds(),
 		Size: size,
 	}, &output, nil
 }
 
+func responseUsageHasTokens(node gjson.Result) bool {
+	if !node.Exists() {
+		return false
+	}
+	if node.Get("total_tokens").Int() > 0 {
+		return true
+	}
+	if node.Get("prompt_tokens").Int() > 0 || node.Get("completion_tokens").Int() > 0 {
+		return true
+	}
+	if node.Get("input_tokens").Int() > 0 || node.Get("output_tokens").Int() > 0 {
+		return true
+	}
+	if node.Get("prompt_tokens_details.cached_tokens").Int() > 0 {
+		return true
+	}
+	if node.Get("input_tokens_details.cached_tokens").Int() > 0 {
+		return true
+	}
+	return false
+}
+
 func parseOpenAIUsage(usageStr string) models.Usage {
 	var usage models.Usage
 	raw := []byte(usageStr)
-	if !json.Valid(raw) {
+	if !gjson.ValidBytes(raw) {
 		return usage
 	}
-	if err := json.Unmarshal(raw, &usage); err == nil {
-		if usage.PromptTokensDetails != "" || usage.PromptTokens != 0 || usage.CompletionTokens != 0 || usage.TotalTokens != 0 {
-			if usage.TotalTokens == 0 && (usage.PromptTokens != 0 || usage.CompletionTokens != 0) {
-				usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
-			}
-			return usage
+
+	usageNode := gjson.ParseBytes(raw)
+	usage.PromptTokens = usageNode.Get("prompt_tokens").Int()
+	if usage.PromptTokens == 0 {
+		usage.PromptTokens = usageNode.Get("input_tokens").Int()
+	}
+	usage.CompletionTokens = usageNode.Get("completion_tokens").Int()
+	if usage.CompletionTokens == 0 {
+		usage.CompletionTokens = usageNode.Get("output_tokens").Int()
+	}
+	usage.TotalTokens = usageNode.Get("total_tokens").Int()
+	if usage.TotalTokens == 0 {
+		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	}
+
+	detailsNode := usageNode.Get("prompt_tokens_details")
+	if !detailsNode.Exists() {
+		detailsNode = usageNode.Get("input_tokens_details")
+	}
+	if detailsNode.Exists() {
+		rawDetails := strings.TrimSpace(detailsNode.Raw)
+		if rawDetails != "" && rawDetails != "null" {
+			usage.PromptTokensDetails = rawDetails
 		}
 	}
-	var alt OpenAIResUsage
-	if err := json.Unmarshal(raw, &alt); err != nil {
-		return usage
+
+	cachedTokens := usageNode.Get("prompt_tokens_details.cached_tokens").Int()
+	if cachedTokens == 0 {
+		cachedTokens = usageNode.Get("input_tokens_details.cached_tokens").Int()
 	}
-	if alt.InputTokens != 0 || alt.OutputTokens != 0 || alt.TotalTokens != 0 {
-		usage.PromptTokens = alt.InputTokens
-		usage.CompletionTokens = alt.OutputTokens
-		usage.TotalTokens = alt.TotalTokens
-		if usage.TotalTokens == 0 {
-			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
-		}
-		if alt.InputTokensDetails.CachedTokens > 0 {
-			details := models.PromptTokensDetails{
-				CachedTokens: alt.InputTokensDetails.CachedTokens,
-			}
-			if jsonBytes, err := json.Marshal(details); err == nil {
-				usage.PromptTokensDetails = string(jsonBytes)
-			}
-		}
+	usage.CachedTokens = normalizeCachedTokens(cachedTokens)
+	if usage.PromptTokensDetails == "" {
+		usage.PromptTokensDetails = buildPromptTokensDetailsJSON(usage.CachedTokens)
 	}
 	return usage
 }
@@ -275,16 +307,9 @@ func ProcesserAnthropic(ctx context.Context, pr io.Reader, stream bool, start ti
 
 	chunkTime := time.Since(start) - firstChunkTime
 	totalTokens := athropicUsage.InputTokens + athropicUsage.OutputTokens
-
-	// 构建 PromptTokensDetails JSON 字符串
-	promptTokensDetailsJSON := ""
-	if athropicUsage.CacheReadInputTokens > 0 {
-		details := models.PromptTokensDetails{
-			CachedTokens: athropicUsage.CacheReadInputTokens,
-		}
-		if jsonBytes, err := json.Marshal(details); err == nil {
-			promptTokensDetailsJSON = string(jsonBytes)
-		}
+	cachedTokens := normalizeCachedTokens(athropicUsage.CacheReadInputTokens)
+	if cachedTokens == 0 {
+		cachedTokens = normalizeCachedTokens(athropicUsage.CacheCreationInputTokens)
 	}
 
 	return &models.ChatLog{
@@ -294,99 +319,11 @@ func ProcesserAnthropic(ctx context.Context, pr io.Reader, stream bool, start ti
 			PromptTokens:        athropicUsage.InputTokens,
 			CompletionTokens:    athropicUsage.OutputTokens,
 			TotalTokens:         totalTokens,
-			PromptTokensDetails: promptTokensDetailsJSON,
+			CachedTokens:        cachedTokens,
+			PromptTokensDetails: buildPromptTokensDetailsJSON(cachedTokens),
 		},
 		Tps:  float64(totalTokens) / chunkTime.Seconds(),
 		Size: size,
-	}, &output, nil
-}
-
-func ProcesserGemini(ctx context.Context, pr io.Reader, stream bool, start time.Time) (*models.ChatLog, *models.OutputUnion, error) {
-	// 首字时延
-	var firstChunkTime time.Duration
-	var once sync.Once
-
-	var usageStr string
-	var output models.OutputUnion
-	var size int
-
-	if !stream {
-		bodyBytes, err := io.ReadAll(pr)
-		if err != nil {
-			return nil, nil, err
-		}
-		size += len(bodyBytes)
-		once.Do(func() {
-			firstChunkTime = time.Since(start)
-		})
-		output.OfString = string(bodyBytes)
-
-		usageStr = gjson.GetBytes(bodyBytes, "usageMetadata").String()
-
-	} else {
-		scanner := bufio.NewScanner(pr)
-		scanner.Buffer(make([]byte, 0, InitScannerBufferSize), MaxScannerBufferSize)
-		for chunk, chunkSize := range ScannerToken(scanner) {
-			size += chunkSize
-			once.Do(func() {
-				firstChunkTime = time.Since(start)
-			})
-
-			if strings.HasPrefix(chunk, "event:") {
-				continue
-			}
-
-			payload := ""
-			if after, ok := strings.CutPrefix(chunk, "data: "); ok {
-				payload = after
-			} else if strings.HasPrefix(chunk, "{") || strings.HasPrefix(chunk, "[") {
-				payload = chunk
-			} else {
-				continue
-			}
-			if payload == "" {
-				continue
-			}
-			if payload == "[DONE]" {
-				break
-			}
-
-			// 流式过程中错误
-			errStr := gjson.Get(payload, "error")
-			if errStr.Exists() {
-				return nil, nil, errors.New(errStr.String())
-			}
-
-			output.OfStringArray = append(output.OfStringArray, payload)
-			usageMetadata := gjson.Get(payload, "usageMetadata")
-			if usageMetadata.Exists() && usageMetadata.Get("totalTokenCount").Int() != 0 {
-				usageStr = usageMetadata.String()
-			}
-		}
-		if err := scanner.Err(); err != nil {
-			return nil, nil, err
-		}
-	}
-
-	var usage models.Usage
-	usageMetadata := gjson.Parse(usageStr)
-	if usageMetadata.Exists() {
-		usage.PromptTokens = usageMetadata.Get("promptTokenCount").Int()
-		usage.CompletionTokens = usageMetadata.Get("candidatesTokenCount").Int() + usageMetadata.Get("thoughtsTokenCount").Int()
-		usage.TotalTokens = usageMetadata.Get("totalTokenCount").Int()
-		if usage.TotalTokens == 0 {
-			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
-		}
-	}
-
-	chunkTime := time.Since(start) - firstChunkTime
-
-	return &models.ChatLog{
-		FirstChunkTimeMs: int(firstChunkTime.Milliseconds()),
-		ChunkTimeMs:      int(chunkTime.Milliseconds()),
-		Usage:            usage,
-		Tps:              float64(usage.TotalTokens) / chunkTime.Seconds(),
-		Size:             size,
 	}, &output, nil
 }
 
@@ -402,4 +339,26 @@ func ScannerToken(reader *bufio.Scanner) iter.Seq2[string, int] {
 			}
 		}
 	}
+}
+
+func normalizeCachedTokens(value int64) int64 {
+	if value < 0 {
+		return 0
+	}
+	return value
+}
+
+func buildPromptTokensDetailsJSON(cachedTokens int64) string {
+	cachedTokens = normalizeCachedTokens(cachedTokens)
+	if cachedTokens <= 0 {
+		return ""
+	}
+	details := models.PromptTokensDetails{
+		CachedTokens: cachedTokens,
+	}
+	content, err := json.Marshal(details)
+	if err != nil {
+		return ""
+	}
+	return string(content)
 }

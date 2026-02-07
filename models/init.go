@@ -71,6 +71,17 @@ func Init(ctx context.Context, dsn string) {
 		if !DB.Migrator().HasColumn(&AuthKey{}, "total_cost") {
 			_ = DB.Migrator().AddColumn(&AuthKey{}, "TotalCost")
 		}
+		if _, err := gorm.G[AuthKey](DB).Where("total_cost IS NULL").Update(ctx, "total_cost", 0); err != nil {
+			// 忽略错误
+		}
+		if _, err := gorm.G[AuthKey](DB).Where("usage_count IS NULL").Update(ctx, "usage_count", 0); err != nil {
+			// 忽略错误
+		}
+	}
+	if DB.Migrator().HasTable(&ChatLog{}) {
+		if !DB.Migrator().HasColumn(&ChatLog{}, "cached_tokens") {
+			_ = DB.Migrator().AddColumn(&ChatLog{}, "CachedTokens")
+		}
 	}
 
 	// 兼容性数据修复
@@ -91,6 +102,24 @@ func Init(ctx context.Context, dsn string) {
 	}
 	if _, err := gorm.G[ChatLog](DB).Where("auth_key_id IS NULL").Update(ctx, "auth_key_id", 0); err != nil {
 		// 忽略错误
+	}
+	if DB.Migrator().HasTable(&AuthKey{}) && DB.Migrator().HasTable(&ChatLog{}) {
+		// 历史兼容：修复曾因异步记账链路丢失导致 total_cost 仍为 0 的 key
+		_ = DB.WithContext(ctx).Exec(`
+			UPDATE auth_keys
+			SET total_cost = COALESCE((
+				SELECT SUM(COALESCE(chat_logs.total_cost, 0))
+				FROM chat_logs
+				WHERE chat_logs.auth_key_id = auth_keys.id
+			), 0)
+			WHERE COALESCE(total_cost, 0) = 0
+			  AND EXISTS (
+				SELECT 1
+				FROM chat_logs
+				WHERE chat_logs.auth_key_id = auth_keys.id
+				  AND COALESCE(chat_logs.total_cost, 0) > 0
+			  )
+		`).Error
 	}
 }
 

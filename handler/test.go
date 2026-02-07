@@ -19,6 +19,7 @@ import (
 	"github.com/racio/orvion/models"
 	"github.com/racio/orvion/providers"
 	"github.com/racio/orvion/service"
+	"github.com/racio/orvion/service/subscription"
 	"github.com/tidwall/gjson"
 	"gorm.io/gorm"
 )
@@ -132,8 +133,10 @@ func ProviderTestHandler(c *gin.Context) {
 		testBody = []byte(testOpenAI)
 	case consts.StyleAnthropic:
 		testBody = []byte(testAnthropic)
-	case consts.StyleOpenAIRes:
+	case consts.StyleOpenAIRes, consts.StyleCodexAuths:
 		testBody = []byte(testOpenAIRes)
+	case consts.StyleIFlowAuths:
+		testBody = []byte(testOpenAI)
 	case consts.StyleGemini:
 		testBody = []byte(testGemini)
 	default:
@@ -377,11 +380,16 @@ func FindChatModel(ctx context.Context, id string) (*ChatModel, error) {
 		customerHeaders = make(map[string]string)
 	}
 
+	resolvedConfig, err := subscription.ResolveProviderConfigForRequest(provider.ID, provider.Type, provider.Config)
+	if err != nil {
+		return nil, err
+	}
+
 	return &ChatModel{
 		Name:            provider.Name,
 		Type:            provider.Type,
 		Model:           modelWithProvider.ProviderModel,
-		Config:          provider.Config,
+		Config:          resolvedConfig,
 		WithHeader:      withHeader,
 		CustomerHeaders: customerHeaders,
 	}, nil
