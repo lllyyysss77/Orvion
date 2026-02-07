@@ -5,9 +5,6 @@
 ############################
 FROM node:20-alpine AS webui-builder
 
-LABEL "language"="nodejs"
-LABEL "framework"="golang"
-
 WORKDIR /src/webui
 
 COPY webui/package.json webui/package-lock.json ./
@@ -19,9 +16,9 @@ RUN npm run build
 ############################
 # 2) 构建 Go 后端（包含 embed 的 webui/dist）
 ############################
-FROM golang:1.25-alpine AS go-builder
+FROM golang:1.25-alpine AS builder
 
-WORKDIR /src
+WORKDIR /app
 
 RUN apk add --no-cache git ca-certificates
 ENV GOPROXY=https://proxy.golang.org,direct
@@ -32,26 +29,35 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
 
 COPY . .
-
 COPY --from=webui-builder /src/webui/dist ./webui/dist
+
+ARG VERSION=dev
+ARG COMMIT=none
+ARG BUILD_DATE=unknown
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/orvion .
+    CGO_ENABLED=0 GOOS=linux go build -trimpath \
+    -ldflags "-s -w -X 'github.com/racio/orvion/consts.Version=${VERSION}'" \
+    -o ./orvion .
 
 ############################
 # 3) 运行镜像
 ############################
-FROM alpine:3.20
+FROM alpine:3.22.0
 
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates tzdata
 
-WORKDIR /app
+RUN mkdir -p /orvion
 
-COPY --from=go-builder /out/orvion ./orvion
+COPY --from=builder /app/orvion /orvion/orvion
+COPY .env.example /orvion/.env.example
 
-RUN mkdir -p /app/data /data && chmod -R 775 /app /data
+WORKDIR /orvion
 
 EXPOSE 7070
 
-ENTRYPOINT ["./orvion"]
+ENV TZ=Asia/Shanghai
+RUN cp /usr/share/zoneinfo/${TZ} /etc/localtime && echo "${TZ}" > /etc/timezone
+
+CMD ["./orvion"]
