@@ -1,167 +1,129 @@
 # Orvion
 
-多提供商 LLM 网关（Go + Gin），兼容 OpenAI / Anthropic / Gemini 协议，内置 WebUI 管理与监控。
+多提供商 LLM 网关（Go + Gin），兼容 OpenAI / Anthropic / Gemini 协议，内置 WebUI 管理后台与监控能力。
 
----
+## 核心能力
 
-## 特性
+- 多协议统一代理：`/v1/chat/completions`、`/v1/responses`、`/v1/embeddings`、`/v1/messages`
+- 多提供商与多模型编排：同模型可绑定多个上游，支持权重与能力开关
+- 内置管理后台：提供商、模型、模型关联、API Key、系统配置、日志查看
+- 健康检查与限流：支持 Redis，Redis 不可用时自动降级到内存
+- 支持 Codex / iFlow 官方订阅对接（OAuth） 
+（由于技术原因，OAuth添加 只有本地运行时支持，若是服务器部署，需要把本地验证完生成的xxx-auths文件夹复制到挂载目录上）
 
-- 多协议代理：OpenAI `/v1/chat/completions`、`/v1/responses`、`/v1/embeddings`，Anthropic `/v1/messages`，Gemini 原生接口
-- 多提供商/多模型：同一模型可挂载多个提供商模型，支持权重与能力标记
-- 统一管理：提供商、模型、模型关联、API Key、系统配置
-- Codex 官方订阅：OAuth 添加订阅、查看重置时间与可用模型
-- 请求日志：耗时/Token/费用统计与详情查看
-- 健康监控：提供商与模型健康状态可视化
-- 价格同步：按配置定时同步模型价格（仅同步已配置模型）
-- 运行时稳定：Redis 不可用时自动降级为内存限流
 
----
+## 项目结构
 
-## 快速开始
-
-### 运行
-
-```bash
-go run .
+```text
+.
+├── main.go                 # 应用入口
+├── router.go               # 路由注册与 WebUI 静态资源挂载
+├── makefile                # 开发命令
+├── Dockerfile              # 多阶段镜像构建
+├── webui/                  # 前端工程（Vite + React）
+├── handler/                # HTTP 处理层
+├── service/                # 业务逻辑层
+├── models/                 # 数据模型与数据库初始化
+├── providers/              # 各上游提供商适配
+└── middleware/             # 鉴权与中间件
 ```
 
-默认地址：
+## 环境要求
+
+- Go `1.25+`
+- Node.js `20+`（用于构建前端）
+- `make`
+- Docker（可选）
+
+## 开发命令（按你给的流程）
+
+| 场景 | 命令 | 说明 |
+| --- | --- | --- |
+| mod 依赖加载 | `make tidy` | 等价 `go mod tidy` |
+| 启动前端 | `make webui` | 执行 `cd webui && npm install && npm run build`，生成 `webui/dist` |
+| 启动后端 | `make run` | 执行 `go run .` |
+| 一键启动 | `make all` | 顺序执行 `make webui && make run` |
+
+推荐开发顺序：
+
+```bash
+make tidy
+make webui
+make run
+```
+
+访问地址：
+
 - WebUI：`http://127.0.0.1:7070/`
 - 健康检查：`http://127.0.0.1:7070/health`
 - 健康详情：`http://127.0.0.1:7070/health/detail`
 
-### 默认数据库
+## Docker 运行
 
-默认使用 SQLite（纯 Go 驱动，无需 CGO），自动创建缺失表（仅缺表创建，不会修改已有表结构）：
-
-```
-./data/llmio.db
-```
-
-如需使用 PostgreSQL，设置 `DATABASE_DSN` 即可。
-
----
-
-## 环境变量
-
-必需（建议设置）：
-- `TOKEN`：管理端与代理接口鉴权 Token（可为空；不推荐暴露公网）
-
-可选：
-- `DATABASE_DSN`：数据库连接串  
-  - SQLite：`data/llmio.db` / `sqlite://data/llmio.db` / `file:data/llmio.db?cache=shared`
-  - PostgreSQL：`postgres://user:pass@host:5432/llmio?sslmode=disable`
-- `REDIS_URL`：Redis URL（RPM/Token 锁；不配置则使用内存）
-- `LLMIO_SERVER_PORT`：服务端口（默认 `7070`）
-- `TRUSTED_PROXIES`：可信代理 IP/CIDR（反代部署时获取真实客户端 IP）
-- `LOG_LEVEL`：日志级别（debug/info/warn/error，默认 info）
-- `CODEX_SUBSCRIPTION_DIR`：Codex 订阅凭据目录（默认 `data/codex-auths`）
-- `CODEX_OAUTH_CLIENT_ID`：Codex OAuth Client ID（未设置时使用内置默认值）
-- `CODEX_OAUTH_REDIRECT_URL`：Codex OAuth 回调地址（默认 `http://localhost:1455/auth/callback`）
-- `CODEX_OAUTH_ENABLE_FORWARDER`：是否启用本地回调转发器（默认 true）
-- `CODEX_USAGE_URL`：查询 team 额度使用的接口地址（默认 `https://chatgpt.com/backend-api/wham/usage`）
-- `Codex token 自动刷新`：系统会按过期时间提前刷新（默认提前 5 天），并在请求时按需兜底刷新
-
-示例：
-```env
-TOKEN=your_token_here
-LOG_LEVEL=info
-DATABASE_DSN=sqlite://data/llmio.db
-REDIS_URL=redis://localhost:6379/0
-```
-
----
-
-## Docker 部署
-
-构建镜像：
 ```bash
-docker build -t llmio:latest .
+docker run -d \
+  --name orvion \
+  --restart unless-stopped \
+  -p 7070:7070 \
+  -e TOKEN=your_token_here \
+  -v /usr/orvion/data:/orvion/data \
+  --pull always \
+  ghcr.io/raciott/orvion:latest
 ```
+(若是二次开发，请把镜像修改为 `ghcr.io/{你的github名字}/orvion:latest`)
 
-运行：
+## 本地打包运行
+
+先打包前端，再编译后端：
+
 ```bash
-docker run --rm -p 7070:7070 \
-  -e "TOKEN=your_token_here" \
-  -e "DATABASE_DSN=sqlite://data/llmio.db" \
-  -e "REDIS_URL=redis://host.docker.internal:6379/0" \
-  llmio:latest
+make webui
+go build -o orvion .
 ```
 
----
+运行二进制：
 
-## GitHub Actions 自动镜像
+Linux / macOS：
 
-推送到 `main` 分支时会自动构建并推送到 GHCR。  
-版本规则：从 `0.1.0` 起，每次推送自动递增到 `0.2.0 / 0.3.0 ...`
+```bash
+TOKEN=your_token_here ./orvion
+```
 
-镜像示例：
-- `ghcr.io/<owner>/<repo>:0.x.0`
-- `ghcr.io/<owner>/<repo>:latest`
+Windows PowerShell：
 
----
+```powershell
+cmd /C "set TOKEN=your_token_here && .\orvion.exe"
+```
 
-## 代理接口
+## 常用环境变量
 
-OpenAI 兼容：
+| 变量名 | 默认值 | 说明 |
+| --- | --- | --- |
+| `TOKEN` | 空 | 管理接口与代理接口鉴权 Token |
+| `DATABASE_DSN` | `./data/llmio.db` | SQLite 或 PostgreSQL 连接串 |
+| `REDIS_URL` | 空 | Redis 地址（不配则使用内存限流） |
+| `LLMIO_SERVER_PORT` | `7070` | 服务端口 |
+| `LOG_LEVEL` | `info` | 日志级别：`debug/info/warn/error` |
+
+可参考 `.env.example` 配置本地运行环境。
+
+## 常用接口
+
+- `GET /health`
+- `GET /health/detail`
 - `POST /v1/chat/completions`
 - `POST /v1/responses`
 - `POST /v1/embeddings`
+- `POST /v1/messages`
 
-示例（/v1/responses）：
+示例：
+
 ```bash
-curl -sS -X POST "http://127.0.0.1:7070/v1/responses" \
+curl -sS -X POST "http://127.0.0.1:7070/v1/chat/completions" \
   -H "Authorization: Bearer <TOKEN>" \
   -H "Content-Type: application/json" \
-  -d '{"model":"gpt-4.1","input":"你好"}'
+  -d "{\"model\":\"gpt-4.1\",\"input\":\"你好\"}"
 ```
-
----
-
-## 管理功能
-
-WebUI 提供：
-- 提供商管理（类型/配置/控制台）
-- 模型管理（模型、价格显示）
-- 模型-提供商关联（权重、能力开关、Header 透传）
-- API Key 管理与用量统计
-- Codex 官方（已有订阅、添加订阅、重置时间、可用模型）
-- Codex Team 额度查询（请求额度、Token 额度、重置时间）
-- 请求日志与详细追踪
-- 健康监控与模型健康详情
-- 系统配置（全局代理 IP、价格同步）
-
----
-
-## 开发与构建
-
-前端开发：
-```bash
-cd webui
-npm install
-npm run dev
-```
-
-前端构建：
-```bash
-cd webui
-npm run build
-```
-
-后端构建：
-```bash
-go build -o llmio .
-```
-
----
-
-## 运行说明
-
-- 自动建表仅在表不存在时执行；不会修改已有表结构
-- Redis 不可用时会自动降级为内存限流
-- 生产环境建议设置 `LOG_LEVEL=info` 或 `warn`
-
----
 
 ## License
 
