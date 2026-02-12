@@ -25,13 +25,13 @@ import {
   deleteCodexSubscription,
   getCodexOAuthStatus,
   getCodexSubscriptionModels,
-  getCodexSubscriptionTeamQuota,
+  getCodexSubscriptionQuota,
   getCodexSubscriptions,
   startCodexOAuth,
   type CodexModel,
   type CodexQuotaWindow,
   type CodexSubscription,
-  type CodexTeamQuota
+  type CodexSubscriptionQuota
 } from "@/lib/api";
 
 const formatTime = (value?: string) => {
@@ -54,6 +54,23 @@ const formatTime = (value?: string) => {
 
 const formatDisplayName = (sub: CodexSubscription) =>
   sub.email || sub.account_id || sub.id;
+
+const normalizePlanType = (value?: string) =>
+  (value || "").toString().trim().toLowerCase();
+
+const planSortWeight = (value?: string) => {
+  switch (normalizePlanType(value)) {
+    case "pro":
+    case "plus":
+      return 0;
+    case "team":
+      return 1;
+    case "free":
+      return 2;
+    default:
+      return 99;
+  }
+};
 
 const formatRemainingPercent = (window: CodexQuotaWindow) => {
   const raw = window.remaining_percent;
@@ -91,7 +108,7 @@ export default function CodexOfficialPage() {
   const [quotaDialogOpen, setQuotaDialogOpen] = useState(false);
   const [quotaLoading, setQuotaLoading] = useState(false);
   const [quotaSubscription, setQuotaSubscription] = useState<CodexSubscription | null>(null);
-  const [quota, setQuota] = useState<CodexTeamQuota | null>(null);
+  const [quota, setQuota] = useState<CodexSubscriptionQuota | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<CodexSubscription | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const pollRef = useRef<number | null>(null);
@@ -99,6 +116,21 @@ export default function CodexOfficialPage() {
   const sortedModels = useMemo(
     () => [...models].sort((a, b) => a.id.localeCompare(b.id)),
     [models]
+  );
+
+  const sortedSubscriptions = useMemo(
+    () =>
+      [...subscriptions].sort((a, b) => {
+        const weightDiff = planSortWeight(a.plan_type) - planSortWeight(b.plan_type);
+        if (weightDiff !== 0) return weightDiff;
+
+        const aUpdatedAt = a.updated_at ? new Date(a.updated_at).getTime() : 0;
+        const bUpdatedAt = b.updated_at ? new Date(b.updated_at).getTime() : 0;
+        if (aUpdatedAt !== bUpdatedAt) return bUpdatedAt - aUpdatedAt;
+
+        return formatDisplayName(a).localeCompare(formatDisplayName(b));
+      }),
+    [subscriptions]
   );
 
   const fetchSubscriptions = async () => {
@@ -219,11 +251,11 @@ export default function CodexOfficialPage() {
     setQuotaDialogOpen(true);
     setQuotaLoading(true);
     try {
-      const result = await getCodexSubscriptionTeamQuota(sub.id);
+      const result = await getCodexSubscriptionQuota(sub.id);
       setQuota(result);
     } catch (error) {
       console.error(error);
-      toast.error(error instanceof Error ? error.message : "查询 team 额度失败");
+      toast.error(error instanceof Error ? error.message : "查询订阅额度失败");
       setQuota(null);
     } finally {
       setQuotaLoading(false);
@@ -264,7 +296,7 @@ export default function CodexOfficialPage() {
               </div>
             ) : (
               <div className="grid gap-4 grid-cols-1 md:grid-cols-2 xl:grid-cols-3">
-                {subscriptions.map((sub) => (
+                {sortedSubscriptions.map((sub) => (
                   <div
                     key={sub.id}
                     className="rounded-2xl border border-border/70 bg-card/70 p-5 space-y-4 shadow-sm"
@@ -307,7 +339,7 @@ export default function CodexOfficialPage() {
                         className="w-full"
                         onClick={() => handleOpenQuota(sub)}
                       >
-                        Team 额度
+                        订阅额度
                       </Button>
                       <Button
                         size="default"
@@ -369,7 +401,7 @@ export default function CodexOfficialPage() {
       <Dialog open={quotaDialogOpen} onOpenChange={setQuotaDialogOpen}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Team 额度</DialogTitle>
+            <DialogTitle>订阅额度</DialogTitle>
             <DialogDescription>
               {quotaSubscription ? formatDisplayName(quotaSubscription) : "订阅"}
             </DialogDescription>

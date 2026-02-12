@@ -122,20 +122,20 @@ func GetCodexSubscriptionModels(c *gin.Context) {
 	common.Success(c, list)
 }
 
-func GetCodexSubscriptionTeamQuota(c *gin.Context) {
+func GetCodexSubscriptionQuota(c *gin.Context) {
 	id := strings.TrimSpace(c.Param("id"))
 	if id == "" {
 		common.BadRequest(c, "id 不能为空")
 		return
 	}
 
-	quota, err := subscription.GetCodexSubscriptionManager().GetTeamQuota(c.Request.Context(), id)
+	quota, err := subscription.GetCodexSubscriptionManager().GetSubscriptionQuota(c.Request.Context(), id)
 	if err != nil {
 		switch {
 		case errors.Is(err, subscription.ErrCodexSubscriptionNotFound):
 			common.NotFound(c, err.Error())
 		default:
-			common.InternalServerError(c, "查询 Codex team 额度失败: "+err.Error())
+			common.InternalServerError(c, "查询 Codex 订阅额度失败: "+err.Error())
 		}
 		return
 	}

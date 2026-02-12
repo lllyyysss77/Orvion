@@ -445,43 +445,32 @@ func (m *IFlowSubscriptionManager) ListSubscriptions() ([]IFlowSubscription, err
 		return []IFlowSubscription{}, nil
 	}
 
-	entries, err := os.ReadDir(m.authDir)
+	files, err := collectCredentialFiles(m.authDir, iflowCredentialIDPattern)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return []IFlowSubscription{}, nil
-		}
 		return nil, err
 	}
 
-	subs := make([]IFlowSubscription, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		if !iflowCredentialIDPattern.MatchString(name) {
-			continue
-		}
-
-		info, err := entry.Info()
+	subs := make([]IFlowSubscription, 0, len(files))
+	for _, file := range files {
+		content, err := os.ReadFile(file.Path)
 		if err != nil {
 			continue
 		}
 
-		record, err := m.readCredentialRecord(name)
-		if err != nil {
+		var record iflowCredentialRecord
+		if err := json.Unmarshal(content, &record); err != nil {
 			continue
 		}
 
 		sub := IFlowSubscription{
-			ID:          name,
-			FileName:    name,
+			ID:          file.Name,
+			FileName:    file.Name,
 			Email:       strings.TrimSpace(record.Email),
 			Expired:     strings.TrimSpace(record.Expired),
 			LastRefresh: strings.TrimSpace(record.LastRefresh),
 			Type:        strings.TrimSpace(record.Type),
-			CreatedAt:   info.ModTime(),
-			UpdatedAt:   info.ModTime(),
+			CreatedAt:   file.ModTime,
+			UpdatedAt:   file.ModTime,
 		}
 		subs = append(subs, sub)
 	}
@@ -511,8 +500,8 @@ func (m *IFlowSubscriptionManager) DeleteSubscription(id string) error {
 	m.credentialMu.Lock()
 	defer m.credentialMu.Unlock()
 
-	path := filepath.Join(m.authDir, id)
-	if _, err := os.Stat(path); err != nil {
+	path, err := resolveCredentialPath(m.authDir, id, iflowCredentialIDPattern)
+	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return ErrIFlowSubscriptionNotFound
 		}
@@ -889,7 +878,14 @@ func (m *IFlowSubscriptionManager) readCredentialRecordWithPath(id string) (iflo
 		return iflowCredentialRecord{}, "", ErrIFlowSubscriptionNotFound
 	}
 
-	path := filepath.Join(m.authDir, id)
+	path, err := resolveCredentialPath(m.authDir, id, iflowCredentialIDPattern)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return iflowCredentialRecord{}, "", ErrIFlowSubscriptionNotFound
+		}
+		return iflowCredentialRecord{}, "", err
+	}
+
 	content, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {

@@ -62,22 +62,33 @@ func CalculateTotalCost(ctx context.Context, modelName string, usage models.Usag
 		return 0
 	}
 
+	details := parsePromptTokensDetails(usage.PromptTokensDetails)
 	cachedTokens := usage.CachedTokens
 	if cachedTokens <= 0 {
-		cachedTokens = parseCachedTokens(usage.PromptTokensDetails)
+		cachedTokens = details.CachedTokens
 	}
 	if cachedTokens < 0 {
 		cachedTokens = 0
 	}
-	if cachedTokens > usage.PromptTokens {
-		cachedTokens = usage.PromptTokens
+
+	cacheWriteTokens := details.CacheWriteTokens
+	if cacheWriteTokens < 0 {
+		cacheWriteTokens = 0
 	}
-	billableInput := usage.PromptTokens - cachedTokens
+
+	billableInput := usage.PromptTokens
+	if !details.PromptExcludesCachedToken {
+		if cachedTokens > usage.PromptTokens {
+			cachedTokens = usage.PromptTokens
+		}
+		billableInput = usage.PromptTokens - cachedTokens
+	}
 
 	const perMillion = 1_000_000.0
 	total := float64(billableInput)/perMillion*price.Input +
 		float64(usage.CompletionTokens)/perMillion*price.Output +
-		float64(cachedTokens)/perMillion*price.CacheRead
+		float64(cachedTokens)/perMillion*price.CacheRead +
+		float64(cacheWriteTokens)/perMillion*price.CacheWrite
 	if total < 0 {
 		return 0
 	}
@@ -89,17 +100,20 @@ func loadModelPrice(ctx context.Context, modelName string) (models.ModelPrice, e
 	return price, err
 }
 
-func parseCachedTokens(details string) int64 {
+func parsePromptTokensDetails(details string) models.PromptTokensDetails {
 	raw := strings.TrimSpace(details)
 	if raw == "" {
-		return 0
+		return models.PromptTokensDetails{}
 	}
 	var parsed models.PromptTokensDetails
 	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
-		return 0
+		return models.PromptTokensDetails{}
 	}
 	if parsed.CachedTokens < 0 {
-		return 0
+		parsed.CachedTokens = 0
 	}
-	return parsed.CachedTokens
+	if parsed.CacheWriteTokens < 0 {
+		parsed.CacheWriteTokens = 0
+	}
+	return parsed
 }

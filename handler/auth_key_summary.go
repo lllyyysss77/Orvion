@@ -38,9 +38,7 @@ type AuthKeySummaryRes struct {
 
 type authKeyTokenAgg struct {
 	Model      string `gorm:"column:model"`
-	Prompt     int64  `gorm:"column:prompt"`
 	Completion int64  `gorm:"column:completion"`
-	Cached     int64  `gorm:"column:cached"`
 }
 
 // AuthKeySummary 返回 API Key 视角的概览数据
@@ -114,13 +112,12 @@ func AuthKeySummary(c *gin.Context) {
 
 	modelAgg := make([]authKeyTokenAgg, 0)
 	if err := base.Select(
-		"LOWER(name) AS model, COALESCE(SUM(prompt_tokens),0) AS prompt, COALESCE(SUM(completion_tokens),0) AS completion, COALESCE(SUM(cached_tokens),0) AS cached",
+		"LOWER(name) AS model, COALESCE(SUM(completion_tokens),0) AS completion",
 	).Group("LOWER(name)").Scan(&modelAgg).Error; err != nil {
 		common.InternalServerError(c, "Failed to aggregate tokens: "+err.Error())
 		return
 	}
 
-	inputCost := 0.0
 	outputCost := 0.0
 	if len(modelAgg) > 0 {
 		modelIDs := make([]string, 0, len(modelAgg))
@@ -152,20 +149,13 @@ func AuthKeySummary(c *gin.Context) {
 				if !ok {
 					continue
 				}
-				cached := item.Cached
-				if cached < 0 {
-					cached = 0
-				}
-				if cached > item.Prompt {
-					cached = item.Prompt
-				}
-
-				billablePrompt := item.Prompt - cached
-				inputCost += float64(billablePrompt)/perMillion*price.Input +
-					float64(cached)/perMillion*price.CacheRead
 				outputCost += float64(item.Completion) / perMillion * price.Output
 			}
 		}
+	}
+	inputCost := totalCost.Float64 - outputCost
+	if inputCost < 0 {
+		inputCost = 0
 	}
 
 	allowAll, _ := ctx.Value(consts.ContextKeyAllowAllModel).(bool)

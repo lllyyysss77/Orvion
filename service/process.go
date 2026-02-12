@@ -182,7 +182,7 @@ func ProcesserOpenAiRes(ctx context.Context, pr io.Reader, stream bool, start ti
 			CompletionTokens:    openAIResUsage.OutputTokens,
 			TotalTokens:         openAIResUsage.TotalTokens,
 			CachedTokens:        cachedTokens,
-			PromptTokensDetails: buildPromptTokensDetailsJSON(cachedTokens),
+			PromptTokensDetails: buildPromptTokensDetailsJSON(cachedTokens, 0, false),
 		},
 		Tps:  float64(openAIResUsage.TotalTokens) / chunkTime.Seconds(),
 		Size: size,
@@ -249,7 +249,7 @@ func parseOpenAIUsage(usageStr string) models.Usage {
 	}
 	usage.CachedTokens = normalizeCachedTokens(cachedTokens)
 	if usage.PromptTokensDetails == "" {
-		usage.PromptTokensDetails = buildPromptTokensDetailsJSON(usage.CachedTokens)
+		usage.PromptTokensDetails = buildPromptTokensDetailsJSON(usage.CachedTokens, 0, false)
 	}
 	return usage
 }
@@ -307,10 +307,8 @@ func ProcesserAnthropic(ctx context.Context, pr io.Reader, stream bool, start ti
 
 	chunkTime := time.Since(start) - firstChunkTime
 	totalTokens := athropicUsage.InputTokens + athropicUsage.OutputTokens
-	cachedTokens := normalizeCachedTokens(athropicUsage.CacheReadInputTokens)
-	if cachedTokens == 0 {
-		cachedTokens = normalizeCachedTokens(athropicUsage.CacheCreationInputTokens)
-	}
+	cacheReadTokens := normalizeCachedTokens(athropicUsage.CacheReadInputTokens)
+	cacheWriteTokens := normalizeCachedTokens(athropicUsage.CacheCreationInputTokens)
 
 	return &models.ChatLog{
 		FirstChunkTimeMs: int(firstChunkTime.Milliseconds()),
@@ -319,8 +317,8 @@ func ProcesserAnthropic(ctx context.Context, pr io.Reader, stream bool, start ti
 			PromptTokens:        athropicUsage.InputTokens,
 			CompletionTokens:    athropicUsage.OutputTokens,
 			TotalTokens:         totalTokens,
-			CachedTokens:        cachedTokens,
-			PromptTokensDetails: buildPromptTokensDetailsJSON(cachedTokens),
+			CachedTokens:        cacheReadTokens,
+			PromptTokensDetails: buildPromptTokensDetailsJSON(cacheReadTokens, cacheWriteTokens, true),
 		},
 		Tps:  float64(totalTokens) / chunkTime.Seconds(),
 		Size: size,
@@ -348,13 +346,16 @@ func normalizeCachedTokens(value int64) int64 {
 	return value
 }
 
-func buildPromptTokensDetailsJSON(cachedTokens int64) string {
+func buildPromptTokensDetailsJSON(cachedTokens int64, cacheWriteTokens int64, promptExcludesCached bool) string {
 	cachedTokens = normalizeCachedTokens(cachedTokens)
-	if cachedTokens <= 0 {
+	cacheWriteTokens = normalizeCachedTokens(cacheWriteTokens)
+	if cachedTokens <= 0 && cacheWriteTokens <= 0 && !promptExcludesCached {
 		return ""
 	}
 	details := models.PromptTokensDetails{
-		CachedTokens: cachedTokens,
+		CachedTokens:              cachedTokens,
+		CacheWriteTokens:          cacheWriteTokens,
+		PromptExcludesCachedToken: promptExcludesCached,
 	}
 	content, err := json.Marshal(details)
 	if err != nil {

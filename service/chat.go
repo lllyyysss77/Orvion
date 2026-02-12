@@ -283,6 +283,11 @@ func RecordLog(ctx context.Context, reqStart time.Time, reader io.ReadCloser, pr
 		if _, err := gorm.G[models.ChatLog](models.DB).Where("id = ?", logId).Updates(ctx, *log); err != nil {
 			return err
 		}
+		if log.TotalCost > 0 {
+			if err := AddTotalConsumedAmount(ctx, log.TotalCost); err != nil {
+				slog.Warn("累计总金额到 config 失败", "error", err, "log_id", logId)
+			}
+		}
 		if ioLog {
 			chatIO := models.ChatIO{}
 			if output.OfString != "" {

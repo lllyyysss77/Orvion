@@ -16,6 +16,8 @@ const (
 	KeyModelPriceSync = "model_price_sync"
 	// KeyFirstDeployTime 首次部署时间（用于跨重启统计系统总运行时间），值为 RFC3339 时间字符串（UTC）。
 	KeyFirstDeployTime = "first_deploy_time"
+	// KeyTotalConsumedAmount 全局累计消费金额（持久化累加，不受日志删除影响）。
+	KeyTotalConsumedAmount = "total_consumed_amount"
 )
 
 type AnthropicCountTokens struct {

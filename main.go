@@ -34,6 +34,10 @@ func init() {
 	if _, err := service.GetOrInitFirstDeployTime(ctx); err != nil {
 		slog.Warn("Failed to init first deploy time, will fallback at runtime", "error", err)
 	}
+	// 初始化累计消费金额（持久化到 configs 表），用于日志删除后仍可保留历史累计金额。
+	if _, err := service.GetOrInitTotalConsumedAmount(ctx); err != nil {
+		slog.Warn("Failed to init total consumed amount, will fallback at runtime", "error", err)
+	}
 
 	// 初始化Redis客户端（可选）
 	var redisClient *redis.Client

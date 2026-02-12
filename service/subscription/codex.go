@@ -60,7 +60,7 @@ var (
 	ErrCodexSubscriptionNotFound = errors.New("订阅凭据不存在")
 
 	codexStatePattern        = regexp.MustCompile(`^[A-Za-z0-9_-]{16,128}$`)
-	codexCredentialIDPattern = regexp.MustCompile(`^codex-[A-Za-z0-9._-]+\.json$`)
+	codexCredentialIDPattern = regexp.MustCompile(`^codex-[A-Za-z0-9._@-]+\.json$`)
 	codexCleanerPattern      = regexp.MustCompile(`[^a-z0-9._-]+`)
 
 	// 参考 CLIProxyAPIPlus: Codex 可用模型由本地注册表静态维护，不直接调用上游模型列表接口。
@@ -119,7 +119,7 @@ type CodexRequestCredential struct {
 	PlanType       string `json:"plan_type,omitempty"`
 }
 
-type CodexTeamQuota struct {
+type CodexSubscriptionQuota struct {
 	SubscriptionID    string             `json:"subscription_id"`
 	Model             string             `json:"model"`
 	ProbeURL          string             `json:"probe_url"`
@@ -482,47 +482,45 @@ func (m *CodexSubscriptionManager) ListSubscriptions() ([]CodexSubscription, err
 	if strings.TrimSpace(m.authDir) == "" {
 		return []CodexSubscription{}, nil
 	}
-	entries, err := os.ReadDir(m.authDir)
+	files, err := collectCredentialFiles(m.authDir, codexCredentialIDPattern)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return []CodexSubscription{}, nil
-		}
 		return nil, err
 	}
 
-	subs := make([]CodexSubscription, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-
-		name := entry.Name()
-		if !strings.HasPrefix(name, "codex-") || !strings.HasSuffix(name, ".json") {
-			continue
-		}
-
-		fullPath := filepath.Join(m.authDir, name)
-		raw, readErr := os.ReadFile(fullPath)
+	subs := make([]CodexSubscription, 0, len(files))
+	for _, file := range files {
+		raw, readErr := os.ReadFile(file.Path)
 		if readErr != nil {
-			slog.Warn("读取 Codex 凭据文件失败", "file", name, "error", readErr)
+			slog.Warn("读取 Codex 凭据文件失败", "file", file.RelativePath, "error", readErr)
 			continue
 		}
 
 		var record codexCredentialRecord
 		if unmarshalErr := json.Unmarshal(raw, &record); unmarshalErr != nil {
-			slog.Warn("解析 Codex 凭据文件失败", "file", name, "error", unmarshalErr)
+			slog.Warn("解析 Codex 凭据文件失败", "file", file.RelativePath, "error", unmarshalErr)
 			continue
 		}
-
-		info, statErr := os.Stat(fullPath)
-		if statErr != nil {
-			slog.Warn("读取 Codex 凭据文件信息失败", "file", name, "error", statErr)
-			continue
+		// 兼容历史凭据：若文件内未写入套餐/账号字段，则尝试从 id_token 回填。
+		if strings.TrimSpace(record.IDToken) != "" {
+			if claims, parseErr := parseCodexIDTokenClaims(record.IDToken); parseErr == nil {
+				if strings.TrimSpace(record.PlanType) == "" {
+					record.PlanType = strings.TrimSpace(claims.PlanType)
+				}
+				if strings.TrimSpace(record.AccountID) == "" {
+					record.AccountID = strings.TrimSpace(claims.AccountID)
+				}
+				if strings.TrimSpace(record.SubscriptionActiveStart) == "" {
+					record.SubscriptionActiveStart = strings.TrimSpace(claims.SubscriptionActiveStart)
+				}
+				if strings.TrimSpace(record.SubscriptionActiveUntil) == "" {
+					record.SubscriptionActiveUntil = strings.TrimSpace(claims.SubscriptionActiveUntil)
+				}
+			}
 		}
 
 		sub := CodexSubscription{
-			ID:                      name,
-			FileName:                name,
+			ID:                      file.Name,
+			FileName:                file.Name,
 			Email:                   record.Email,
 			PlanType:                record.PlanType,
 			AccountID:               record.AccountID,
@@ -530,13 +528,16 @@ func (m *CodexSubscriptionManager) ListSubscriptions() ([]CodexSubscription, err
 			SubscriptionActiveUntil: record.SubscriptionActiveUntil,
 			LastRefresh:             record.LastRefresh,
 			Expired:                 record.Expired,
-			CreatedAt:               info.ModTime().UTC(),
-			UpdatedAt:               info.ModTime().UTC(),
+			CreatedAt:               file.ModTime,
+			UpdatedAt:               file.ModTime,
 		}
 		subs = append(subs, sub)
 	}
 
 	sort.Slice(subs, func(i, j int) bool {
+		if subs[i].UpdatedAt.Equal(subs[j].UpdatedAt) {
+			return subs[i].ID < subs[j].ID
+		}
 		return subs[i].UpdatedAt.After(subs[j].UpdatedAt)
 	})
 
@@ -555,7 +556,14 @@ func (m *CodexSubscriptionManager) DeleteSubscription(id string) error {
 		return ErrCodexSubscriptionNotFound
 	}
 
-	fullPath := filepath.Join(m.authDir, id)
+	fullPath, err := resolveCredentialPath(m.authDir, id, codexCredentialIDPattern)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return ErrCodexSubscriptionNotFound
+		}
+		return err
+	}
+
 	if err := os.Remove(fullPath); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return ErrCodexSubscriptionNotFound
@@ -634,7 +642,7 @@ func (m *CodexSubscriptionManager) ResolveRequestCredential(ctx context.Context,
 	}, nil
 }
 
-func (m *CodexSubscriptionManager) GetTeamQuota(ctx context.Context, subscriptionID string) (*CodexTeamQuota, error) {
+func (m *CodexSubscriptionManager) GetSubscriptionQuota(ctx context.Context, subscriptionID string) (*CodexSubscriptionQuota, error) {
 	record, err := m.readCredentialForUse(ctx, subscriptionID)
 	if err != nil {
 		return nil, err
@@ -682,7 +690,7 @@ func (m *CodexSubscriptionManager) GetTeamQuota(ctx context.Context, subscriptio
 		return nil, err
 	}
 
-	quota := &CodexTeamQuota{
+	quota := &CodexSubscriptionQuota{
 		SubscriptionID: subscriptionID,
 		Model:          defaultCodexQuotaProbeModel,
 		ProbeURL:       usageURL,
@@ -757,7 +765,14 @@ func (m *CodexSubscriptionManager) readCredentialRecordWithPath(id string) (code
 		return codexCredentialRecord{}, "", ErrCodexSubscriptionNotFound
 	}
 
-	fullPath := filepath.Join(m.authDir, id)
+	fullPath, err := resolveCredentialPath(m.authDir, id, codexCredentialIDPattern)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return codexCredentialRecord{}, "", ErrCodexSubscriptionNotFound
+		}
+		return codexCredentialRecord{}, "", err
+	}
+
 	raw, err := os.ReadFile(fullPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -1281,7 +1296,7 @@ func GetCodexClientOriginator() string {
 	return codexClientOriginator
 }
 
-func collectQuotaFromHeaders(quota *CodexTeamQuota, header http.Header) {
+func collectQuotaFromHeaders(quota *CodexSubscriptionQuota, header http.Header) {
 	if quota == nil {
 		return
 	}
@@ -1347,7 +1362,7 @@ func collectQuotaFromHeaders(quota *CodexTeamQuota, header http.Header) {
 	assignResetByCodexHeaders(quota, secondaryResetAfter, secondaryResetAt, false)
 }
 
-func collectQuotaFromUsagePayload(quota *CodexTeamQuota, rawBody []byte) {
+func collectQuotaFromUsagePayload(quota *CodexSubscriptionQuota, rawBody []byte) {
 	if quota == nil || len(rawBody) == 0 {
 		return
 	}
@@ -1372,7 +1387,7 @@ func collectQuotaFromUsagePayload(quota *CodexTeamQuota, rawBody []byte) {
 	assignLegacyQuotaFromWindows(quota, windows)
 }
 
-func collectQuotaFromBody(quota *CodexTeamQuota, rawBody []byte) {
+func collectQuotaFromBody(quota *CodexSubscriptionQuota, rawBody []byte) {
 	if quota == nil || len(rawBody) == 0 {
 		return
 	}
@@ -1416,7 +1431,7 @@ func collectQuotaFromBody(quota *CodexTeamQuota, rawBody []byte) {
 	}
 }
 
-func normalizeCodexQuota(quota *CodexTeamQuota) {
+func normalizeCodexQuota(quota *CodexSubscriptionQuota) {
 	if quota == nil {
 		return
 	}
@@ -1541,65 +1556,87 @@ func joinQuotaSource(origin, next string) string {
 
 func buildCodexUsageWindows(payload codexUsagePayload) []CodexQuotaWindow {
 	windows := make([]CodexQuotaWindow, 0, 4)
-
-	appendClassified := func(
-		limit *codexRateLimitInfo,
-		fiveHourID, fiveHourLabel, weeklyID, weeklyLabel string,
-	) {
-		fiveHourWindow, weeklyWindow := classifyCodexWindows(limit)
-		limitReached := false
-		var allowed *bool
-		if limit != nil {
-			if limit.LimitReached != nil {
-				limitReached = *limit.LimitReached
-			}
-			allowed = limit.Allowed
-		}
-
-		windows = appendCodexQuotaWindow(windows, fiveHourID, fiveHourLabel, fiveHourWindow, limitReached, allowed)
-		windows = appendCodexQuotaWindow(windows, weeklyID, weeklyLabel, weeklyWindow, limitReached, allowed)
-	}
-
-	appendClassified(
-		payload.RateLimit,
-		"five-hour",
-		"主窗口 (5 小时)",
-		"weekly",
-		"副窗口 (7 天)",
-	)
-	appendClassified(
-		payload.CodeReviewRateLimit,
-		"code-review-five-hour",
-		"Code Review 主窗口 (5 小时)",
-		"code-review-weekly",
-		"Code Review 副窗口 (7 天)",
-	)
-
+	windows = appendWindowsFromRateLimit(windows, payload.RateLimit, "", "主额度")
+	windows = appendWindowsFromRateLimit(windows, payload.CodeReviewRateLimit, "code-review", "Code Review")
 	return windows
 }
 
-func classifyCodexWindows(limit *codexRateLimitInfo) (fiveHourWindow *codexUsageWindow, weeklyWindow *codexUsageWindow) {
+func appendWindowsFromRateLimit(
+	list []CodexQuotaWindow,
+	limit *codexRateLimitInfo,
+	idPrefix string,
+	labelPrefix string,
+) []CodexQuotaWindow {
 	if limit == nil {
-		return nil, nil
+		return list
 	}
+	limitReached := false
+	if limit.LimitReached != nil {
+		limitReached = *limit.LimitReached
+	}
+	list = appendCodexQuotaWindow(
+		list,
+		withQuotaWindowPrefix(idPrefix, "primary"),
+		buildQuotaWindowLabel(labelPrefix, "主窗口", limit.PrimaryWindow),
+		limit.PrimaryWindow,
+		limitReached,
+		limit.Allowed,
+	)
+	list = appendCodexQuotaWindow(
+		list,
+		withQuotaWindowPrefix(idPrefix, "secondary"),
+		buildQuotaWindowLabel(labelPrefix, "副窗口", limit.SecondaryWindow),
+		limit.SecondaryWindow,
+		limitReached,
+		limit.Allowed,
+	)
+	return list
+}
 
-	for _, window := range []*codexUsageWindow{limit.PrimaryWindow, limit.SecondaryWindow} {
-		if window == nil || window.LimitWindowSeconds == nil {
-			continue
-		}
-		switch *window.LimitWindowSeconds {
-		case codexFiveHourWindowSeconds:
-			if fiveHourWindow == nil {
-				fiveHourWindow = window
-			}
-		case codexWeeklyWindowSeconds:
-			if weeklyWindow == nil {
-				weeklyWindow = window
-			}
+func withQuotaWindowPrefix(prefix, suffix string) string {
+	prefix = strings.TrimSpace(prefix)
+	suffix = strings.TrimSpace(suffix)
+	if prefix == "" {
+		return suffix
+	}
+	return prefix + "-" + suffix
+}
+
+func buildQuotaWindowLabel(prefix, role string, window *codexUsageWindow) string {
+	role = strings.TrimSpace(role)
+	if role == "" {
+		role = "窗口"
+	}
+	label := role
+	prefix = strings.TrimSpace(prefix)
+	if prefix != "" {
+		label = prefix + " " + role
+	}
+	if window != nil && window.LimitWindowSeconds != nil && *window.LimitWindowSeconds > 0 {
+		if desc := formatQuotaWindowDuration(*window.LimitWindowSeconds); desc != "" {
+			label = fmt.Sprintf("%s (%s)", label, desc)
 		}
 	}
+	return label
+}
 
-	return fiveHourWindow, weeklyWindow
+func formatQuotaWindowDuration(seconds int64) string {
+	switch {
+	case seconds <= 0:
+		return ""
+	case seconds == codexFiveHourWindowSeconds:
+		return "5 小时"
+	case seconds == codexWeeklyWindowSeconds:
+		return "7 天"
+	case seconds%(24*3600) == 0:
+		return fmt.Sprintf("%d 天", seconds/(24*3600))
+	case seconds%3600 == 0:
+		return fmt.Sprintf("%d 小时", seconds/3600)
+	case seconds%60 == 0:
+		return fmt.Sprintf("%d 分钟", seconds/60)
+	default:
+		return fmt.Sprintf("%d 秒", seconds)
+	}
 }
 
 func appendCodexQuotaWindow(
@@ -1676,27 +1713,57 @@ func normalizePercentValue(raw *float64) *float64 {
 	return &value
 }
 
-func assignLegacyQuotaFromWindows(quota *CodexTeamQuota, windows []CodexQuotaWindow) {
+func assignLegacyQuotaFromWindows(quota *CodexSubscriptionQuota, windows []CodexQuotaWindow) {
 	if quota == nil || len(windows) == 0 {
 		return
 	}
 
+	requestIdx, tokenIdx := -1, -1
 	for i := range windows {
-		window := windows[i]
-		switch window.ID {
-		case "five-hour":
-			quota.RequestLimit, quota.RequestRemaining = quotaFromRemainingPercent(window.RemainingPercent)
-			if window.ResetAfterSeconds != nil && *window.ResetAfterSeconds > 0 {
-				quota.RequestReset = fmt.Sprintf("%ds", *window.ResetAfterSeconds)
+		windowID := windows[i].ID
+		switch windowID {
+		case "five-hour", "primary":
+			if requestIdx == -1 {
+				requestIdx = i
 			}
-			quota.RequestResetAt = window.ResetAt
-		case "weekly":
-			quota.TokenLimit, quota.TokenRemaining = quotaFromRemainingPercent(window.RemainingPercent)
-			if window.ResetAfterSeconds != nil && *window.ResetAfterSeconds > 0 {
-				quota.TokenReset = fmt.Sprintf("%ds", *window.ResetAfterSeconds)
+		case "weekly", "secondary":
+			if tokenIdx == -1 {
+				tokenIdx = i
 			}
-			quota.TokenResetAt = window.ResetAt
+		default:
+			if requestIdx == -1 && strings.Contains(windowID, "primary") && !strings.Contains(windowID, "code-review") {
+				requestIdx = i
+			}
+			if tokenIdx == -1 && strings.Contains(windowID, "secondary") && !strings.Contains(windowID, "code-review") {
+				tokenIdx = i
+			}
 		}
+	}
+	if requestIdx == -1 {
+		requestIdx = 0
+	}
+	if tokenIdx == -1 {
+		for i := range windows {
+			if i == requestIdx {
+				continue
+			}
+			if !strings.Contains(windows[i].ID, "code-review") {
+				tokenIdx = i
+				break
+			}
+		}
+	}
+	if tokenIdx == -1 && len(windows) > 1 {
+		if requestIdx == 0 {
+			tokenIdx = 1
+		} else {
+			tokenIdx = 0
+		}
+	}
+
+	applyLegacyQuotaFromWindow(&windows[requestIdx], &quota.RequestLimit, &quota.RequestRemaining, &quota.RequestReset, &quota.RequestResetAt)
+	if tokenIdx >= 0 {
+		applyLegacyQuotaFromWindow(&windows[tokenIdx], &quota.TokenLimit, &quota.TokenRemaining, &quota.TokenReset, &quota.TokenResetAt)
 	}
 
 	requestResetAt := parseRFC3339OrZero(quota.RequestResetAt)
@@ -1709,6 +1776,17 @@ func assignLegacyQuotaFromWindows(quota *CodexTeamQuota, windows []CodexQuotaWin
 		quota.ResetAt = quota.TokenResetAt
 		quota.ResetTime = quota.TokenReset
 	}
+}
+
+func applyLegacyQuotaFromWindow(window *CodexQuotaWindow, limit, remaining **int64, reset, resetAt *string) {
+	if window == nil {
+		return
+	}
+	*limit, *remaining = quotaFromRemainingPercent(window.RemainingPercent)
+	if window.ResetAfterSeconds != nil && *window.ResetAfterSeconds > 0 {
+		*reset = fmt.Sprintf("%ds", *window.ResetAfterSeconds)
+	}
+	*resetAt = window.ResetAt
 }
 
 func quotaFromRemainingPercent(remainingPercent *float64) (*int64, *int64) {
@@ -1768,7 +1846,7 @@ func assignPercentQuota(usedPercent *float64, limitTarget, remainingTarget **int
 	}
 }
 
-func assignResetByCodexHeaders(quota *CodexTeamQuota, resetAfter *int64, resetAtRaw string, primary bool) {
+func assignResetByCodexHeaders(quota *CodexSubscriptionQuota, resetAfter *int64, resetAtRaw string, primary bool) {
 	if quota == nil {
 		return
 	}

@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/racio/orvion/common"
 	"github.com/racio/orvion/models"
+	"github.com/racio/orvion/service"
 	"gorm.io/gorm"
 )
 
@@ -23,6 +24,10 @@ type MetricsSummaryRes struct {
 	SuccessRate      float64 `json:"successRate"`
 	PromptTokens     int64   `json:"promptTokens"`
 	CompletionTokens int64   `json:"completionTokens"`
+	TotalTokens      int64   `json:"totalTokens"`
+	TodayTokens      int64   `json:"todayTokens"`
+	TotalAmount      float64 `json:"totalAmount"`
+	TodayAmount      float64 `json:"todayAmount"`
 	TodayReqs        int64   `json:"todayReqs"`
 	TodaySuccessRate float64 `json:"todaySuccessRate"`
 	TodaySuccessReqs int64   `json:"todaySuccessReqs"`
@@ -97,10 +102,17 @@ func MetricsSummary(c *gin.Context) {
 	type tokenAgg struct {
 		Prompt     sql.NullInt64 `gorm:"column:prompt"`
 		Completion sql.NullInt64 `gorm:"column:completion"`
+		Total      sql.NullInt64 `gorm:"column:total"`
 	}
 	var agg tokenAgg
-	if err := base.Select("COALESCE(SUM(prompt_tokens),0) AS prompt, COALESCE(SUM(completion_tokens),0) AS completion").Scan(&agg).Error; err != nil {
+	if err := base.Select("COALESCE(SUM(prompt_tokens),0) AS prompt, COALESCE(SUM(completion_tokens),0) AS completion, COALESCE(SUM(total_tokens),0) AS total").Scan(&agg).Error; err != nil {
 		common.InternalServerError(c, "Failed to sum tokens: "+err.Error())
+		return
+	}
+
+	totalAmount, err := service.GetOrInitTotalConsumedAmount(ctx)
+	if err != nil {
+		common.InternalServerError(c, "Failed to load total amount: "+err.Error())
 		return
 	}
 
@@ -120,6 +132,28 @@ func MetricsSummary(c *gin.Context) {
 	}
 	todayFailure := todayReqs - todaySuccess
 
+	var todayTokens sql.NullInt64
+	if err := models.DB.WithContext(ctx).
+		Model(&models.ChatLog{}).
+		Where("deleted_at IS NULL").
+		Where("created_at >= ?", startOfDay).
+		Select("COALESCE(SUM(total_tokens),0) AS total").
+		Scan(&todayTokens).Error; err != nil {
+		common.InternalServerError(c, "Failed to sum today tokens: "+err.Error())
+		return
+	}
+
+	var todayAmount sql.NullFloat64
+	if err := models.DB.WithContext(ctx).
+		Model(&models.ChatLog{}).
+		Where("deleted_at IS NULL").
+		Where("created_at >= ?", startOfDay).
+		Select("COALESCE(SUM(total_cost),0) AS amount").
+		Scan(&todayAmount).Error; err != nil {
+		common.InternalServerError(c, "Failed to sum today amount: "+err.Error())
+		return
+	}
+
 	successRate := 0.0
 	if totalReqs > 0 {
 		successRate = float64(totalSuccess) / float64(totalReqs) * 100
@@ -135,6 +169,10 @@ func MetricsSummary(c *gin.Context) {
 		SuccessRate:      successRate,
 		PromptTokens:     agg.Prompt.Int64,
 		CompletionTokens: agg.Completion.Int64,
+		TotalTokens:      agg.Total.Int64,
+		TodayTokens:      todayTokens.Int64,
+		TotalAmount:      totalAmount,
+		TodayAmount:      todayAmount.Float64,
 		TodayReqs:        todayReqs,
 		TodaySuccessRate: todaySuccessRate,
 		TodaySuccessReqs: todaySuccess,

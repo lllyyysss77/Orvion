@@ -315,7 +315,7 @@ func DeleteProvider(c *gin.Context) {
 
 // GetModels 获取模型列表（支持分页与筛选）
 func GetModels(c *gin.Context) {
-	params, err := common.ParsePagination(c)
+	params, err := common.ParsePaginationWithDefaults(c, 1, 10)
 	if err != nil {
 		common.BadRequest(c, err.Error())
 		return

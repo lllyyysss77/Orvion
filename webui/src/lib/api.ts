@@ -163,7 +163,7 @@ export interface CodexQuotaWindow {
   reset_label?: string;
 }
 
-export interface CodexTeamQuota {
+export interface CodexSubscriptionQuota {
   subscription_id: string;
   model: string;
   probe_url: string;
@@ -386,8 +386,8 @@ export async function getCodexSubscriptionModels(id: string): Promise<CodexModel
   return apiRequest<CodexModel[]>(`/codex/subscriptions/${encodeURIComponent(id)}/models`);
 }
 
-export async function getCodexSubscriptionTeamQuota(id: string): Promise<CodexTeamQuota> {
-  return apiRequest<CodexTeamQuota>(`/codex/subscriptions/${encodeURIComponent(id)}/team-quota`);
+export async function getCodexSubscriptionQuota(id: string): Promise<CodexSubscriptionQuota> {
+  return apiRequest<CodexSubscriptionQuota>(`/codex/subscriptions/${encodeURIComponent(id)}/quota`);
 }
 
 // Provider API functions
@@ -661,6 +661,10 @@ export interface MetricsSummary {
   successRate: number;
   promptTokens: number;
   completionTokens: number;
+  totalTokens: number;
+  todayTokens: number;
+  totalAmount: number;
+  todayAmount: number;
   todayReqs: number;
   todaySuccessRate: number;
   todaySuccessReqs: number;
@@ -850,7 +854,7 @@ export async function getUserAgents(): Promise<string[]> {
 
 export async function getLogs(
   page: number = 1,
-  pageSize: number = 20,
+  pageSize: number = 10,
   filters: {
     name?: string;
     providerModel?: string;

@@ -186,7 +186,7 @@ func registerCodexRoutes(api *gin.RouterGroup) {
 	api.GET("/codex/subscriptions", codexhandler.ListCodexSubscriptions)
 	api.DELETE("/codex/subscriptions/:id", codexhandler.DeleteCodexSubscription)
 	api.GET("/codex/subscriptions/:id/models", codexhandler.GetCodexSubscriptionModels)
-	api.GET("/codex/subscriptions/:id/team-quota", codexhandler.GetCodexSubscriptionTeamQuota)
+	api.GET("/codex/subscriptions/:id/quota", codexhandler.GetCodexSubscriptionQuota)
 }
 
 func registerIFlowRoutes(api *gin.RouterGroup) {

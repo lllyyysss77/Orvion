@@ -9,7 +9,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Input } from "@/components/ui/input";
 import Loading from "@/components/loading";
 import { getLogs, getProviders, getModelOptions, getAuthKeysList, type ChatLog, type Provider, type Model, type AuthKeyItem, getProviderTemplates, cleanLogs } from "@/lib/api";
-import { ChevronLeft, ChevronRight, RefreshCw, Trash2, Eye, EyeOff, Timer, ArrowDown, ArrowUp, Zap, Coins, Database } from "lucide-react";
+import { ChevronLeft, ChevronRight, RefreshCw, Trash2, Eye, EyeOff, Timer, Zap, ArrowDown, ArrowUp, Database, Coins } from "lucide-react";
 import hunyuanIcon from "@/assets/modelIcon/hunyuan.svg";
 import doubaoIcon from "@/assets/modelIcon/doubao.svg";
 import grokIcon from "@/assets/modelIcon/grok.svg";
@@ -78,7 +78,17 @@ const DetailCard = ({ label, value, mono = false }: DetailCardProps) => (
 
 
 const formatDurationValue = (value?: number) => (typeof value === "number" ? formatDurationMs(value) : "-");
-const formatTokenValue = (value?: number) => (typeof value === "number" ? value.toLocaleString() : "-");
+const formatTokenValue = (value?: number) => {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "-";
+  const absValue = Math.abs(value);
+  if (absValue > 1000) {
+    const kValue = value / 1000;
+    const absK = Math.abs(kValue);
+    const precision = absK >= 100 ? 0 : absK >= 10 ? 1 : 2;
+    return `${kValue.toFixed(precision).replace(/\.?0+$/, "")}k`;
+  }
+  return value.toLocaleString();
+};
 const formatTpsValue = (value?: number) => (typeof value === "number" ? value.toFixed(2) : "-");
 const formatCostValue = (value?: number) => {
   if (typeof value !== "number" || !Number.isFinite(value)) return "-";
@@ -92,21 +102,36 @@ type LogCardProps = {
   onViewChatIO: (log: ChatLog) => void;
 };
 
-type MetricItemProps = {
+type AlignedMetricItemProps = {
   icon: ReactNode;
   label: string;
   value: string;
 };
 
-const MetricItem = ({ icon, label, value }: MetricItemProps) => (
-  <div className="flex items-center justify-between gap-2 rounded-lg border border-border/60 bg-muted/20 px-2.5 py-2">
-    <span className="inline-flex shrink-0 items-center gap-1.5 text-[11px] text-muted-foreground whitespace-nowrap">
+const AlignedMetricItem = ({ icon, label, value }: AlignedMetricItemProps) => (
+  <div className="min-w-0 whitespace-nowrap text-xs leading-none">
+    <span className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center align-middle text-muted-foreground/85">
       {icon}
-      <span>{label}</span>
     </span>
-    <span className="min-w-[4.8rem] text-right tabular-nums text-sm font-medium text-foreground whitespace-nowrap">
-      {value}
-    </span>
+    <span className="ml-1 text-muted-foreground align-middle">{label}</span>{" "}
+    <span className="tabular-nums font-medium text-foreground align-middle">{value}</span>
+  </div>
+);
+
+type LogMetric = {
+  key: string;
+  icon: ReactNode;
+  label: string;
+  value: string;
+};
+
+const MetricsGrid = ({ items }: { items: LogMetric[] }) => (
+  <div className="mt-2 grid w-full grid-cols-2 gap-x-2 gap-y-1.5 sm:grid-cols-3 lg:grid-cols-[9.5rem_9.5rem_7.5rem_7.5rem_7.5rem_7.5rem]">
+    {items.map((item) => (
+      <div key={item.key} className="justify-self-start">
+        <AlignedMetricItem icon={item.icon} label={item.label} value={item.value} />
+      </div>
+    ))}
   </div>
 );
 
@@ -118,11 +143,49 @@ const LogCard = memo(({ log, onOpenDetail, onViewChatIO }: LogCardProps) => {
     : "bg-rose-100 text-rose-700";
   const createdAt = new Date(log.CreatedAt).toLocaleString();
   const canViewChatIO = log.Status === "success" && log.ChatIO;
+  const metrics: LogMetric[] = [
+    {
+      key: "first",
+      icon: <Timer className="h-3.5 w-3.5 text-sky-500" />,
+      label: "首字",
+      value: formatDurationValue(durations.first)
+    },
+    {
+      key: "total",
+      icon: <Zap className="h-3.5 w-3.5 text-amber-500" />,
+      label: "总耗时",
+      value: formatDurationValue(durations.total)
+    },
+    {
+      key: "input",
+      icon: <ArrowDown className="h-3.5 w-3.5 text-emerald-500" />,
+      label: "输入",
+      value: formatTokenValue(log.prompt_tokens)
+    },
+    {
+      key: "output",
+      icon: <ArrowUp className="h-3.5 w-3.5 text-violet-500" />,
+      label: "输出",
+      value: formatTokenValue(log.completion_tokens)
+    },
+    {
+      key: "cache",
+      icon: <Database className="h-3.5 w-3.5 text-cyan-600" />,
+      label: "缓存",
+      value: formatTokenValue(getCachedTokensFromLog(log))
+    },
+    {
+      key: "price",
+      icon: <Coins className="h-3.5 w-3.5 text-emerald-600" />,
+      label: "价格",
+      value: formatCostValue(log.total_cost)
+    },
+  ];
 
   return (
     <div className="rounded-2xl border border-border/60 bg-card/90 shadow-sm px-4 py-3">
       <div className="flex items-start justify-between gap-3">
-        <div className="flex items-start gap-3 min-w-0">
+        <div className="flex flex-1 items-start gap-3 min-w-0">
           <ModelIcon name={log.Name || ""} />
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2 min-w-0">
@@ -151,38 +214,7 @@ const LogCard = memo(({ log, onOpenDetail, onViewChatIO }: LogCardProps) => {
                 {statusText}
               </span>
             </div>
-            <div className="mt-2 grid grid-cols-2 gap-2 text-xs sm:grid-cols-3 lg:grid-cols-6">
-              <MetricItem
-                icon={<Timer className="size-3 text-sky-500" />}
-                label="首字"
-                value={formatDurationValue(durations.first)}
-              />
-              <MetricItem
-                icon={<Zap className="size-3 text-amber-500" />}
-                label="总耗时"
-                value={formatDurationValue(durations.total)}
-              />
-              <MetricItem
-                icon={<ArrowDown className="size-3 text-emerald-500" />}
-                label="输入"
-                value={formatTokenValue(log.prompt_tokens)}
-              />
-              <MetricItem
-                icon={<ArrowUp className="size-3 text-violet-500" />}
-                label="输出"
-                value={formatTokenValue(log.completion_tokens)}
-              />
-              <MetricItem
-                icon={<Database className="size-3 text-cyan-600" />}
-                label="缓存"
-                value={formatTokenValue(getCachedTokensFromLog(log))}
-              />
-              <MetricItem
-                icon={<Coins className="size-3 text-emerald-600" />}
-                label="价格"
-                value={formatCostValue(log.total_cost)}
-              />
-            </div>
+            <MetricsGrid items={metrics} />
           </div>
         </div>
         <div className="flex items-center gap-1">
@@ -283,7 +315,7 @@ export default function LogsPage() {
   const [logs, setLogs] = useState<ChatLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
+  const [pageSize, setPageSize] = useState(10);
   const [total, setTotal] = useState(0);
   const [pages, setPages] = useState(0);
   const [providers, setProviders] = useState<Provider[]>([]);

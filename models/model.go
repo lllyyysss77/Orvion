@@ -92,8 +92,10 @@ type Usage struct {
 }
 
 type PromptTokensDetails struct {
-	CachedTokens int64 `json:"cached_tokens"`
-	AudioTokens  int64 `json:"audio_tokens"`
+	CachedTokens              int64 `json:"cached_tokens"`
+	CacheWriteTokens          int64 `json:"cache_write_tokens,omitempty"`
+	PromptExcludesCachedToken bool  `json:"prompt_excludes_cached_tokens,omitempty"`
+	AudioTokens               int64 `json:"audio_tokens"`
 }
 
 type ChatIO struct {

@@ -20,7 +20,6 @@ import {
   Activity,
   MessageSquare,
   Clock,
-  BarChart3,
   BadgeCheck,
   ArrowDownToLine,
   ArrowUpToLine,
@@ -646,6 +645,10 @@ export default function Home() {
     successRate: 0,
     promptTokens: 0,
     completionTokens: 0,
+    totalTokens: 0,
+    todayTokens: 0,
+    totalAmount: 0,
+    todayAmount: 0,
     todayReqs: 0,
     todaySuccessRate: 0,
     todaySuccessReqs: 0,
@@ -823,19 +826,18 @@ export default function Home() {
               />
 
               <SummaryCard
-                title="成功统计"
-                icon={BarChart3}
+                title="金额统计"
+                icon={Coins}
                 items={[
                   {
-                    label: "成功率",
-                    value: <span className="text-base font-semibold">{summary.successRate.toFixed(2)}%</span>,
-                    icon: BadgeCheck,
+                    label: "今日消耗金额",
+                    value: <span className="text-base font-semibold">{formatMoney(summary.todayAmount)}</span>,
+                    icon: CalendarDays,
                   },
                   {
-                    label: "成功请求",
-                    value: <AnimatedCounter value={summary.totalSuccessReqs} className="text-base" />,
-                    subLabel: `失败 ${summary.totalFailureReqs.toLocaleString()}`,
-                    icon: ArrowUpToLine,
+                    label: "总金额",
+                    value: <span className="text-base font-semibold">{formatMoney(summary.totalAmount)}</span>,
+                    icon: Coins,
                   },
                 ]}
               />
@@ -845,13 +847,13 @@ export default function Home() {
                 icon={ArrowDownToLine}
                 items={[
                   {
-                    label: "输入 Tokens",
-                    value: <AnimatedCounter value={summary.promptTokens} className="text-base" />,
-                    icon: ArrowDownToLine,
+                    label: "今日消耗 Tokens",
+                    value: <AnimatedCounter value={summary.todayTokens} className="text-base" />,
+                    icon: CalendarDays,
                   },
                   {
-                    label: "输出 Tokens",
-                    value: <AnimatedCounter value={summary.completionTokens} className="text-base" />,
+                    label: "总消耗 Tokens",
+                    value: <AnimatedCounter value={summary.totalTokens} className="text-base" />,
                     icon: ArrowUpToLine,
                   },
                 ]}
