@@ -101,7 +101,7 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 	// 异步处理输出并记录 tokens
 	go service.RecordLog(context.Background(), startReq, pr, postProcessor, logId, log.AuthKeyID, *before, providersWithMeta.IOLog, logStyle)
 
-	writeHeader(c, before.Stream, res.Header)
+	writeHeader(c, before.Stream, res.Header, logStyle)
 	mirror := io.MultiWriter(c.Writer, pw)
 	if logStyle == consts.StyleOpenAI {
 		if before.Stream {
@@ -138,7 +138,7 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 	_ = pw.Close()
 }
 
-func writeHeader(c *gin.Context, stream bool, header http.Header) {
+func writeHeader(c *gin.Context, stream bool, header http.Header, logStyle string) {
 	for k, values := range header {
 		for _, value := range values {
 			c.Writer.Header().Add(k, value)
@@ -150,6 +150,9 @@ func writeHeader(c *gin.Context, stream bool, header http.Header) {
 		c.Header("Cache-Control", "no-cache")
 		c.Header("Connection", "keep-alive")
 		c.Header("X-Accel-Buffering", "no")
+	} else if logStyle == consts.StyleOpenAIEmbeddings || logStyle == consts.StyleGeminiEmbeddings {
+		// 兼容部分上游返回 text/plain，避免客户端按字符串处理导致解析失败。
+		c.Header("Content-Type", "application/json; charset=utf-8")
 	}
 	c.Writer.Flush()
 }

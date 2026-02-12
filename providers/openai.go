@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/racio/orvion/consts"
+	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
@@ -27,6 +28,13 @@ func (o *OpenAI) BuildReq(ctx context.Context, header http.Header, model string,
 	path := "chat/completions"
 	if strings.EqualFold(strings.TrimSpace(endpoint), "embeddings") {
 		path = "embeddings"
+		// 兼容部分上游（如 ModelScope）要求显式传 encoding_format。
+		if !gjson.GetBytes(body, "encoding_format").Exists() {
+			body, err = sjson.SetBytes(body, "encoding_format", "float")
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 	base := strings.TrimRight(o.BaseURL, "/")
 	req, err := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("%s/%s", base, path), bytes.NewReader(body))
