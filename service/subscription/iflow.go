@@ -723,29 +723,76 @@ func (m *IFlowSubscriptionManager) findSubscriptionByBXAuth(bxAuth string) (stri
 }
 
 func (m *IFlowSubscriptionManager) refreshCredentialRecordIfNeeded(ctx context.Context, record iflowCredentialRecord) (iflowCredentialRecord, bool, error) {
-	cookie := strings.TrimSpace(record.Cookie)
-	email := strings.TrimSpace(record.Email)
-	if cookie == "" || email == "" {
-		return record, false, nil
-	}
-
 	if !shouldRefreshIFlowAPIKey(record.Expired, time.Now()) {
 		return record, false, nil
 	}
 
-	keyData, err := m.refreshAPIKey(ctx, cookie, email)
-	if err != nil {
-		return record, false, err
+	cookie := strings.TrimSpace(record.Cookie)
+	email := strings.TrimSpace(record.Email)
+	// 优先沿用 cookie 刷新链路，兼容手动添加 cookie 的订阅。
+	if cookie != "" && email != "" {
+		keyData, err := m.refreshAPIKey(ctx, cookie, email)
+		if err != nil {
+			return record, false, err
+		}
+		if strings.TrimSpace(keyData.APIKey) == "" {
+			return record, false, errors.New("iflow 刷新后 api key 为空")
+		}
+
+		record.APIKey = strings.TrimSpace(keyData.APIKey)
+		if strings.TrimSpace(keyData.ExpireTime) != "" {
+			record.Expired = strings.TrimSpace(keyData.ExpireTime)
+		}
+		record.LastRefresh = time.Now().Format(time.RFC3339)
+		if strings.TrimSpace(record.Type) == "" {
+			record.Type = "iflow"
+		}
+		return record, true, nil
 	}
-	if strings.TrimSpace(keyData.APIKey) == "" {
+
+	// OAuth 订阅没有 cookie 时，使用 refresh_token 刷新 access_token，并回填最新 api_key。
+	refreshToken := strings.TrimSpace(record.RefreshToken)
+	if refreshToken == "" {
+		return record, false, errors.New("iflow 订阅缺少可用刷新信息（cookie/refresh_token）")
+	}
+
+	tokenResp, err := m.exchangeRefreshTokenForTokens(ctx, refreshToken)
+	if err != nil {
+		return record, false, fmt.Errorf("iflow oauth 刷新失败: %w", err)
+	}
+
+	userInfo, err := m.fetchOAuthUserInfo(ctx, tokenResp.AccessToken)
+	if err != nil {
+		return record, false, fmt.Errorf("iflow oauth 刷新后获取用户信息失败: %w", err)
+	}
+	apiKey := strings.TrimSpace(userInfo.Data.APIKey)
+	if apiKey == "" {
 		return record, false, errors.New("iflow 刷新后 api key 为空")
 	}
 
-	record.APIKey = strings.TrimSpace(keyData.APIKey)
-	if strings.TrimSpace(keyData.ExpireTime) != "" {
-		record.Expired = strings.TrimSpace(keyData.ExpireTime)
+	now := time.Now()
+	record.AccessToken = strings.TrimSpace(tokenResp.AccessToken)
+	if nextRefreshToken := strings.TrimSpace(tokenResp.RefreshToken); nextRefreshToken != "" {
+		record.RefreshToken = nextRefreshToken
 	}
-	record.LastRefresh = time.Now().Format(time.RFC3339)
+	record.APIKey = apiKey
+	refreshedEmail := strings.TrimSpace(userInfo.Data.Email)
+	if refreshedEmail == "" {
+		refreshedEmail = strings.TrimSpace(userInfo.Data.Phone)
+	}
+	if refreshedEmail != "" {
+		record.Email = refreshedEmail
+	}
+	if tokenResp.ExpiresIn > 0 {
+		record.Expired = now.Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339)
+	}
+	if tokenType := strings.TrimSpace(tokenResp.TokenType); tokenType != "" {
+		record.TokenType = tokenType
+	}
+	if scope := strings.TrimSpace(tokenResp.Scope); scope != "" {
+		record.Scope = scope
+	}
+	record.LastRefresh = now.Format(time.RFC3339)
 	if strings.TrimSpace(record.Type) == "" {
 		record.Type = "iflow"
 	}
@@ -755,12 +802,14 @@ func (m *IFlowSubscriptionManager) refreshCredentialRecordIfNeeded(ctx context.C
 func shouldRefreshIFlowAPIKey(expired string, now time.Time) bool {
 	expired = strings.TrimSpace(expired)
 	if expired == "" {
-		return false
+		// 过期时间缺失时保守刷新，避免静默失效。
+		return true
 	}
 
 	expireAt, ok := parseIFlowExpireTime(expired)
 	if !ok {
-		return false
+		// 过期时间无法解析时兜底刷新。
+		return true
 	}
 
 	if now.After(expireAt) {
@@ -1049,6 +1098,15 @@ func getIFlowOAuthClientSecret() string {
 }
 
 func (m *IFlowSubscriptionManager) exchangeCodeForTokens(ctx context.Context, code, redirectURI string) (*iflowOAuthTokenResponse, error) {
+	code = strings.TrimSpace(code)
+	redirectURI = strings.TrimSpace(redirectURI)
+	if code == "" {
+		return nil, errors.New("iflow oauth code 为空")
+	}
+	if redirectURI == "" {
+		return nil, errors.New("iflow oauth redirect_uri 为空")
+	}
+
 	tokenURL := strings.TrimSpace(os.Getenv("IFLOW_OAUTH_TOKEN_URL"))
 	if tokenURL == "" {
 		tokenURL = defaultIFlowOAuthTokenURL
@@ -1060,6 +1118,58 @@ func (m *IFlowSubscriptionManager) exchangeCodeForTokens(ctx context.Context, co
 	form.Set("grant_type", "authorization_code")
 	form.Set("code", code)
 	form.Set("redirect_uri", redirectURI)
+	form.Set("client_id", clientID)
+	form.Set("client_secret", clientSecret)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+	basic := base64.StdEncoding.EncodeToString([]byte(clientID + ":" + clientSecret))
+	req.Header.Set("Authorization", "Basic "+basic)
+
+	resp, err := m.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("iflow token 请求失败(%d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var tokenResp iflowOAuthTokenResponse
+	if err := json.Unmarshal(body, &tokenResp); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(tokenResp.AccessToken) == "" {
+		return nil, errors.New("iflow token 响应缺少 access_token")
+	}
+	return &tokenResp, nil
+}
+
+func (m *IFlowSubscriptionManager) exchangeRefreshTokenForTokens(ctx context.Context, refreshToken string) (*iflowOAuthTokenResponse, error) {
+	refreshToken = strings.TrimSpace(refreshToken)
+	if refreshToken == "" {
+		return nil, errors.New("iflow oauth refresh_token 为空")
+	}
+
+	tokenURL := strings.TrimSpace(os.Getenv("IFLOW_OAUTH_TOKEN_URL"))
+	if tokenURL == "" {
+		tokenURL = defaultIFlowOAuthTokenURL
+	}
+
+	clientID := getIFlowOAuthClientID()
+	clientSecret := getIFlowOAuthClientSecret()
+	form := url.Values{}
+	form.Set("grant_type", "refresh_token")
+	form.Set("refresh_token", refreshToken)
 	form.Set("client_id", clientID)
 	form.Set("client_secret", clientSecret)
 

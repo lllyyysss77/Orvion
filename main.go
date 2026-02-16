@@ -2,9 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"net/http"
 	"os"
+	"os/signal"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 	_ "time/tzdata"
 
@@ -98,15 +103,74 @@ func initLogging() {
 func main() {
 	token := os.Getenv("TOKEN")
 	router := buildRouter(token)
-	startBackgroundWorkers(context.Background())
 
 	port := os.Getenv("LLMIO_SERVER_PORT")
 	if port == "" {
 		port = consts.DefaultPort
 	}
-	if err := router.Run(":" + port); err != nil {
-		slog.Error("Server startup failed", "error", err)
+
+	addr := ":" + port
+	server := &http.Server{
+		Addr:              addr,
+		Handler:           router,
+		ReadHeaderTimeout: 5 * time.Second,
 	}
+
+	rootCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+
+	startBackgroundWorkers(rootCtx)
+
+	serverErrCh := make(chan error, 1)
+	go func() {
+		serverErrCh <- server.ListenAndServe()
+	}()
+
+	select {
+	case err := <-serverErrCh:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("Server startup failed", "error", err, "addr", addr)
+		}
+		return
+	case <-rootCtx.Done():
+		slog.Info("Received shutdown signal, starting graceful shutdown")
+	}
+
+	shutdownTimeout := resolveShutdownTimeout()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		slog.Warn("Graceful shutdown failed, forcing close", "error", err)
+		if closeErr := server.Close(); closeErr != nil {
+			slog.Warn("Force close failed", "error", closeErr)
+		}
+	}
+
+	select {
+	case err := <-serverErrCh:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("Server stopped with error", "error", err)
+		}
+	case <-time.After(2 * time.Second):
+	}
+
+	slog.Info("Server shutdown completed")
+}
+
+func resolveShutdownTimeout() time.Duration {
+	const defaultTimeout = 10 * time.Second
+	raw := strings.TrimSpace(os.Getenv("LLMIO_SHUTDOWN_TIMEOUT_SECONDS"))
+	if raw == "" {
+		return defaultTimeout
+	}
+
+	seconds, err := strconv.Atoi(raw)
+	if err != nil || seconds <= 0 {
+		slog.Warn("Invalid LLMIO_SHUTDOWN_TIMEOUT_SECONDS, using default", "value", raw, "default", int(defaultTimeout/time.Second))
+		return defaultTimeout
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 func startBackgroundWorkers(ctx context.Context) {
