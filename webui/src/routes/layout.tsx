@@ -15,6 +15,7 @@ import {
   FaUserShield,
 } from "react-icons/fa";
 import { getVersion, checkLatestRelease, type GitHubRelease } from "@/lib/api";
+import { clearStoredAuthToken, getStoredAuthToken } from "@/lib/auth";
 import {
   Dialog,
   DialogContent,
@@ -29,7 +30,7 @@ export default function Layout() {
   const [showUpdateDialog, setShowUpdateDialog] = useState(false);
   const navigate = useNavigate();
   const location = useLocation(); // 用于高亮当前选中的菜单
-  const token = localStorage.getItem("authToken")?.trim() || "";
+  const token = getStoredAuthToken();
   const isAuthKeyToken = ["sk-github.com/racio/orvion-", "sk-github.com/racio/llmio-"].some((prefix) =>
     token.startsWith(prefix)
   );
@@ -81,7 +82,7 @@ export default function Layout() {
   }, [location.pathname, version]);
 
   const handleLogout = () => {
-    localStorage.removeItem("authToken");
+    clearStoredAuthToken();
     navigate("/login");
   };
 

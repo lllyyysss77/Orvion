@@ -51,6 +51,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 import { Plus, Pencil, Trash2, Zap, RefreshCw } from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
+import { getStoredAuthToken } from "@/lib/auth";
 
 // 表单验证
 const headerPairSchema = z.object({
@@ -362,7 +363,7 @@ export function ModelProvidersPanel({ embedded = false, fixedModel = null }: Mod
       loading: true,
     }));
     try {
-      const token = localStorage.getItem("authToken");
+      const token = getStoredAuthToken();
       const controller = new AbortController();
       currentControllerRef.current = controller;
       await fetchEventSource(`/api/test/react/${id}`, {

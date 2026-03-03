@@ -11,9 +11,11 @@ import {
   getModelProviders,
   getProviders,
   getAuthKeySummary,
-  getRequestAmountTrend
+  getRequestAmountTrend,
+  getDailyModelCostTrend
 } from "@/lib/api";
-import type { AuthKeySummary, MetricsSummary, RequestAmountSummary } from "@/lib/api";
+import type { AuthKeySummary, DailyModelCostSummary, MetricsSummary, RequestAmountSummary } from "@/lib/api";
+import { getStoredAuthToken } from "@/lib/auth";
 import { toast } from "sonner";
 import {
   RefreshCw,
@@ -213,11 +215,9 @@ const buildCurvePoints = (data: number[], width: number, height: number) => {
   });
 };
 
-type RequestAmountCardProps = {
-  requestLabel: string;
-  requestValue: string;
-  amountLabel: string;
-  amountValue: string;
+type TodayAmountTrendCardProps = {
+  totalRequests: number;
+  totalAmount: number;
   rangeLabel: string;
   rangeValue: string;
   curvePoints: RequestAmountPointView[];
@@ -262,20 +262,40 @@ const buildSmoothLine = (points: { x: number; y: number }[]) => {
   return path.join(" ");
 };
 
-const RequestAmountCard = memo(({
-  requestLabel,
-  requestValue,
-  amountLabel,
-  amountValue,
+type DailyModelCostCardProps = {
+  trend: DailyModelCostSummary;
+};
+
+const modelCostPalette = [
+  "#5B8FF9",
+  "#F4664A",
+  "#5AD8A6",
+  "#F6BD16",
+  "#9270CA",
+  "#269A99",
+  "#FF9D4D",
+  "#6DC8EC",
+];
+
+const formatModelDisplayName = (model: string) => {
+  const name = (model || "").trim();
+  if (!name) return "unknown";
+  if (name.toLowerCase() === "others") return "其他模型";
+  return name;
+};
+
+const TodayAmountTrendCard = memo(({
+  totalRequests,
+  totalAmount,
   rangeLabel,
   rangeValue,
   curvePoints,
-}: RequestAmountCardProps) => {
+}: TodayAmountTrendCardProps) => {
   const chartWidth = 520;
   const chartHeight = 120;
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const curveData = useMemo(
-    () => curvePoints.map((point) => point.requests),
+    () => curvePoints.map((point) => point.amount),
     [curvePoints]
   );
   const chartPoints = useMemo(
@@ -294,17 +314,17 @@ const RequestAmountCard = memo(({
   const tooltipLeft = hoveredPoint ? `${(hoveredPoint.x / chartWidth) * 100}%` : "0%";
 
   return (
-    <Card className={`${cardHoverClass} gap-3 lg:col-span-2`}>
+    <Card className={`${cardHoverClass} gap-3 h-full min-h-[460px]`}>
       <CardHeader className="pb-2">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="flex flex-wrap items-center gap-6 text-xs text-muted-foreground">
             <div className="flex flex-col gap-1">
-              <span>{requestLabel}</span>
-              <span className="text-lg font-semibold text-foreground">{requestValue}</span>
+              <span>今日消耗金额</span>
+              <span className="text-lg font-semibold text-foreground">{formatMoney(totalAmount)}</span>
             </div>
             <div className="flex flex-col gap-1">
-              <span>{amountLabel}</span>
-              <span className="text-lg font-semibold text-foreground">{amountValue}</span>
+              <span>请求次数</span>
+              <span className="text-lg font-semibold text-foreground">{formatCompactValue(totalRequests)}</span>
             </div>
           </div>
           <div className="text-xs text-muted-foreground">
@@ -313,20 +333,20 @@ const RequestAmountCard = memo(({
           </div>
         </div>
       </CardHeader>
-      <CardContent className="pt-0">
-        <div className="relative overflow-hidden rounded-2xl border border-border/40 bg-card/60 px-4 py-3">
+      <CardContent className="pt-0 flex-1">
+        <div className="relative flex h-full flex-col overflow-hidden rounded-2xl border border-border/40 bg-card/60 px-4 py-3">
           <div className="pointer-events-none absolute inset-0 opacity-30" style={{ backgroundImage: "radial-gradient(circle at 10% 20%, rgba(34,197,94,0.28), transparent 55%)" }} />
           <div className="flex items-center justify-between text-[10px] text-muted-foreground">
             <span>0:00</span>
-            <span>4:00</span>
-            <span>8:00</span>
+            <span>6:00</span>
             <span>12:00</span>
-            <span>16:00</span>
+            <span>18:00</span>
+            <span>23:00</span>
           </div>
-          <div className="mt-2">
+          <div className="mt-2 flex-1">
             <svg
               viewBox={`0 0 ${chartWidth} ${chartHeight}`}
-              className="h-28 w-full"
+              className="h-full min-h-[210px] w-full"
               onMouseLeave={() => setHoveredIndex(null)}
               onMouseMove={(event) => {
                 if (curvePoints.length <= 1) return;
@@ -337,8 +357,8 @@ const RequestAmountCard = memo(({
                 setHoveredIndex(index);
               }}
             >
-              <path d={chart.area} className="fill-emerald-200/60" />
-              <path d={chart.line} className="stroke-emerald-600" fill="none" strokeWidth="2" />
+              <path d={chart.area} className="fill-cyan-200/60" />
+              <path d={chart.line} className="stroke-cyan-600" fill="none" strokeWidth="2" />
               {hoveredPoint && (
                 <>
                   <line
@@ -346,14 +366,14 @@ const RequestAmountCard = memo(({
                     y1={0}
                     x2={hoveredPoint.x}
                     y2={chartHeight}
-                    className="stroke-emerald-500/50"
+                    className="stroke-cyan-500/50"
                     strokeDasharray="4 4"
                   />
                   <circle
                     cx={hoveredPoint.x}
                     cy={hoveredPoint.y}
                     r="4"
-                    className="fill-emerald-600 stroke-card"
+                    className="fill-cyan-600 stroke-card"
                     strokeWidth="2"
                   />
                 </>
@@ -366,11 +386,226 @@ const RequestAmountCard = memo(({
               style={{ left: tooltipLeft }}
             >
               <div className="text-muted-foreground">{hoveredData.hour.toString().padStart(2, "0")}:00</div>
-              <div className="font-semibold text-foreground">请求 {hoveredData.requests}</div>
               <div className="font-semibold text-foreground">金额 ${formatAmountValue(hoveredData.amount)}</div>
+              <div className="font-semibold text-foreground">请求 {hoveredData.requests}</div>
             </div>
           )}
         </div>
+      </CardContent>
+    </Card>
+  );
+});
+
+const DailyModelCostCard = memo(({ trend }: DailyModelCostCardProps) => {
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+  const chartWidth = 640;
+  const chartHeight = 320;
+  const margin = { top: 14, right: 16, bottom: 36, left: 58 };
+  const plotWidth = chartWidth - margin.left - margin.right;
+  const plotHeight = chartHeight - margin.top - margin.bottom;
+
+  const seriesWithColor = useMemo(
+    () => trend.series.map((item, index) => ({
+      ...item,
+      color: modelCostPalette[index % modelCostPalette.length],
+    })),
+    [trend.series]
+  );
+
+  const axisMax = DAILY_MODEL_COST_AXIS_MAX;
+  const yTicks = DAILY_MODEL_COST_Y_TICKS;
+
+  const groupWidth = trend.labels.length > 0 ? plotWidth / trend.labels.length : plotWidth;
+  const barWidth = Math.min(44, Math.max(16, groupWidth * 0.58));
+
+  const getY = (value: number) => margin.top + plotHeight - (value / axisMax) * plotHeight;
+
+  const tooltip = useMemo(() => {
+    if (hoveredIndex == null) return null;
+    if (hoveredIndex < 0 || hoveredIndex >= trend.labels.length) return null;
+    const breakdown = seriesWithColor
+      .map((item) => ({
+        model: formatModelDisplayName(item.model),
+        amount: item.amounts[hoveredIndex] ?? 0,
+        color: item.color,
+      }))
+      .filter((item) => item.amount > 0)
+      .sort((a, b) => b.amount - a.amount);
+
+    return {
+      label: trend.labels[hoveredIndex],
+      total: trend.totals[hoveredIndex] ?? 0,
+      breakdown,
+      exceedAxisMax: (trend.totals[hoveredIndex] ?? 0) > axisMax,
+    };
+  }, [axisMax, hoveredIndex, seriesWithColor, trend.labels, trend.totals]);
+
+  return (
+    <Card className={`${cardHoverClass} gap-3 h-full min-h-[460px]`}>
+      <CardHeader className="pb-2">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="flex flex-col gap-1">
+            <span className="text-xs text-muted-foreground">每日模型成本</span>
+          </div>
+          <div className="text-xs text-muted-foreground">
+            最近 <span className="text-foreground">{trend.labels.length}</span> 天
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="pt-0 flex-1">
+        {seriesWithColor.length === 0 ? (
+          <div className="flex h-full items-center justify-center rounded-2xl border border-dashed border-border/50 px-4 py-10 text-center text-xs text-muted-foreground">
+            暂无模型成本数据
+          </div>
+        ) : (
+          <div className="relative flex h-full flex-col overflow-hidden rounded-2xl border border-border/40 bg-card/60 px-3 py-3">
+            <div className="pointer-events-none absolute inset-0 opacity-20" style={{ backgroundImage: "radial-gradient(circle at 20% 10%, rgba(59,130,246,0.25), transparent 60%)" }} />
+            <div className="relative z-10 flex flex-col">
+              <svg
+                viewBox={`0 0 ${chartWidth} ${chartHeight}`}
+                className="h-[290px] w-full"
+              >
+                {yTicks.map((tick) => {
+                  const y = getY(tick);
+                  return (
+                    <g key={`y-${tick}`}>
+                      <line
+                        x1={margin.left}
+                        y1={y}
+                        x2={margin.left + plotWidth}
+                        y2={y}
+                        className="stroke-border/45"
+                      />
+                      <text
+                        x={margin.left - 8}
+                        y={y + 4}
+                        textAnchor="end"
+                        className="fill-muted-foreground text-[12px]"
+                      >
+                        {formatAxisTick(tick)}
+                      </text>
+                    </g>
+                  );
+                })}
+
+                <line
+                  x1={margin.left}
+                  y1={margin.top}
+                  x2={margin.left}
+                  y2={margin.top + plotHeight}
+                  className="stroke-border/65"
+                />
+                <line
+                  x1={margin.left}
+                  y1={margin.top + plotHeight}
+                  x2={margin.left + plotWidth}
+                  y2={margin.top + plotHeight}
+                  className="stroke-border/65"
+                />
+
+                <text
+                  transform={`translate(${18} ${margin.top + plotHeight / 2}) rotate(-90)`}
+                  textAnchor="middle"
+                  className="fill-muted-foreground text-[13px]"
+                >
+                  费用 ($)
+                </text>
+
+                {trend.labels.map((label, index) => {
+                  const slotX = margin.left + groupWidth * index;
+                  const x = slotX + (groupWidth - barWidth) / 2;
+                  let offset = 0;
+
+                  return (
+                    <g key={`${label}-${index}`}>
+                      {seriesWithColor.map((item) => {
+                        const amount = item.amounts[index] ?? 0;
+                        if (amount <= 0) return null;
+                        const remain = Math.max(0, axisMax - offset);
+                        const drawAmount = Math.min(amount, remain);
+                        if (drawAmount <= 0) {
+                          offset += amount;
+                          return null;
+                        }
+                        const y = getY(offset + drawAmount);
+                        const height = Math.max((drawAmount / axisMax) * plotHeight, 1);
+                        offset += amount;
+                        return (
+                          <rect
+                            key={`${item.model}-${index}`}
+                            x={x}
+                            y={y}
+                            width={barWidth}
+                            height={height}
+                            rx={4}
+                            fill={item.color}
+                            fillOpacity={0.92}
+                          />
+                        );
+                      })}
+
+                      <rect
+                        x={slotX}
+                        y={margin.top}
+                        width={groupWidth}
+                        height={plotHeight}
+                        fill="transparent"
+                        onMouseEnter={() => setHoveredIndex(index)}
+                        onFocus={() => setHoveredIndex(index)}
+                        onMouseLeave={() => setHoveredIndex(null)}
+                        onBlur={() => setHoveredIndex(null)}
+                      />
+
+                      <text
+                        x={slotX + groupWidth / 2}
+                        y={margin.top + plotHeight + 18}
+                        textAnchor="middle"
+                        className="fill-muted-foreground text-[13px]"
+                      >
+                        {label}
+                      </text>
+                    </g>
+                  );
+                })}
+              </svg>
+
+              <div className="mt-1 shrink-0 flex flex-wrap items-center justify-center gap-x-3 gap-y-1.5 text-[12px] font-medium text-foreground/85">
+                {seriesWithColor.map((item) => (
+                  <span key={item.model} className="inline-flex items-center gap-1.5">
+                    <span
+                      className="inline-block size-2.5 rounded-sm"
+                      style={{ backgroundColor: item.color }}
+                    />
+                    {formatModelDisplayName(item.model)}
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            {tooltip && tooltip.breakdown.length > 0 && (
+              <div className="pointer-events-none absolute right-3 top-3 z-20 w-52 rounded-xl border border-border/70 bg-card/95 px-3 py-2 text-xs shadow-md backdrop-blur-sm">
+                <div className="font-semibold text-foreground">{tooltip.label}</div>
+                <div className="mt-1 text-muted-foreground">Total: {formatMoney(tooltip.total, 4)}</div>
+                {tooltip.exceedAxisMax && (
+                  <div className="mt-1 text-[10px] text-amber-600">
+                    超过坐标上限 $60，柱体已封顶显示
+                  </div>
+                )}
+                <div className="mt-2 space-y-1">
+                  {tooltip.breakdown.map((item) => (
+                    <div key={item.model} className="flex items-center justify-between gap-2">
+                      <span className="inline-flex items-center gap-1.5 min-w-0">
+                        <span className="size-2 rounded-sm shrink-0" style={{ backgroundColor: item.color }} />
+                        <span className="truncate">{item.model}</span>
+                      </span>
+                      <span className="font-medium text-foreground">${formatAmountValue(item.amount)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </CardContent>
     </Card>
   );
@@ -580,6 +815,14 @@ const defaultRequestAmount: RequestAmountSummary = {
   points: [],
 };
 
+const defaultDailyModelCost: DailyModelCostSummary = {
+  range: "daily",
+  dates: [],
+  labels: [],
+  totals: [],
+  series: [],
+};
+
 const formatCompactValue = (value: number) => {
   if (!Number.isFinite(value)) return "0";
   const abs = Math.abs(value);
@@ -599,6 +842,14 @@ const formatAmountValue = (value: number) => {
   if (abs >= 1) return value.toFixed(2).replace(/\.?0+$/, "");
   if (abs >= 0.01) return value.toFixed(4).replace(/\.?0+$/, "");
   return value.toFixed(6).replace(/\.?0+$/, "");
+};
+
+const DAILY_MODEL_COST_AXIS_MAX = 60;
+const DAILY_MODEL_COST_Y_TICKS = [0, 10, 20, 30, 40, 50, 60];
+
+const formatAxisTick = (value: number) => {
+  if (!Number.isFinite(value)) return "0";
+  return value.toFixed(0);
 };
 
 type HomeHeaderProps = {
@@ -635,6 +886,7 @@ export default function Home() {
     createEmptyAvailableModels()
   );
   const [requestAmount, setRequestAmount] = useState<RequestAmountSummary>(defaultRequestAmount);
+  const [dailyModelCost, setDailyModelCost] = useState<DailyModelCostSummary>(defaultDailyModelCost);
   const [authKeySummary, setAuthKeySummary] = useState<AuthKeySummary | null>(null);
   const [authKeyError, setAuthKeyError] = useState<string | null>(null);
   const [authKeyMode, setAuthKeyMode] = useState(false);
@@ -752,9 +1004,21 @@ export default function Home() {
     }
   }, []);
 
+  const fetchDailyModelCost = useCallback(async () => {
+    try {
+      const data = await getDailyModelCostTrend(7, 5);
+      setDailyModelCost(data);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error(`获取每日模型成本失败: ${message}`);
+      console.error(err);
+      setDailyModelCost(defaultDailyModelCost);
+    }
+  }, []);
+
   const load = useCallback(async () => {
     setLoading(true);
-    const token = localStorage.getItem("authToken")?.trim() || "";
+    const token = getStoredAuthToken();
     const isAuthKeyToken = AUTH_KEY_PREFIXES.some((prefix) => token.startsWith(prefix));
 
     if (isAuthKeyToken) {
@@ -767,10 +1031,10 @@ export default function Home() {
     setAuthKeyMode(false);
     setAuthKeySummary(null);
     setAuthKeyError(null);
-    await Promise.all([fetchSummary(), fetchRequestAmount()]);
+    await Promise.all([fetchSummary(), fetchRequestAmount(), fetchDailyModelCost()]);
     setLoading(false);
     void fetchAvailableModels();
-  }, [fetchAuthKeySummary, fetchAvailableModels, fetchRequestAmount, fetchSummary]);
+  }, [fetchAuthKeySummary, fetchAvailableModels, fetchDailyModelCost, fetchRequestAmount, fetchSummary]);
 
   useEffect(() => {
     void load();
@@ -787,8 +1051,6 @@ export default function Home() {
       requests: 0,
       amount: 0,
     }));
-  const requestValue = formatCompactValue(requestAmount.total_requests);
-  const amountValue = formatAmountValue(requestAmount.total_amount);
   const rangeValue = requestAmount.range === "today" ? "今天" : requestAmount.range;
 
   return (
@@ -878,61 +1140,61 @@ export default function Home() {
               />
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 lg:items-start">
-              <RequestAmountCard
-                requestLabel="请求次数"
-                requestValue={requestValue}
-                amountLabel="金额($)"
-                amountValue={amountValue}
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 xl:items-stretch">
+              <DailyModelCostCard trend={dailyModelCost} />
+
+              <TodayAmountTrendCard
+                totalRequests={requestAmount.total_requests}
+                totalAmount={requestAmount.total_amount}
                 rangeLabel="时间范围"
                 rangeValue={rangeValue}
                 curvePoints={requestCurvePoints}
               />
-
-              <Card className={`${cardHoverClass} gap-3 lg:col-span-2`}>
-                <CardHeader className="pb-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="text-xs text-muted-foreground">当前可用模型</div>
-                  </div>
-                </CardHeader>
-                <CardContent className="pt-0">
-                  {availableModelsLoading ? (
-                    <div className="py-6 text-center text-xs text-muted-foreground">加载中...</div>
-                  ) : (
-                    <div className="grid gap-3">
-                      {providerTypeOrder.map((type) => {
-                        const models = availableModels[type];
-                        return (
-                          <div key={type} className="space-y-2">
-                            <div className="flex items-center justify-between">
-                              <span className="text-xs font-semibold text-muted-foreground">
-                                {providerTypeLabels[type]}
-                              </span>
-                              <span className="text-xs text-muted-foreground">{models.length} 个</span>
-                            </div>
-                            {models.length > 0 ? (
-                              <div className="flex flex-wrap gap-1.5">
-                                {models.map((model) => (
-                                  <Badge
-                                    key={`${type}-${model}`}
-                                    variant="secondary"
-                                    className="bg-muted/60 text-foreground"
-                                  >
-                                    {model}
-                                  </Badge>
-                                ))}
-                              </div>
-                            ) : (
-                              <div className="text-xs text-muted-foreground">暂无可用模型</div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
             </div>
+
+            <Card className={`${cardHoverClass} gap-3`}>
+              <CardHeader className="pb-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-xs text-muted-foreground">当前可用模型</div>
+                </div>
+              </CardHeader>
+              <CardContent className="pt-0">
+                {availableModelsLoading ? (
+                  <div className="py-6 text-center text-xs text-muted-foreground">加载中...</div>
+                ) : (
+                  <div className="grid gap-3">
+                    {providerTypeOrder.map((type) => {
+                      const models = availableModels[type];
+                      return (
+                        <div key={type} className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-semibold text-muted-foreground">
+                              {providerTypeLabels[type]}
+                            </span>
+                            <span className="text-xs text-muted-foreground">{models.length} 个</span>
+                          </div>
+                          {models.length > 0 ? (
+                            <div className="flex flex-wrap gap-1.5">
+                              {models.map((model) => (
+                                <Badge
+                                  key={`${type}-${model}`}
+                                  variant="secondary"
+                                  className="bg-muted/60 text-foreground"
+                                >
+                                  {model}
+                                </Badge>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="text-xs text-muted-foreground">暂无可用模型</div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
           </div>
         )}
       </div>

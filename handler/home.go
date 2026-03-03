@@ -49,6 +49,20 @@ type RequestAmountRes struct {
 	Points        []RequestAmountPoint `json:"points"`
 }
 
+type DailyModelCostSeries struct {
+	Model   string    `json:"model"`
+	Amounts []float64 `json:"amounts"`
+	Total   float64   `json:"total"`
+}
+
+type DailyModelCostRes struct {
+	Range  string                 `json:"range"`
+	Dates  []string               `json:"dates"`
+	Labels []string               `json:"labels"`
+	Totals []float64              `json:"totals"`
+	Series []DailyModelCostSeries `json:"series"`
+}
+
 func Metrics(c *gin.Context) {
 	days, err := strconv.Atoi(c.Param("days"))
 	if err != nil {
@@ -260,6 +274,189 @@ func RequestAmountTrend(c *gin.Context) {
 		Range:         "today",
 		Points:        points,
 	})
+}
+
+// DailyModelCostTrend 返回最近 N 天的模型成本分布（按模型堆叠）
+func DailyModelCostTrend(c *gin.Context) {
+	const (
+		defaultDays = 7
+		maxDays     = 31
+		defaultTop  = 5
+		maxTop      = 12
+		othersName  = "others"
+	)
+
+	ctx := c.Request.Context()
+	days := parsePositiveInt(c.Query("days"), defaultDays, maxDays)
+	top := parsePositiveInt(c.Query("top"), defaultTop, maxTop)
+
+	now := time.Now()
+	year, month, day := now.Date()
+	endOfDay := time.Date(year, month, day, 0, 0, 0, 0, now.Location()).Add(24 * time.Hour)
+	start := endOfDay.AddDate(0, 0, -days)
+
+	dateExpr := "TO_CHAR(created_at, 'YYYY-MM-DD')"
+	if models.DB.Dialector.Name() == "sqlite" {
+		dateExpr = "strftime('%Y-%m-%d', created_at, 'localtime')"
+	}
+
+	type modelDayRow struct {
+		DayBucket string  `gorm:"column:day_bucket"`
+		Model     string  `gorm:"column:model"`
+		Amount    float64 `gorm:"column:amount"`
+	}
+
+	rows := make([]modelDayRow, 0)
+	if err := models.DB.WithContext(ctx).Raw(
+		`SELECT `+dateExpr+` AS day_bucket,
+		        COALESCE(NULLIF(TRIM(name), ''), 'unknown') AS model,
+		        COALESCE(SUM(total_cost), 0) AS amount
+		   FROM chat_logs
+		  WHERE deleted_at IS NULL
+		    AND created_at >= ? AND created_at < ?
+		  GROUP BY day_bucket, model
+		  ORDER BY day_bucket ASC, model ASC`,
+		start,
+		endOfDay,
+	).Scan(&rows).Error; err != nil {
+		common.InternalServerError(c, "Failed to query daily model cost: "+err.Error())
+		return
+	}
+
+	dates := make([]string, 0, days)
+	labels := make([]string, 0, days)
+	dayIndex := make(map[string]int, days)
+	for i := 0; i < days; i++ {
+		dayTime := start.AddDate(0, 0, i)
+		dateKey := dayTime.Format("2006-01-02")
+		dates = append(dates, dateKey)
+		switch {
+		case i == days-1:
+			labels = append(labels, "今天")
+		case i == days-2:
+			labels = append(labels, "昨天")
+		default:
+			labels = append(labels, dayTime.Format("1/2"))
+		}
+		dayIndex[dateKey] = i
+	}
+
+	totals := make([]float64, days)
+	modelTotals := make(map[string]float64)
+	dayModelCosts := make(map[string]map[string]float64)
+
+	for _, row := range rows {
+		if row.Amount <= 0 {
+			continue
+		}
+		if _, ok := dayIndex[row.DayBucket]; !ok {
+			continue
+		}
+		model := strings.TrimSpace(row.Model)
+		if model == "" {
+			model = "unknown"
+		}
+		byModel, ok := dayModelCosts[row.DayBucket]
+		if !ok {
+			byModel = make(map[string]float64)
+			dayModelCosts[row.DayBucket] = byModel
+		}
+		byModel[model] += row.Amount
+		modelTotals[model] += row.Amount
+	}
+
+	type modelTotalItem struct {
+		Model string
+		Total float64
+	}
+	modelItems := make([]modelTotalItem, 0, len(modelTotals))
+	for model, total := range modelTotals {
+		modelItems = append(modelItems, modelTotalItem{Model: model, Total: total})
+	}
+	sort.Slice(modelItems, func(i, j int) bool {
+		if modelItems[i].Total == modelItems[j].Total {
+			return modelItems[i].Model < modelItems[j].Model
+		}
+		return modelItems[i].Total > modelItems[j].Total
+	})
+
+	hasOthers := len(modelItems) > top
+	selectedCount := len(modelItems)
+	if selectedCount > top {
+		selectedCount = top
+	}
+
+	series := make([]DailyModelCostSeries, 0, selectedCount+1)
+	modelToSeries := make(map[string]int, selectedCount)
+	for i := 0; i < selectedCount; i++ {
+		item := modelItems[i]
+		modelToSeries[item.Model] = len(series)
+		series = append(series, DailyModelCostSeries{
+			Model:   item.Model,
+			Amounts: make([]float64, days),
+		})
+	}
+	othersIndex := -1
+	if hasOthers {
+		othersIndex = len(series)
+		series = append(series, DailyModelCostSeries{
+			Model:   othersName,
+			Amounts: make([]float64, days),
+		})
+	}
+
+	for dateKey, idx := range dayIndex {
+		byModel, ok := dayModelCosts[dateKey]
+		if !ok {
+			continue
+		}
+		var dayTotal float64
+		var selectedTotal float64
+		for model, amount := range byModel {
+			dayTotal += amount
+			if seriesIndex, exists := modelToSeries[model]; exists {
+				series[seriesIndex].Amounts[idx] += amount
+				selectedTotal += amount
+			}
+		}
+		if hasOthers && othersIndex >= 0 {
+			otherAmount := dayTotal - selectedTotal
+			if otherAmount > 0 {
+				series[othersIndex].Amounts[idx] += otherAmount
+			}
+		}
+		totals[idx] = dayTotal
+	}
+
+	for i := range series {
+		var total float64
+		for _, amount := range series[i].Amounts {
+			total += amount
+		}
+		series[i].Total = total
+	}
+
+	common.Success(c, DailyModelCostRes{
+		Range:  "daily",
+		Dates:  dates,
+		Labels: labels,
+		Totals: totals,
+		Series: series,
+	})
+}
+
+func parsePositiveInt(raw string, defaultValue, maxValue int) int {
+	if strings.TrimSpace(raw) == "" {
+		return defaultValue
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 {
+		return defaultValue
+	}
+	if value > maxValue {
+		return maxValue
+	}
+	return value
 }
 
 type Count struct {

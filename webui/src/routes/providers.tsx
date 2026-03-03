@@ -93,44 +93,6 @@ const ensureAuthTemplateConfig = (template?: ProviderTemplate, providerType?: st
   return JSON.stringify({ auth_mode: fallbackType }, null, 2);
 };
 
-const getConsoleFavicon = (consoleUrl?: string): string => {
-  if (!consoleUrl) return "";
-  try {
-    const url = new URL(consoleUrl);
-    return `${url.origin}/favicon.ico`;
-  } catch {
-    return "";
-  }
-};
-
-const ProviderFavicon = ({
-  consoleUrl,
-  fallback,
-}: {
-  consoleUrl?: string;
-  fallback: string;
-}) => {
-  const [failed, setFailed] = useState(false);
-  const src = getConsoleFavicon(consoleUrl);
-  const label = (fallback || "?").slice(0, 1).toUpperCase();
-
-  if (!src || failed) {
-    return (
-      <span className="size-4 rounded-full bg-muted/70 text-[9px] text-muted-foreground inline-flex items-center justify-center">
-        {label}
-      </span>
-    );
-  }
-
-  return (
-    <img
-      src={src}
-      alt={label}
-      className="size-4 rounded-full border border-border/60"
-      onError={() => setFailed(true)}
-    />
-  );
-};
 // 定义表单验证模式
 const formSchema = z.object({
   name: z.string().min(1, { message: "提供商名称不能为空" }),
@@ -538,10 +500,7 @@ export default function ProvidersPage() {
                             {provider.Name}
                           </CardTitle>
                           <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
-                            <span className="inline-flex items-center gap-1">
-                              <ProviderFavicon consoleUrl={provider.Console} fallback={provider.Type || "?"} />
-                              <span>类型: {providerTypeDisplayMap.get(provider.Type) || provider.Type || "未知"}</span>
-                            </span>
+                            <span>类型: {providerTypeDisplayMap.get(provider.Type) || provider.Type || "未知"}</span>
                           </div>
                         </div>
                         <div className="flex items-center gap-1.5">

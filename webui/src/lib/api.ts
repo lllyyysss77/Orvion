@@ -1,4 +1,5 @@
 // API client for interacting with the backend
+import { getStoredAuthToken } from "./auth";
 
 const API_BASE = '/api';
 
@@ -267,8 +268,7 @@ export interface ProviderMetric {
 async function apiRequest<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const url = `${API_BASE}${endpoint}`;
 
-  // Get token from localStorage
-  const token = localStorage.getItem("authToken")?.trim();
+  const token = getStoredAuthToken();
 
   const response = await fetch(url, {
     headers: {
@@ -298,7 +298,7 @@ async function apiRequest<T>(endpoint: string, options: RequestInit = {}): Promi
 }
 
 async function authKeyRequest<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
-  const token = localStorage.getItem("authToken")?.trim();
+  const token = getStoredAuthToken();
 
   const response = await fetch(endpoint, {
     headers: {
@@ -848,6 +848,20 @@ export interface RequestAmountSummary {
   points: RequestAmountPoint[];
 }
 
+export interface DailyModelCostSeries {
+  model: string;
+  amounts: number[];
+  total: number;
+}
+
+export interface DailyModelCostSummary {
+  range: string;
+  dates: string[];
+  labels: string[];
+  totals: number[];
+  series: DailyModelCostSeries[];
+}
+
 export async function getUserAgents(): Promise<string[]> {
   return apiRequest<string[]>('/user-agents');
 }
@@ -880,6 +894,13 @@ export async function getLogs(
 
 export async function getRequestAmountTrend(): Promise<RequestAmountSummary> {
   return apiRequest<RequestAmountSummary>('/metrics/request-amount');
+}
+
+export async function getDailyModelCostTrend(days: number = 7, top: number = 5): Promise<DailyModelCostSummary> {
+  const params = new URLSearchParams();
+  params.append("days", days.toString());
+  params.append("top", top.toString());
+  return apiRequest<DailyModelCostSummary>(`/metrics/daily-model-cost?${params.toString()}`);
 }
 
 export async function getChatIO(logId: number | string): Promise<ChatIO> {

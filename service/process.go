@@ -27,7 +27,7 @@ func ProcesserOpenAI(ctx context.Context, pr io.Reader, stream bool, start time.
 	var firstChunkTime time.Duration
 	var once sync.Once
 
-	var usageStr string
+	var usage models.Usage
 	var output models.OutputUnion
 	var size int
 
@@ -40,7 +40,7 @@ func ProcesserOpenAI(ctx context.Context, pr io.Reader, stream bool, start time.
 		})
 		if !stream {
 			output.OfString = chunk
-			usageStr = gjson.Get(chunk, "usage").String()
+			mergeOpenAIUsageMax(&usage, extractOpenAIUsageFromPayload(chunk))
 			break
 		}
 		chunk = strings.TrimPrefix(chunk, "data: ")
@@ -53,50 +53,21 @@ func ProcesserOpenAI(ctx context.Context, pr io.Reader, stream bool, start time.
 			return nil, nil, errors.New(errStr.String())
 		}
 		output.OfStringArray = append(output.OfStringArray, chunk)
-
-		// 部分厂商openai格式中 每段sse响应都会返回usage 兼容性考虑
-		// if usageStr != "" {
-		// 	break
-		// }
-
-		usage := gjson.Get(chunk, "usage")
-		if usage.Exists() {
-			if usage.Get("total_tokens").Int() != 0 ||
-				usage.Get("prompt_tokens").Int() != 0 ||
-				usage.Get("completion_tokens").Int() != 0 ||
-				usage.Get("input_tokens").Int() != 0 ||
-				usage.Get("output_tokens").Int() != 0 {
-				usageStr = usage.String()
-			}
-		}
+		mergeOpenAIUsageMax(&usage, extractOpenAIUsageFromPayload(chunk))
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, nil, err
 	}
-
-	// token用量
-	openaiUsage := parseOpenAIUsage(usageStr)
 
 	chunkTime := time.Since(start) - firstChunkTime
 
 	return &models.ChatLog{
 		FirstChunkTimeMs: int(firstChunkTime.Milliseconds()),
 		ChunkTimeMs:      int(chunkTime.Milliseconds()),
-		Usage:            openaiUsage,
-		Tps:              float64(openaiUsage.TotalTokens) / chunkTime.Seconds(),
+		Usage:            usage,
+		Tps:              float64(usage.TotalTokens) / chunkTime.Seconds(),
 		Size:             size,
 	}, &output, nil
-}
-
-type OpenAIResUsage struct {
-	InputTokens        int64              `json:"input_tokens"`
-	OutputTokens       int64              `json:"output_tokens"`
-	TotalTokens        int64              `json:"total_tokens"`
-	InputTokensDetails InputTokensDetails `json:"input_tokens_details"`
-}
-
-type InputTokensDetails struct {
-	CachedTokens int64 `json:"cached_tokens"`
 }
 
 type AnthropicUsage struct {
@@ -112,7 +83,7 @@ func ProcesserOpenAiRes(ctx context.Context, pr io.Reader, stream bool, start ti
 	var firstChunkTime time.Duration
 	var once sync.Once
 
-	var usageStr string
+	var usage models.Usage
 	var output models.OutputUnion
 	var size int
 
@@ -125,11 +96,7 @@ func ProcesserOpenAiRes(ctx context.Context, pr io.Reader, stream bool, start ti
 		})
 		if !stream {
 			output.OfString = chunk
-			usageNode := gjson.Get(chunk, "usage")
-			if !usageNode.Exists() {
-				usageNode = gjson.Get(chunk, "response.usage")
-			}
-			usageStr = usageNode.String()
+			mergeOpenAIUsageMax(&usage, extractOpenAIUsageFromPayload(chunk))
 			break
 		}
 
@@ -144,71 +111,21 @@ func ProcesserOpenAiRes(ctx context.Context, pr io.Reader, stream bool, start ti
 			break
 		}
 		output.OfStringArray = append(output.OfStringArray, content)
-
-		usageNode := gjson.Get(content, "usage")
-		if !usageNode.Exists() {
-			usageNode = gjson.Get(content, "response.usage")
-		}
-		if usageNode.Exists() {
-			usageCandidate := usageNode.String()
-			if usageStr == "" || responseUsageHasTokens(usageNode) {
-				usageStr = usageCandidate
-			}
-		}
+		mergeOpenAIUsageMax(&usage, extractOpenAIUsageFromPayload(content))
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, nil, err
 	}
-
-	var openAIResUsage OpenAIResUsage
-	usage := []byte(usageStr)
-	if json.Valid(usage) {
-		if err := json.Unmarshal(usage, &openAIResUsage); err != nil {
-			return nil, nil, err
-		}
-	}
-	if openAIResUsage.TotalTokens == 0 {
-		openAIResUsage.TotalTokens = openAIResUsage.InputTokens + openAIResUsage.OutputTokens
-	}
-	cachedTokens := normalizeCachedTokens(openAIResUsage.InputTokensDetails.CachedTokens)
 
 	chunkTime := time.Since(start) - firstChunkTime
 
 	return &models.ChatLog{
 		FirstChunkTimeMs: int(firstChunkTime.Milliseconds()),
 		ChunkTimeMs:      int(chunkTime.Milliseconds()),
-		Usage: models.Usage{
-			PromptTokens:        openAIResUsage.InputTokens,
-			CompletionTokens:    openAIResUsage.OutputTokens,
-			TotalTokens:         openAIResUsage.TotalTokens,
-			CachedTokens:        cachedTokens,
-			PromptTokensDetails: buildPromptTokensDetailsJSON(cachedTokens, 0, false),
-		},
-		Tps:  float64(openAIResUsage.TotalTokens) / chunkTime.Seconds(),
-		Size: size,
+		Usage:            usage,
+		Tps:              float64(usage.TotalTokens) / chunkTime.Seconds(),
+		Size:             size,
 	}, &output, nil
-}
-
-func responseUsageHasTokens(node gjson.Result) bool {
-	if !node.Exists() {
-		return false
-	}
-	if node.Get("total_tokens").Int() > 0 {
-		return true
-	}
-	if node.Get("prompt_tokens").Int() > 0 || node.Get("completion_tokens").Int() > 0 {
-		return true
-	}
-	if node.Get("input_tokens").Int() > 0 || node.Get("output_tokens").Int() > 0 {
-		return true
-	}
-	if node.Get("prompt_tokens_details.cached_tokens").Int() > 0 {
-		return true
-	}
-	if node.Get("input_tokens_details.cached_tokens").Int() > 0 {
-		return true
-	}
-	return false
 }
 
 func parseOpenAIUsage(usageStr string) models.Usage {
@@ -259,14 +176,13 @@ func ProcesserAnthropic(ctx context.Context, pr io.Reader, stream bool, start ti
 	var firstChunkTime time.Duration
 	var once sync.Once
 
-	var usageStr string
+	var usage AnthropicUsage
 
 	var output models.OutputUnion
 	var size int
 
 	scanner := bufio.NewScanner(pr)
 	scanner.Buffer(make([]byte, 0, InitScannerBufferSize), MaxScannerBufferSize)
-	var event string
 	for chunk, chunkSize := range ScannerToken(scanner) {
 		size += chunkSize
 		once.Do(func() {
@@ -274,12 +190,13 @@ func ProcesserAnthropic(ctx context.Context, pr io.Reader, stream bool, start ti
 		})
 		if !stream {
 			output.OfString = chunk
-			usageStr = gjson.Get(chunk, "usage").String()
+			mergeAnthropicUsageMax(&usage, gjson.Get(chunk, "usage"))
+			mergeAnthropicUsageMax(&usage, gjson.Get(chunk, "message.usage"))
 			break
 		}
 
 		if after, ok := strings.CutPrefix(chunk, "event: "); ok {
-			event = after
+			_ = after
 			continue
 		}
 
@@ -289,33 +206,24 @@ func ProcesserAnthropic(ctx context.Context, pr io.Reader, stream bool, start ti
 		}
 
 		output.OfStringArray = append(output.OfStringArray, after)
-		if event == "message_delta" {
-			usageStr = gjson.Get(after, "usage").String()
-		}
+		mergeAnthropicUsageMax(&usage, gjson.Get(after, "usage"))
+		mergeAnthropicUsageMax(&usage, gjson.Get(after, "message.usage"))
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, nil, err
 	}
 
-	var athropicUsage AnthropicUsage
-	usage := []byte(usageStr)
-	if json.Valid(usage) {
-		if err := json.Unmarshal(usage, &athropicUsage); err != nil {
-			return nil, nil, err
-		}
-	}
-
 	chunkTime := time.Since(start) - firstChunkTime
-	totalTokens := athropicUsage.InputTokens + athropicUsage.OutputTokens
-	cacheReadTokens := normalizeCachedTokens(athropicUsage.CacheReadInputTokens)
-	cacheWriteTokens := normalizeCachedTokens(athropicUsage.CacheCreationInputTokens)
+	totalTokens := usage.InputTokens + usage.OutputTokens
+	cacheReadTokens := normalizeCachedTokens(usage.CacheReadInputTokens)
+	cacheWriteTokens := normalizeCachedTokens(usage.CacheCreationInputTokens)
 
 	return &models.ChatLog{
 		FirstChunkTimeMs: int(firstChunkTime.Milliseconds()),
 		ChunkTimeMs:      int(chunkTime.Milliseconds()),
 		Usage: models.Usage{
-			PromptTokens:        athropicUsage.InputTokens,
-			CompletionTokens:    athropicUsage.OutputTokens,
+			PromptTokens:        usage.InputTokens,
+			CompletionTokens:    usage.OutputTokens,
 			TotalTokens:         totalTokens,
 			CachedTokens:        cacheReadTokens,
 			PromptTokensDetails: buildPromptTokensDetailsJSON(cacheReadTokens, cacheWriteTokens, true),
@@ -362,4 +270,99 @@ func buildPromptTokensDetailsJSON(cachedTokens int64, cacheWriteTokens int64, pr
 		return ""
 	}
 	return string(content)
+}
+
+func extractOpenAIUsageFromPayload(payload string) models.Usage {
+	var merged models.Usage
+
+	// 兼容 payload 本身就是 usage 对象的情况。
+	mergeOpenAIUsageMax(&merged, parseOpenAIUsage(payload))
+
+	// 兼容响应对象中 usage 嵌套的不同路径。
+	for _, path := range []string{"usage", "response.usage"} {
+		node := gjson.Get(payload, path)
+		if !node.Exists() {
+			continue
+		}
+		mergeOpenAIUsageMax(&merged, parseOpenAIUsage(node.Raw))
+	}
+
+	if merged.TotalTokens == 0 {
+		merged.TotalTokens = merged.PromptTokens + merged.CompletionTokens
+	}
+	if merged.PromptTokensDetails == "" {
+		merged.PromptTokensDetails = buildPromptTokensDetailsJSON(merged.CachedTokens, 0, false)
+	}
+
+	return merged
+}
+
+func mergeOpenAIUsageMax(current *models.Usage, candidate models.Usage) {
+	if candidate.PromptTokens > current.PromptTokens {
+		current.PromptTokens = candidate.PromptTokens
+	}
+	if candidate.CompletionTokens > current.CompletionTokens {
+		current.CompletionTokens = candidate.CompletionTokens
+	}
+	if candidate.CachedTokens > current.CachedTokens {
+		current.CachedTokens = candidate.CachedTokens
+	}
+	if candidate.TotalTokens > current.TotalTokens {
+		current.TotalTokens = candidate.TotalTokens
+	}
+	if current.TotalTokens == 0 {
+		current.TotalTokens = current.PromptTokens + current.CompletionTokens
+	}
+	if candidate.PromptTokensDetails != "" {
+		if current.PromptTokensDetails == "" || candidate.CachedTokens >= current.CachedTokens {
+			current.PromptTokensDetails = candidate.PromptTokensDetails
+		}
+	}
+	if current.PromptTokensDetails == "" {
+		current.PromptTokensDetails = buildPromptTokensDetailsJSON(current.CachedTokens, 0, false)
+	}
+}
+
+func mergeAnthropicUsageMax(current *AnthropicUsage, usageNode gjson.Result) {
+	if !usageNode.Exists() || !usageNode.IsObject() {
+		return
+	}
+
+	if input := usageNode.Get("input_tokens").Int(); input > current.InputTokens {
+		current.InputTokens = input
+	}
+	if output := usageNode.Get("output_tokens").Int(); output > current.OutputTokens {
+		current.OutputTokens = output
+	}
+	if cacheRead := normalizeCachedTokens(usageNode.Get("cache_read_input_tokens").Int()); cacheRead > current.CacheReadInputTokens {
+		current.CacheReadInputTokens = cacheRead
+	}
+	cacheCreation := normalizeCachedTokens(extractCacheCreationTokens(usageNode))
+	if cacheCreation > current.CacheCreationInputTokens {
+		current.CacheCreationInputTokens = cacheCreation
+	}
+}
+
+func extractCacheCreationTokens(usageNode gjson.Result) int64 {
+	// 1. 嵌套新格式：cache_creation.ephemeral_5m_input_tokens / ephemeral_1h_input_tokens
+	cacheCreation := usageNode.Get("cache_creation")
+	if cacheCreation.Exists() && cacheCreation.IsObject() {
+		hasNested := cacheCreation.Get("ephemeral_5m_input_tokens").Exists() ||
+			cacheCreation.Get("ephemeral_1h_input_tokens").Exists()
+		if hasNested {
+			return cacheCreation.Get("ephemeral_5m_input_tokens").Int() +
+				cacheCreation.Get("ephemeral_1h_input_tokens").Int()
+		}
+	}
+
+	// 2. 扁平新格式：claude_cache_creation_5_m_tokens / claude_cache_creation_1_h_tokens
+	hasFlat := usageNode.Get("claude_cache_creation_5_m_tokens").Exists() ||
+		usageNode.Get("claude_cache_creation_1_h_tokens").Exists()
+	if hasFlat {
+		return usageNode.Get("claude_cache_creation_5_m_tokens").Int() +
+			usageNode.Get("claude_cache_creation_1_h_tokens").Int()
+	}
+
+	// 3. 旧格式
+	return usageNode.Get("cache_creation_input_tokens").Int()
 }

@@ -256,12 +256,10 @@ func RecordLog(ctx context.Context, reqStart time.Time, reader io.ReadCloser, pr
 		if err != nil {
 			return err
 		}
-		if log.Usage.PromptTokens == 0 {
-			log.Usage.PromptTokens = estimatePromptTokensFromInputWithModel(style, before.Model, before.raw)
-		}
 		if log.Size == 0 {
 			log.Size = runtimesvc.EstimateOutputSize(output)
 		}
+		// 对齐 Aether fallback：仅当 usage 完全缺失时，才做估算兜底，避免覆盖已解析的真实值。
 		if log.Usage.PromptTokens == 0 && log.Usage.CompletionTokens == 0 && log.Usage.TotalTokens == 0 {
 			fallback := estimateUsageFromIO(style, before.Model, before.raw, output)
 			log.Usage = runtimesvc.MergeUsage(log.Usage, fallback)

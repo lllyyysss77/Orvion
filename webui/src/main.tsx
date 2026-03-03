@@ -2,10 +2,11 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
+import { hasStoredAuthToken } from './lib/auth'
 
 // Check if user is authenticated
 const isAuthenticated = () => {
-  return !!localStorage.getItem('authToken');
+  return hasStoredAuthToken();
 };
 
 // Redirect to login if not authenticated (except for login page)
@@ -13,7 +14,7 @@ const ProtectedApp = () => {
   const path = window.location.pathname;
 
   // Allow access to login page without authentication
-  if (path === '/login') {
+  if (path === '/login' || path.startsWith('/login/')) {
     return <App />;
   }
 
