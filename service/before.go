@@ -75,15 +75,6 @@ func BeforerOpenAIRes(data []byte) (*Before, error) {
 		return nil, errors.New("model is empty")
 	}
 	stream := gjson.GetBytes(data, "stream").Bool()
-	if stream {
-		newData, err := sjson.SetBytes(data, "stream_options", struct {
-			IncludeUsage bool `json:"include_usage"`
-		}{IncludeUsage: true})
-		if err != nil {
-			return nil, err
-		}
-		data = newData
-	}
 	var toolCall bool
 	tools := gjson.GetBytes(data, "tools")
 	if tools.Exists() && len(tools.Array()) != 0 {
