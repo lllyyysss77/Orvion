@@ -78,6 +78,7 @@ const formSchema = z.object({
   allow_all: z.boolean(),
   models: z.array(z.string()),
   expires_at: z.string().nullable().optional(),
+  rpm_limit: z.number().min(0, { message: "RPM 限制必须大于等于 0" }),
 }).refine((value) => value.allow_all || value.models.length > 0, {
   message: "请选择至少一个允许的模型",
   path: ["models"],
@@ -91,6 +92,7 @@ const defaultFormValues: AuthKeyFormValues = {
   allow_all: true,
   models: [],
   expires_at: null,
+  rpm_limit: 0,
 };
 
 type MobileInfoItemProps = {
@@ -270,6 +272,7 @@ export default function AuthKeysPage() {
       allow_all: key.AllowAll === true,
       models: key.Models ?? [],
       expires_at: key.ExpiresAt,
+      rpm_limit: key.RpmLimit || 0,
     });
     setDialogOpen(true);
   };
@@ -294,6 +297,7 @@ export default function AuthKeysPage() {
         allow_all: values.allow_all,
         models: values.allow_all ? [] : values.models,
         expires_at: values.expires_at ?? undefined,
+        rpm_limit: values.rpm_limit,
       };
       if (editingKey) {
         await updateAuthKey(editingKey.ID, payload);
@@ -454,6 +458,7 @@ export default function AuthKeysPage() {
                         <TableHead className="min-w-64">Key</TableHead>
                         <TableHead>使用范围</TableHead>
                         <TableHead>有效期至</TableHead>
+                        <TableHead>RPM</TableHead>
                         <TableHead>使用次数</TableHead>
                         <TableHead>已消耗金额</TableHead>
                         <TableHead>最后使用时间</TableHead>
@@ -507,6 +512,9 @@ export default function AuthKeysPage() {
                               )}>
                                 {item.ExpiresAt ? new Date(item.ExpiresAt).toLocaleDateString() : "永久有效"}
                               </span>
+                            </TableCell>
+                            <TableCell>
+                              <span className="font-mono text-sm">{item.RpmLimit > 0 ? item.RpmLimit : "∞"}</span>
                             </TableCell>
                             <TableCell>
                               <div className="flex flex-col">
@@ -612,6 +620,7 @@ export default function AuthKeysPage() {
                             </span>
                           }
                         />
+                        <MobileInfoItem label="RPM" value={item.RpmLimit > 0 ? item.RpmLimit : "∞"} />
                         <MobileInfoItem label="使用次数" value={item.UsageCount} />
                         <MobileInfoItem label="已消耗金额" value={formatCost(item.TotalCost)} />
                         <MobileInfoItem label="最后使用" value={item.LastUsedAt ? new Date(item.LastUsedAt).toLocaleString() : "未使用"} />
@@ -783,6 +792,29 @@ export default function AuthKeysPage() {
                         </div>
                       </div>
                     </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name="rpm_limit"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>RPM 限制</FormLabel>
+                    <FormControl>
+                      <Input
+                        type="number"
+                        min={0}
+                        placeholder="0 表示无限制"
+                        value={field.value ?? 0}
+                        onChange={(event) => field.onChange(Number(event.target.value) || 0)}
+                      />
+                    </FormControl>
+                    <p className="text-xs text-muted-foreground">
+                      每分钟最大请求数，0 表示无限制。
+                    </p>
                     <FormMessage />
                   </FormItem>
                 )}

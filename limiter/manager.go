@@ -59,24 +59,24 @@ func (m *Manager) GetRedisClient() *redis.Client {
 	return m.redisClient
 }
 
-// CheckRPMLimit 检查RPM限制
-func (m *Manager) CheckRPMLimit(ctx context.Context, providerID uint, rpmLimit int) (bool, error) {
+// CheckRPMLimit 检查 RPM 限制
+func (m *Manager) CheckRPMLimit(ctx context.Context, authKeyID uint, rpmLimit int) (bool, error) {
 	if !m.enabled {
 		return true, nil
 	}
 	ctx, cancel := m.withRedisTimeout(ctx)
 	defer cancel()
-	return m.rpmLimiter.CheckRPMLimit(ctx, providerID, rpmLimit)
+	return m.rpmLimiter.CheckRPMLimit(ctx, authKeyID, rpmLimit)
 }
 
-// RecordRPMRequest 记录RPM请求
-func (m *Manager) RecordRPMRequest(ctx context.Context, providerID uint) error {
+// RecordRPMRequest 记录 RPM 请求
+func (m *Manager) RecordRPMRequest(ctx context.Context, authKeyID uint) error {
 	if !m.enabled {
 		return nil
 	}
 	ctx, cancel := m.withRedisTimeout(ctx)
 	defer cancel()
-	return m.rpmLimiter.RecordRequest(ctx, providerID)
+	return m.rpmLimiter.RecordRequest(ctx, authKeyID)
 }
 
 // GetRPMStats 获取RPM统计信息
@@ -91,17 +91,17 @@ func (m *Manager) GetRPMStats(ctx context.Context) map[string]interface{} {
 	return stats
 }
 
-// CheckProviderLimits 检查提供商的所有限制
-func (m *Manager) CheckProviderLimits(ctx context.Context, providerID uint, rpmLimit int, modelWithProviderID uint, tokenID uint) (bool, string, error) {
+// CheckAuthKeyLimits 检查 API Key 的所有限制
+func (m *Manager) CheckAuthKeyLimits(ctx context.Context, authKeyID uint, rpmLimit int, modelWithProviderID uint, tokenID uint) (bool, string, error) {
 	if !m.enabled {
 		return true, "", nil
 	}
 
-	// 检查RPM限制
+	// 检查 RPM 限制
 	if rpmLimit > 0 {
-		canProceed, err := m.CheckRPMLimit(ctx, providerID, rpmLimit)
+		canProceed, err := m.CheckRPMLimit(ctx, authKeyID, rpmLimit)
 		if err != nil {
-			slog.Warn("RPM limit check failed", "provider_id", providerID, "error", err)
+			slog.Warn("RPM limit check failed", "auth_key_id", authKeyID, "error", err)
 			// 用户选择 fail-closed：限流依赖不可用时直接拒绝
 			return false, "limiter_unavailable", err
 		} else if !canProceed {
@@ -113,7 +113,7 @@ func (m *Manager) CheckProviderLimits(ctx context.Context, providerID uint, rpmL
 	if tokenID > 0 && modelWithProviderID > 0 && m.tokenLocker != nil {
 		ok, err := m.tokenLocker.CheckAndTouch(ctx, modelWithProviderID, tokenID)
 		if err != nil {
-			slog.Warn("Token lock check failed", "provider_id", providerID, "model_with_provider_id", modelWithProviderID, "token_id", tokenID, "error", err)
+			slog.Warn("Token lock check failed", "auth_key_id", authKeyID, "model_with_provider_id", modelWithProviderID, "token_id", tokenID, "error", err)
 			return false, "limiter_unavailable", err
 		}
 		if !ok {
@@ -124,28 +124,28 @@ func (m *Manager) CheckProviderLimits(ctx context.Context, providerID uint, rpmL
 	return true, "", nil
 }
 
-// RecordProviderAccess 记录提供商访问
-func (m *Manager) RecordProviderAccess(ctx context.Context, providerID uint, rpmLimit int) error {
+// RecordAuthKeyAccess 记录 API Key 访问
+func (m *Manager) RecordAuthKeyAccess(ctx context.Context, authKeyID uint, rpmLimit int) error {
 	if !m.enabled {
 		return nil
 	}
 
-	// 记录RPM请求
+	// 记录 RPM 请求
 	if rpmLimit > 0 {
-		if err := m.RecordRPMRequest(ctx, providerID); err != nil {
-			slog.Warn("Failed to record RPM request", "provider_id", providerID, "error", err)
+		if err := m.RecordRPMRequest(ctx, authKeyID); err != nil {
+			slog.Warn("Failed to record RPM request", "auth_key_id", authKeyID, "error", err)
 		}
 	}
 
 	return nil
 }
 
-// GetCurrentRPMCount 获取当前RPM计数
-func (m *Manager) GetCurrentRPMCount(ctx context.Context, providerID uint) (int, error) {
+// GetCurrentRPMCount 获取当前 RPM 计数
+func (m *Manager) GetCurrentRPMCount(ctx context.Context, authKeyID uint) (int, error) {
 	if !m.enabled {
 		return 0, nil
 	}
-	return m.rpmLimiter.GetCurrentRPMCount(ctx, providerID)
+	return m.rpmLimiter.GetCurrentRPMCount(ctx, authKeyID)
 }
 
 // ClearMemoryData 清理内存数据（用于测试）

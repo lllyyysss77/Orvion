@@ -25,28 +25,28 @@ func GetRedisClient() *redis.Client {
 	return globalLimiterManager.GetRedisClient()
 }
 
-// CheckProviderLimits 检查提供商限制
-func CheckProviderLimits(ctx context.Context, providerID uint, rpmLimit int, modelWithProviderID uint, tokenID uint) (bool, string, error) {
+// CheckAuthKeyLimits 检查 API Key 限制
+func CheckAuthKeyLimits(ctx context.Context, authKeyID uint, rpmLimit int, modelWithProviderID uint) (bool, string, error) {
 	if globalLimiterManager == nil {
 		return true, "", nil
 	}
-	return globalLimiterManager.CheckProviderLimits(ctx, providerID, rpmLimit, modelWithProviderID, tokenID)
+	return globalLimiterManager.CheckAuthKeyLimits(ctx, authKeyID, rpmLimit, modelWithProviderID, authKeyID)
 }
 
-// RecordProviderAccess 记录提供商访问
-func RecordProviderAccess(ctx context.Context, providerID uint, rpmLimit int) error {
+// RecordAuthKeyAccess 记录 API Key 访问
+func RecordAuthKeyAccess(ctx context.Context, authKeyID uint, rpmLimit int) error {
 	if globalLimiterManager == nil {
 		return nil
 	}
-	return globalLimiterManager.RecordProviderAccess(ctx, providerID, rpmLimit)
+	return globalLimiterManager.RecordAuthKeyAccess(ctx, authKeyID, rpmLimit)
 }
 
-// GetCurrentRPMCount 获取当前RPM计数
-func GetCurrentRPMCount(ctx context.Context, providerID uint) (int, error) {
+// GetCurrentRPMCount 获取当前 RPM 计数
+func GetCurrentRPMCount(ctx context.Context, authKeyID uint) (int, error) {
 	if globalLimiterManager == nil {
 		return 0, nil
 	}
-	return globalLimiterManager.GetCurrentRPMCount(ctx, providerID)
+	return globalLimiterManager.GetCurrentRPMCount(ctx, authKeyID)
 }
 
 // GetRPMStats 获取RPM统计信息

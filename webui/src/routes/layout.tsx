@@ -2,7 +2,9 @@ import { useEffect, useState } from "react";
 import { Link, Outlet, useNavigate, useLocation } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import iconSvg from "@/assets/icon.svg";
 import {
+  FaBars,
   FaHome,
   FaCloud,
   FaRobot,
@@ -13,6 +15,7 @@ import {
   FaHeartbeat,
   FaCrown,
   FaUserShield,
+  FaTimes,
 } from "react-icons/fa";
 import { getVersion, checkLatestRelease, type GitHubRelease } from "@/lib/api";
 import { clearStoredAuthToken, getStoredAuthToken } from "@/lib/auth";
@@ -28,6 +31,7 @@ export default function Layout() {
   const [version, setVersion] = useState("dev");
   const [latestRelease, setLatestRelease] = useState<GitHubRelease | null>(null);
   const [showUpdateDialog, setShowUpdateDialog] = useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const navigate = useNavigate();
   const location = useLocation(); // 用于高亮当前选中的菜单
   const token = getStoredAuthToken();
@@ -81,6 +85,26 @@ export default function Layout() {
     }
   }, [location.pathname, version]);
 
+  useEffect(() => {
+    setMobileSidebarOpen(false);
+  }, [location.pathname]);
+
+  useEffect(() => {
+    if (!mobileSidebarOpen) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setMobileSidebarOpen(false);
+      }
+    };
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [mobileSidebarOpen]);
+
   const handleLogout = () => {
     clearStoredAuthToken();
     navigate("/login");
@@ -118,22 +142,61 @@ export default function Layout() {
     },
   ];
 
+  const renderSidebarNav = (onItemClick?: () => void) => (
+    <nav className="min-h-0 flex-1 space-y-6 overflow-y-auto">
+      {navSections.map((section) => (
+        <div key={section.title} className="space-y-2">
+          <div className="text-[11px] font-semibold tracking-[0.2em] text-muted-foreground">
+            {section.title}
+          </div>
+          <ul className="space-y-1">
+            {section.items.map((item) => {
+              const isActive = location.pathname === item.to;
+              return (
+                <li key={item.to}>
+                  <Link
+                    to={item.to}
+                    onClick={onItemClick}
+                    className={`group flex items-center gap-3 rounded-xl px-3 py-2 text-sm transition-colors ${
+                      isActive
+                        ? "bg-primary/10 text-primary ring-1 ring-primary/20"
+                        : "text-muted-foreground hover:bg-sidebar-accent/70 hover:text-foreground"
+                    }`}
+                  >
+                    <span className="text-base">{item.icon}</span>
+                    <span className="font-medium">{item.label}</span>
+                  </Link>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      ))}
+    </nav>
+  );
+
   return (
     <div className="flex flex-col h-screen w-full dark:bg-gray-900 transition-colors duration-300">
       
       {/* 1. 顶部栏 Header */}
       <header className="bg-background/80 backdrop-blur flex items-center flex-shrink-0 z-20 border-b border-border/70">
-        <div className="mx-auto flex w-full max-w-[1400px] items-center justify-between px-4 py-3">
-          <div className="flex items-center gap-3 ml-2">
-            <div>
-              <div className="text-lg font-semibold text-foreground">Orvion</div>
-              <div className="text-[11px] text-muted-foreground">多提供商网关</div>
-            </div>
+        <div className="flex w-full items-center justify-between px-4 py-3">
+          <div className="flex items-center gap-3">
             {!isAuthKeyToken && (
-              <span className="ml-3 hidden items-center rounded-full bg-primary/10 px-3 py-1 text-[10px] font-semibold tracking-[0.2em] text-primary sm:inline-flex">
-                ADMIN MODE
-              </span>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="lg:hidden"
+                onClick={() => setMobileSidebarOpen(true)}
+                aria-label="打开侧边导航"
+              >
+                <FaBars />
+              </Button>
             )}
+            <Link to="/" className="flex items-center gap-2">
+              <img src={iconSvg} alt="Orvion" className="h-8 w-8" />
+              <div className="text-lg font-semibold text-foreground">Orvion</div>
+            </Link>
           </div>
 
           <div className="flex items-center gap-2">
@@ -162,53 +225,64 @@ export default function Layout() {
 
       {/* 2. 下方主体区域 */}
       <div className="flex-1 min-w-0">
-        <div className="mx-auto flex h-full w-full max-w-[1400px] px-4">
-          <div className="flex w-full min-w-0 gap-4 py-4">
+        <div className="flex h-full w-full">
+          <div className="flex h-full w-full min-w-0">
         
         {/* 左侧侧边栏 Sidebar */}
         {!isAuthKeyToken && (
-          <aside className="w-60 shrink-0 self-start rounded-3xl border border-sidebar-border bg-sidebar/90 p-4 shadow-[0_18px_40px_rgba(0,0,0,0.06)]">
-            <nav className="space-y-6">
-              {navSections.map((section) => (
-                <div key={section.title} className="space-y-2">
-                  <div className="text-[11px] font-semibold tracking-[0.2em] text-muted-foreground">
-                    {section.title}
-                  </div>
-                  <ul className="space-y-1">
-                    {section.items.map((item) => {
-                      const isActive = location.pathname === item.to;
-                      return (
-                        <li key={item.to}>
-                          <Link
-                            to={item.to}
-                            className={`group flex items-center gap-3 rounded-2xl px-3 py-2 text-sm transition-colors ${
-                              isActive
-                                ? "bg-primary/10 text-primary ring-1 ring-primary/20"
-                                : "text-muted-foreground hover:bg-sidebar-accent/70 hover:text-foreground"
-                            }`}
-                          >
-                            <span className="text-base">{item.icon}</span>
-                            <span className="font-medium">{item.label}</span>
-                          </Link>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </div>
-              ))}
-            </nav>
+          <aside className="hidden h-full w-64 shrink-0 border-r border-sidebar-border bg-sidebar lg:flex lg:flex-col">
+            <div className="flex h-full flex-col px-4 py-5">
+              {renderSidebarNav()}
+            </div>
           </aside>
         )}
 
         {/* 右侧主内容区域 */}
-        <main className="flex-1 min-w-0 rounded-3xl border border-border/60 bg-card/60 p-3 md:p-5">
+        <main className="min-w-0 flex-1 p-3 md:p-4">
+          <div className="h-full rounded-3xl border border-border/60 bg-card/60 p-3 md:p-5">
           <div className="mx-auto max-w-full h-full min-w-0 overflow-x-hidden">
             <Outlet />
+          </div>
           </div>
         </main>
           </div>
         </div>
       </div>
+
+      {!isAuthKeyToken && (
+        <div
+          className={`fixed inset-0 z-40 lg:hidden ${
+            mobileSidebarOpen ? "pointer-events-auto" : "pointer-events-none"
+          }`}
+        >
+          <button
+            type="button"
+            aria-label="关闭侧边导航"
+            className={`absolute inset-0 bg-black/35 transition-opacity ${
+              mobileSidebarOpen ? "opacity-100" : "opacity-0"
+            }`}
+            onClick={() => setMobileSidebarOpen(false)}
+          />
+          <aside
+            className={`relative flex h-full w-72 max-w-[86vw] flex-col border-r border-sidebar-border bg-sidebar px-4 py-5 transition-transform duration-200 ${
+              mobileSidebarOpen ? "translate-x-0" : "-translate-x-full"
+            }`}
+          >
+            <div className="mb-4 flex items-center justify-between">
+              <span className="text-base font-semibold text-foreground">菜单</span>
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label="关闭侧边导航"
+                onClick={() => setMobileSidebarOpen(false)}
+              >
+                <FaTimes />
+              </Button>
+            </div>
+            {renderSidebarNav(() => setMobileSidebarOpen(false))}
+          </aside>
+        </div>
+      )}
 
       {/* Update Dialog */}
       <Dialog open={showUpdateDialog} onOpenChange={setShowUpdateDialog}>

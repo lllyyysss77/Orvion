@@ -388,9 +388,6 @@ export default function HealthPage() {
             <Activity className="size-6" />
             健康监控
           </h2>
-          <p className="text-sm text-muted-foreground mt-1">
-            最近100次请求 · {providers.total} 个提供商 · {providers.details.reduce((sum, p) => sum + p.models.length, 0)} 个模型
-          </p>
         </div>
         <div className="flex items-center gap-2">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">

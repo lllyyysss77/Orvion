@@ -63,9 +63,6 @@ const formSchema = z.object({
   model_id: z.number().positive({ message: "模型ID必须大于0" }),
   provider_name: z.string().min(1, { message: "提供商模型名称不能为空" }),
   provider_id: z.number().positive({ message: "提供商ID必须大于0" }),
-  tool_call: z.boolean(),
-  structured_output: z.boolean(),
-  image: z.boolean(),
   with_header: z.boolean(),
   weight: z.number().positive({ message: "权重必须大于0" }),
   customer_headers: z.array(headerPairSchema).default([]),
@@ -130,9 +127,6 @@ export function ModelProvidersPanel({ embedded = false, fixedModel = null }: Mod
       model_id: modelId || 0,
       provider_name: "",
       provider_id: 0,
-      tool_call: true,
-      structured_output: true,
-      image: false,
       with_header: true,
       weight: 1,
       customer_headers: [],
@@ -191,9 +185,6 @@ export function ModelProvidersPanel({ embedded = false, fixedModel = null }: Mod
       model_id: modelId || values.model_id,
       provider_name: values.provider_name,
       provider_id: values.provider_id,
-      tool_call: values.tool_call,
-      structured_output: values.structured_output,
-      image: values.image,
       with_header: values.with_header,
       customer_headers: headers,
       weight: values.weight,
@@ -229,9 +220,6 @@ export function ModelProvidersPanel({ embedded = false, fixedModel = null }: Mod
         model_id: modelId || 0,
         provider_name: "",
         provider_id: 0,
-        tool_call: false,
-        structured_output: false,
-        image: false,
         with_header: true,
         weight: 1,
         customer_headers: [],
@@ -255,9 +243,6 @@ export function ModelProvidersPanel({ embedded = false, fixedModel = null }: Mod
         model_id: modelId || 0,
         provider_name: "",
         provider_id: 0,
-        tool_call: false,
-        structured_output: false,
-        image: false,
         with_header: true,
         weight: 1,
         customer_headers: [],
@@ -459,9 +444,6 @@ export function ModelProvidersPanel({ embedded = false, fixedModel = null }: Mod
       model_id: modelId || association.ModelID,
       provider_name: association.ProviderModel,
       provider_id: association.ProviderID,
-      tool_call: association.ToolCall === true,
-      structured_output: association.StructuredOutput === true,
-      image: association.Image === true,
       with_header: association.WithHeader === true,
       weight: association.Weight,
       customer_headers: headerPairs.length ? headerPairs : [],
@@ -475,9 +457,6 @@ export function ModelProvidersPanel({ embedded = false, fixedModel = null }: Mod
       model_id: modelId || 0,
       provider_name: "",
       provider_id: 0,
-      tool_call: false,
-      structured_output: false,
-      image: false,
       with_header: true,
       weight: 1,
       customer_headers: [],
@@ -783,61 +762,6 @@ export function ModelProvidersPanel({ embedded = false, fixedModel = null }: Mod
                         <p className="text-xs text-muted-foreground">请选择提供商以加载模型列表</p>
                       )}
                       <FormMessage />
-                    </FormItem>
-                  )}
-                />
-
-                <FormLabel>模型能力</FormLabel>
-                <FormField
-                  control={form.control}
-                  name="tool_call"
-                  render={({ field }) => (
-                    <FormItem className="flex flex-row items-start space-x-3 space-y-0 rounded-md border p-4">
-                      <FormControl>
-                        <Checkbox
-                          checked={field.value === true}
-                          onCheckedChange={(checked) => field.onChange(checked === true)}
-                        />
-                      </FormControl>
-                      <div className="space-y-1 leading-none">
-                        <FormLabel>工具调用</FormLabel>
-                      </div>
-                    </FormItem>
-                  )}
-                />
-
-                <FormField
-                  control={form.control}
-                  name="structured_output"
-                  render={({ field }) => (
-                    <FormItem className="flex flex-row items-start space-x-3 space-y-0 rounded-md border p-4">
-                      <FormControl>
-                        <Checkbox
-                          checked={field.value === true}
-                          onCheckedChange={(checked) => field.onChange(checked === true)}
-                        />
-                      </FormControl>
-                      <div className="space-y-1 leading-none">
-                        <FormLabel>结构化输出</FormLabel>
-                      </div>
-                    </FormItem>
-                  )}
-                />
-
-                <FormField
-                  control={form.control}
-                  name="image"
-                  render={({ field }) => (
-                    <FormItem className="flex flex-row items-start space-x-3 space-y-0 rounded-md border p-4">
-                      <FormControl>
-                        <Checkbox
-                          checked={field.value === true}
-                          onCheckedChange={(checked) => field.onChange(checked === true)}
-                        />
-                      </FormControl>
-                      <div className="space-y-1 leading-none">
-                        <FormLabel>视觉</FormLabel>
-                      </div>
                     </FormItem>
                   )}
                 />

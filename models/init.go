@@ -71,7 +71,13 @@ func Init(ctx context.Context, dsn string) {
 		if !DB.Migrator().HasColumn(&AuthKey{}, "total_cost") {
 			_ = DB.Migrator().AddColumn(&AuthKey{}, "TotalCost")
 		}
+		if !DB.Migrator().HasColumn(&AuthKey{}, "rpm_limit") {
+			_ = DB.Migrator().AddColumn(&AuthKey{}, "RpmLimit")
+		}
 		if _, err := gorm.G[AuthKey](DB).Where("total_cost IS NULL").Update(ctx, "total_cost", 0); err != nil {
+			// 忽略错误
+		}
+		if _, err := gorm.G[AuthKey](DB).Where("rpm_limit IS NULL").Update(ctx, "rpm_limit", 0); err != nil {
 			// 忽略错误
 		}
 		if _, err := gorm.G[AuthKey](DB).Where("usage_count IS NULL").Update(ctx, "usage_count", 0); err != nil {

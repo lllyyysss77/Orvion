@@ -22,11 +22,10 @@ import (
 
 // ProviderRequest represents the request body for creating/updating a provider
 type ProviderRequest struct {
-	Name     string `json:"name"`
-	Type     string `json:"type"`
-	Config   string `json:"config"`
-	Console  string `json:"console"`
-	RpmLimit int    `json:"rpm_limit"`
+	Name    string `json:"name"`
+	Type    string `json:"type"`
+	Config  string `json:"config"`
+	Console string `json:"console"`
 }
 
 // ModelRequest represents the request body for creating/updating a model
@@ -48,15 +47,12 @@ type ModelWithPrice struct {
 
 // ModelWithProviderRequest represents the request body for creating/updating a model-provider association
 type ModelWithProviderRequest struct {
-	ModelID          uint              `json:"model_id"`
-	ProviderModel    string            `json:"provider_name"`
-	ProviderID       uint              `json:"provider_id"`
-	ToolCall         bool              `json:"tool_call"`
-	StructuredOutput bool              `json:"structured_output"`
-	Image            bool              `json:"image"`
-	WithHeader       bool              `json:"with_header"`
-	CustomerHeaders  map[string]string `json:"customer_headers"`
-	Weight           int               `json:"weight"`
+	ModelID         uint              `json:"model_id"`
+	ProviderModel   string            `json:"provider_name"`
+	ProviderID      uint              `json:"provider_id"`
+	WithHeader      bool              `json:"with_header"`
+	CustomerHeaders map[string]string `json:"customer_headers"`
+	Weight          int               `json:"weight"`
 }
 
 // ModelProviderStatusRequest represents the request body for updating provider status
@@ -220,11 +216,10 @@ func CreateProvider(c *gin.Context) {
 	}
 
 	provider := models.Provider{
-		Name:     req.Name,
-		Type:     req.Type,
-		Config:   req.Config,
-		Console:  req.Console,
-		RpmLimit: req.RpmLimit,
+		Name:    req.Name,
+		Type:    req.Type,
+		Config:  req.Config,
+		Console: req.Console,
 	}
 
 	if err := gorm.G[models.Provider](models.DB).Create(c.Request.Context(), &provider); err != nil {
@@ -262,11 +257,10 @@ func UpdateProvider(c *gin.Context) {
 
 	// Update fields
 	updates := models.Provider{
-		Name:     req.Name,
-		Type:     req.Type,
-		Config:   req.Config,
-		Console:  req.Console,
-		RpmLimit: req.RpmLimit,
+		Name:    req.Name,
+		Type:    req.Type,
+		Config:  req.Config,
+		Console: req.Console,
 	}
 
 	if _, err := gorm.G[models.Provider](models.DB).Where("id = ?", id).Updates(c.Request.Context(), updates); err != nil {
@@ -751,34 +745,19 @@ func CreateModelProvider(c *gin.Context) {
 	}
 
 	// 将 bool 转换为 int (0/1)
-	toolCall := 0
-	if req.ToolCall {
-		toolCall = 1
-	}
-	structuredOutput := 0
-	if req.StructuredOutput {
-		structuredOutput = 1
-	}
-	image := 0
-	if req.Image {
-		image = 1
-	}
 	withHeader := 0
 	if req.WithHeader {
 		withHeader = 1
 	}
 
 	modelProvider := models.ModelWithProvider{
-		ModelID:          req.ModelID,
-		ProviderModel:    req.ProviderModel,
-		ProviderID:       req.ProviderID,
-		ToolCall:         toolCall,
-		StructuredOutput: structuredOutput,
-		Image:            image,
-		WithHeader:       withHeader,
-		CustomerHeaders:  customerHeadersJSON,
-		Weight:           req.Weight,
-		Status:           1, // 默认启用
+		ModelID:         req.ModelID,
+		ProviderModel:   req.ProviderModel,
+		ProviderID:      req.ProviderID,
+		WithHeader:      withHeader,
+		CustomerHeaders: customerHeadersJSON,
+		Weight:          req.Weight,
+		Status:          1, // 默认启用
 	}
 
 	err := gorm.G[models.ModelWithProvider](models.DB).Create(c.Request.Context(), &modelProvider)
@@ -815,18 +794,6 @@ func UpdateModelProvider(c *gin.Context) {
 	}
 
 	// 将 bool 转换为 int (0/1)
-	toolCall := 0
-	if req.ToolCall {
-		toolCall = 1
-	}
-	structuredOutput := 0
-	if req.StructuredOutput {
-		structuredOutput = 1
-	}
-	image := 0
-	if req.Image {
-		image = 1
-	}
 	withHeader := 0
 	if req.WithHeader {
 		withHeader = 1
@@ -853,9 +820,6 @@ func UpdateModelProvider(c *gin.Context) {
 		{"model_id", req.ModelID},
 		{"provider_id", req.ProviderID},
 		{"provider_model", req.ProviderModel},
-		{"tool_call", toolCall},
-		{"structured_output", structuredOutput},
-		{"image", image},
 		{"with_header", withHeader},
 		{"customer_headers", customerHeadersJSON},
 		{"weight", req.Weight},

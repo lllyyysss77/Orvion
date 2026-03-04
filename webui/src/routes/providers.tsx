@@ -4,13 +4,6 @@ import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { Button } from "@/components/ui/button";
 import {
-  Card,
-  CardContent,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -45,8 +38,15 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-  AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import Loading from "@/components/loading";
 import { Label } from "@/components/ui/label";
 import ProviderConfigEditor from "@/components/provider-config-editor";
@@ -57,10 +57,9 @@ import {
   updateProvider,
   deleteProvider,
   getProviderTemplates,
-  getProviderModels,
-  getProvidersStats
+  getProviderModels
 } from "@/lib/api";
-import type { Provider, ProviderTemplate, ProviderModel, ProviderStatsItem } from "@/lib/api";
+import type { Provider, ProviderTemplate, ProviderModel } from "@/lib/api";
 import { toast } from "sonner";
 import { ExternalLink, Pencil, Trash2, Boxes } from "lucide-react";
 
@@ -99,7 +98,6 @@ const formSchema = z.object({
   type: z.string().min(1, { message: "提供商类型不能为空" }),
   config: z.string().min(1, { message: "配置不能为空" }),
   console: z.string().optional(),
-  rpmLimit: z.number().min(0, { message: "RPM 限制必须大于等于 0" }).optional(),
 });
 
 export default function ProvidersPage() {
@@ -116,11 +114,6 @@ export default function ProvidersPage() {
   const [modelsLoading, setModelsLoading] = useState(false);
   const [structuredConfigEnabled, setStructuredConfigEnabled] = useState(false);
   const configCacheRef = useRef<Record<string, string>>({});
-  const statsRequestRef = useRef(0);
-  const [providerStats, setProviderStats] = useState<Record<number, {
-    rpmCount: number | null;
-    rpmLoaded: boolean;
-  }>>({});
 
   // 筛选条件
   const [nameFilter, setNameFilter] = useState<string>("");
@@ -133,7 +126,7 @@ export default function ProvidersPage() {
   // 初始化表单
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
-    defaultValues: { name: "", type: "", config: "", console: "", rpmLimit: 0 },
+    defaultValues: { name: "", type: "", config: "", console: "" },
   });
   const selectedProviderType = form.watch("type");
   const selectedTemplate = providerTemplates.find((item) => item.type === selectedProviderType);
@@ -196,7 +189,6 @@ export default function ProvidersPage() {
     form.setValue("config", nextConfig);
     if (isAuthType) {
       form.setValue("console", "");
-      form.setValue("rpmLimit", 0);
     }
   }, [
     open,
@@ -215,7 +207,6 @@ export default function ProvidersPage() {
 
       const data = await getProviders({ name, type });
       setProviders(data);
-      void fetchProviderStats(data);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       toast.error(`获取提供商列表失败: ${message}`);
@@ -223,52 +214,6 @@ export default function ProvidersPage() {
     } finally {
       setLoading(false);
     }
-  };
-
-  const fetchProviderStats = async (items: Provider[]) => {
-    if (items.length === 0) {
-      setProviderStats({});
-      return;
-    }
-    const requestId = ++statsRequestRef.current;
-    setProviderStats((prev) => {
-      const next: Record<number, {
-        rpmCount: number | null;
-        rpmLoaded: boolean;
-      }> = {};
-      for (const provider of items) {
-        const existing = prev[provider.ID];
-        next[provider.ID] = {
-          rpmCount: existing?.rpmCount ?? null,
-          rpmLoaded: false,
-        };
-      }
-      return next;
-    });
-
-    let statsList: ProviderStatsItem[] = [];
-    try {
-      statsList = await getProvidersStats(items.map((provider) => provider.ID));
-    } catch (err) {
-      if (requestId !== statsRequestRef.current) return;
-      toast.error("获取提供商状态失败");
-      return;
-    }
-
-    if (requestId !== statsRequestRef.current) {
-      return;
-    }
-
-    const statsMap = new Map(statsList.map((item) => [item.provider_id, item]));
-    const next: Record<number, { rpmCount: number | null; rpmLoaded: boolean }> = {};
-    for (const provider of items) {
-      const item = statsMap.get(provider.ID);
-      next[provider.ID] = {
-        rpmCount: item ? item.rpm_count ?? null : null,
-        rpmLoaded: item ? item.rpm_loaded ?? true : false,
-      };
-    }
-    setProviderStats(next);
   };
 
   const fetchProviderTemplates = async () => {
@@ -334,11 +279,10 @@ export default function ProvidersPage() {
         type: values.type,
         config: isAuthType ? ensureAuthTemplateConfig(templateMeta, values.type) : values.config,
         console: isAuthType ? "" : (values.console || ""),
-        rpm_limit: isAuthType ? 0 : (values.rpmLimit || 0),
       });
       setOpen(false);
       toast.success(`提供商 ${values.name} 创建成功`);
-      form.reset({ name: "", type: "", config: "", console: "", rpmLimit: 0 });
+      form.reset({ name: "", type: "", config: "", console: "" });
       fetchProviders();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -357,12 +301,11 @@ export default function ProvidersPage() {
         type: values.type,
         config: isAuthType ? ensureAuthTemplateConfig(templateMeta, values.type) : values.config,
         console: isAuthType ? "" : (values.console || ""),
-        rpm_limit: isAuthType ? 0 : (values.rpmLimit || 0),
       });
       setOpen(false);
       toast.success(`提供商 ${values.name} 更新成功`);
       setEditingProvider(null);
-      form.reset({ name: "", type: "", config: "", console: "", rpmLimit: 0 });
+      form.reset({ name: "", type: "", config: "", console: "" });
       fetchProviders();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -394,7 +337,6 @@ export default function ProvidersPage() {
       type: provider.Type,
       config: provider.Config,
       console: provider.Console || "",
-      rpmLimit: provider.RpmLimit || 0,
     });
     setOpen(true);
   };
@@ -481,96 +423,84 @@ export default function ProvidersPage() {
         ) : (
           <div className="h-full flex flex-col">
             <div className="flex-1 min-h-0 overflow-y-auto p-3">
-              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-5">
-                {providers.map((provider) => {
-                  const stats = providerStats[provider.ID];
-                  const rpmLoaded = stats?.rpmLoaded ?? false;
-                  const rpmCurrent = stats?.rpmCount ?? 0;
-                  const rpmLimit = provider.RpmLimit || 0;
-                  const rpmRatio = rpmLoaded
-                    ? (rpmLimit > 0 ? Math.min(100, (rpmCurrent / rpmLimit) * 100) : 100)
-                    : 0;
-                  const rpmLabel = rpmLoaded ? (rpmLimit > 0 ? `${rpmCurrent}/${rpmLimit}` : `${rpmCurrent}/∞`) : "--/--";
-                  return (
-                    <Card key={provider.ID} className="py-4 shadow-sm">
-                    <CardHeader className="pb-2 sm:px-4 px-3">
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0">
-                          <CardTitle className="text-base truncate" title={provider.Name}>
-                            {provider.Name}
-                          </CardTitle>
-                          <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
-                            <span>类型: {providerTypeDisplayMap.get(provider.Type) || provider.Type || "未知"}</span>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-1.5">
+              <div className="rounded-md border overflow-hidden">
+                <Table>
+                  <TableHeader className="bg-secondary/60">
+                    <TableRow>
+                      <TableHead className="w-[28%]">名称</TableHead>
+                      <TableHead className="w-[20%]">类型</TableHead>
+                      <TableHead className="w-[30%]">控制台</TableHead>
+                      <TableHead className="w-[22%] text-right">操作</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {providers.map((provider) => (
+                      <TableRow key={provider.ID}>
+                        <TableCell className="font-medium truncate" title={provider.Name}>
+                          {provider.Name}
+                        </TableCell>
+                        <TableCell className="text-muted-foreground">
+                          {providerTypeDisplayMap.get(provider.Type) || provider.Type || "未知"}
+                        </TableCell>
+                        <TableCell>
                           {provider.Console ? (
-                            <Button
+                            <button
+                              type="button"
+                              className="text-xs text-primary hover:underline truncate max-w-[320px] text-left"
                               title={provider.Console}
+                              onClick={() => window.open(provider.Console, "_blank")}
+                            >
+                              {provider.Console}
+                            </button>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">未配置</span>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex items-center justify-end gap-2">
+                            <Button
+                              title="打开控制台"
                               variant="ghost"
                               size="icon"
-                              className="h-7 w-7"
-                              onClick={() => window.open(provider.Console, '_blank')}
+                              className="h-8 w-8"
+                              disabled={!provider.Console}
+                              onClick={() => provider.Console && window.open(provider.Console, "_blank")}
                             >
-                              <ExternalLink className="h-3.5 w-3.5" />
+                              <ExternalLink className="h-4 w-4" />
                             </Button>
-                          ) : (
-                            <Button variant="ghost" size="icon" className="h-7 w-7" disabled>
-                              <ExternalLink className="h-3.5 w-3.5 opacity-50" />
+                            <Button
+                              title="编辑"
+                              variant="outline"
+                              size="icon"
+                              className="h-8 w-8"
+                              onClick={() => openEditDialog(provider)}
+                            >
+                              <Pencil className="h-4 w-4" />
                             </Button>
-                          )}
-                        </div>
-                      </div>
-                    </CardHeader>
-                    <CardContent className="sm:px-4 px-3 space-y-2 text-xs">
-                      <div className="flex items-center gap-2">
-                        <span className="text-[11px] text-muted-foreground w-12">RPM</span>
-                        <div
-                          className="relative h-2 flex-1 rounded-full bg-muted/70 overflow-hidden"
-                          title={rpmLoaded ? (rpmLimit > 0 ? `当前 ${rpmCurrent} / 限制 ${rpmLimit}` : "无限制") : "加载中"}
-                        >
-                          <div
-                            className={`h-full rounded-full ${rpmLimit > 0 ? "bg-amber-500/70" : "bg-emerald-500/50"}`}
-                            style={{
-                              width: `${rpmLimit > 0 ? Math.round(rpmRatio) : 100}%`
-                            }}
-                          />
-                        </div>
-                        <span className="text-[11px] text-muted-foreground tabular-nums w-16 text-right">
-                          {rpmLabel}
-                        </span>
-                      </div>
-                    </CardContent>
-                    <CardFooter className="sm:px-4 px-3 pt-2 gap-2">
-                      <Button variant="outline" size="icon" className="h-8 w-8" onClick={() => openEditDialog(provider)}>
-                        <Pencil className="h-4 w-4" />
-                      </Button>
-                      <Button variant="secondary" size="icon" className="h-8 w-8" onClick={() => openModelsDialog(provider.ID)}>
-                        <Boxes className="h-4 w-4" />
-                      </Button>
-                      <AlertDialog>
-                        <AlertDialogTrigger asChild>
-                          <Button variant="destructive" size="icon" className="h-8 w-8" onClick={() => openDeleteDialog(provider.ID)}>
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        </AlertDialogTrigger>
-                        <AlertDialogContent>
-                          <AlertDialogHeader>
-                            <AlertDialogTitle>确定要删除这个提供商吗？</AlertDialogTitle>
-                            <AlertDialogDescription>
-                              此操作无法撤销。这将永久删除该提供商。
-                            </AlertDialogDescription>
-                          </AlertDialogHeader>
-                          <AlertDialogFooter>
-                            <AlertDialogCancel onClick={() => setDeleteId(null)}>取消</AlertDialogCancel>
-                            <AlertDialogAction onClick={handleDelete}>确认删除</AlertDialogAction>
-                          </AlertDialogFooter>
-                        </AlertDialogContent>
-                      </AlertDialog>
-                    </CardFooter>
-                    </Card>
-                  );
-                })}
+                            <Button
+                              title="查看模型"
+                              variant="secondary"
+                              size="icon"
+                              className="h-8 w-8"
+                              onClick={() => openModelsDialog(provider.ID)}
+                            >
+                              <Boxes className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              title="删除"
+                              variant="destructive"
+                              size="icon"
+                              className="h-8 w-8"
+                              onClick={() => openDeleteDialog(provider.ID)}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
               </div>
             </div>
           </div>
@@ -764,33 +694,11 @@ export default function ProvidersPage() {
                     )}
                   />
 
-                  <FormField
-                    control={form.control}
-                    name="rpmLimit"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>RPM 限制</FormLabel>
-                        <FormControl>
-                          <Input
-                            type="number"
-                            min={0}
-                            placeholder="0 表示无限制"
-                            value={field.value ?? 0}
-                            onChange={(e) => field.onChange(Number(e.target.value) || 0)}
-                          />
-                        </FormControl>
-                        <p className="text-xs text-muted-foreground">
-                          每分钟最大请求数，0 表示无限制。达到限制后会自动切换到其他供应商。
-                        </p>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
                 </>
               )}
               {selectedIsAuthType && (
                 <div className="rounded-md border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
-                  Auth 类型将自动使用订阅凭据，不需要手动填写 APIKey、URL、Console 和 RPM。
+                  Auth 类型将自动使用订阅凭据，不需要手动填写 APIKey、URL 和 Console。
                 </div>
               )}
 
@@ -806,6 +714,21 @@ export default function ProvidersPage() {
           </Form>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={deleteId !== null} onOpenChange={(nextOpen) => { if (!nextOpen) setDeleteId(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>确定要删除这个提供商吗？</AlertDialogTitle>
+            <AlertDialogDescription>
+              此操作无法撤销。这将永久删除该提供商。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setDeleteId(null)}>取消</AlertDialogCancel>
+            <AlertDialogAction onClick={handleDelete}>确认删除</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* 模型列表对话框 */}
       <Dialog open={modelsOpen} onOpenChange={setModelsOpen}>

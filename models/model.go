@@ -9,11 +9,10 @@ import (
 
 type Provider struct {
 	gorm.Model
-	Name     string
-	Type     string
-	Config   string
-	Console  string // 控制台地址
-	RpmLimit int    // 每分钟请求数限制
+	Name    string
+	Type    string
+	Config  string
+	Console string // 控制台地址
 }
 
 type AnthropicConfig struct {
@@ -36,16 +35,13 @@ type Model struct {
 
 type ModelWithProvider struct {
 	gorm.Model
-	ModelID          uint
-	ProviderModel    string
-	ProviderID       uint
-	ToolCall         int    // 能否接受带有工具调用的请求 (0/1)
-	StructuredOutput int    // 能否接受带有结构化输出的请求 (0/1)
-	Image            int    // 能否接受带有图片的请求(视觉) (0/1)
-	WithHeader       int    // 是否透传header (0/1)
-	Status           int    // 是否启用 (0/1)
-	CustomerHeaders  string // 自定义headers (JSON)
-	Weight           int
+	ModelID         uint
+	ProviderModel   string
+	ProviderID      uint
+	WithHeader      int    // 是否透传header (0/1)
+	Status          int    // 是否启用 (0/1)
+	CustomerHeaders string // 自定义headers (JSON)
+	Weight          int
 }
 
 type ChatLog struct {
@@ -130,6 +126,7 @@ type AuthKey struct {
 	AllowAll   int        // 是否允许所有模型 (0/1)
 	Models     string     // 允许的模型列表 (JSON 数组字符串)
 	ExpiresAt  *time.Time // nil=永不过期，有值=具体过期时间
+	RpmLimit   int        `gorm:"column:rpm_limit"` // 每分钟请求数限制，0 表示无限制
 	UsageCount int64      // 使用次数统计
 	TotalCost  float64    `gorm:"column:total_cost"` // 累计费用
 	LastUsedAt *time.Time // 最后使用时间

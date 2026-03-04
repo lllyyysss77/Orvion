@@ -22,6 +22,7 @@ type AuthKeyRequest struct {
 	AllowAll  *bool    `json:"allow_all"`
 	Models    []string `json:"models"`
 	ExpiresAt *string  `json:"expires_at"`
+	RpmLimit  *int     `json:"rpm_limit"`
 }
 
 // boolPtrToInt 将bool指针转换为int，nil时返回默认值
@@ -144,6 +145,7 @@ func CreateAuthKey(c *gin.Context) {
 		AllowAll:  boolPtrToInt(req.AllowAll, 0), // 默认不允许所有模型
 		Models:    sanitizeModelsToString(req.Models),
 		ExpiresAt: expiresAt,
+		RpmLimit:  intPtrWithDefault(req.RpmLimit, 0),
 	}
 
 	if err := gorm.G[models.AuthKey](models.DB).Create(ctx, &authKey); err != nil {
@@ -200,6 +202,7 @@ func UpdateAuthKey(c *gin.Context) {
 		AllowAll:  boolPtrToInt(req.AllowAll, 0), // 默认不允许所有模型
 		Models:    sanitizeModelsToString(req.Models),
 		ExpiresAt: expiresAt,
+		RpmLimit:  intPtrWithDefault(req.RpmLimit, 0),
 	}
 
 	if update.ExpiresAt == nil {
@@ -313,7 +316,17 @@ func validateAuthKeyRequest(req AuthKeyRequest) error {
 	if req.AllowAll != nil && !*req.AllowAll && len(req.Models) == 0 {
 		return errors.New("请至少选择一个允许的模型或启用允许全部模型")
 	}
+	if req.RpmLimit != nil && *req.RpmLimit < 0 {
+		return errors.New("RPM 限制必须大于等于 0")
+	}
 	return nil
+}
+
+func intPtrWithDefault(v *int, defaultValue int) int {
+	if v == nil {
+		return defaultValue
+	}
+	return *v
 }
 
 func sanitizeModels(modelsList []string) []string {

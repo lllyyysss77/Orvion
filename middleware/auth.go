@@ -103,6 +103,7 @@ func checkAuthKey(c *gin.Context, key string, adminToken string, allowAdminBypas
 
 	allowAll := authKey.AllowAll == 1
 	ctx = context.WithValue(ctx, consts.ContextKeyAuthKeyID, authKey.ID)
+	ctx = context.WithValue(ctx, consts.ContextKeyAuthKeyRPMLimit, authKey.RpmLimit)
 	ctx = context.WithValue(ctx, consts.ContextKeyAllowAllModel, allowAll)
 	// 如果不允许所有模型 则设置允许的模型列表
 	if !allowAll {

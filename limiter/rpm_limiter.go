@@ -29,8 +29,8 @@ func NewRPMLimiter(redisClient *redis.Client) *RPMLimiter {
 	}
 }
 
-// CheckRPMLimit 检查是否达到RPM限制
-func (r *RPMLimiter) CheckRPMLimit(ctx context.Context, providerID uint, rpmLimit int) (bool, error) {
+// CheckRPMLimit 检查是否达到 RPM 限制
+func (r *RPMLimiter) CheckRPMLimit(ctx context.Context, authKeyID uint, rpmLimit int) (bool, error) {
 	// 0表示无限制
 	if rpmLimit <= 0 {
 		return true, nil
@@ -40,57 +40,57 @@ func (r *RPMLimiter) CheckRPMLimit(ctx context.Context, providerID uint, rpmLimi
 	windowStart := now - 60 // 1分钟前
 
 	if r.redis != nil {
-		ok, err := r.checkRPMLimitRedis(ctx, providerID, rpmLimit, now, windowStart)
+		ok, err := r.checkRPMLimitRedis(ctx, authKeyID, rpmLimit, now, windowStart)
 		if err == nil {
 			return ok, nil
 		}
-		return r.checkRPMLimitMemory(providerID, rpmLimit, now, windowStart), nil
+		return r.checkRPMLimitMemory(authKeyID, rpmLimit, now, windowStart), nil
 	}
 
-	return r.checkRPMLimitMemory(providerID, rpmLimit, now, windowStart), nil
+	return r.checkRPMLimitMemory(authKeyID, rpmLimit, now, windowStart), nil
 }
 
 // RecordRequest 记录一次请求
-func (r *RPMLimiter) RecordRequest(ctx context.Context, providerID uint) error {
+func (r *RPMLimiter) RecordRequest(ctx context.Context, authKeyID uint) error {
 	now := time.Now().Unix()
 
 	if r.redis != nil {
-		if err := r.recordRequestRedis(ctx, providerID, now); err == nil {
+		if err := r.recordRequestRedis(ctx, authKeyID, now); err == nil {
 			return nil
 		}
-		r.recordRequestMemory(providerID, now)
+		r.recordRequestMemory(authKeyID, now)
 		return nil
 	}
 
-	r.recordRequestMemory(providerID, now)
+	r.recordRequestMemory(authKeyID, now)
 	return nil
 }
 
-// GetCurrentRPMCount 获取当前RPM计数
-func (r *RPMLimiter) GetCurrentRPMCount(ctx context.Context, providerID uint) (int, error) {
+// GetCurrentRPMCount 获取当前 RPM 计数
+func (r *RPMLimiter) GetCurrentRPMCount(ctx context.Context, authKeyID uint) (int, error) {
 	now := time.Now().Unix()
 	windowStart := now - 60
 
 	if r.redis != nil {
-		count, err := r.getCurrentRPMCountRedis(ctx, providerID, windowStart, now)
+		count, err := r.getCurrentRPMCountRedis(ctx, authKeyID, windowStart, now)
 		if err == nil {
 			return count, nil
 		}
-		return r.getCurrentRPMCountMemory(providerID, windowStart), nil
+		return r.getCurrentRPMCountMemory(authKeyID, windowStart), nil
 	}
 
-	return r.getCurrentRPMCountMemory(providerID, windowStart), nil
+	return r.getCurrentRPMCountMemory(authKeyID, windowStart), nil
 }
 
 // getRPMKey 获取RPM存储键
-func (r *RPMLimiter) getRPMKey(providerID uint) string {
-	return fmt.Sprintf("rpm:provider:%d", providerID)
+func (r *RPMLimiter) getRPMKey(authKeyID uint) string {
+	return fmt.Sprintf("rpm:auth_key:%d", authKeyID)
 }
 
 // ==================== Redis实现 ====================
 
-func (r *RPMLimiter) checkRPMLimitRedis(ctx context.Context, providerID uint, rpmLimit int, now, windowStart int64) (bool, error) {
-	key := r.getRPMKey(providerID)
+func (r *RPMLimiter) checkRPMLimitRedis(ctx context.Context, authKeyID uint, rpmLimit int, now, windowStart int64) (bool, error) {
+	key := r.getRPMKey(authKeyID)
 
 	// 使用Redis事务确保原子性
 	pipe := r.redis.TxPipeline()
@@ -111,8 +111,8 @@ func (r *RPMLimiter) checkRPMLimitRedis(ctx context.Context, providerID uint, rp
 	return count < int64(rpmLimit), nil
 }
 
-func (r *RPMLimiter) recordRequestRedis(ctx context.Context, providerID uint, now int64) error {
-	key := r.getRPMKey(providerID)
+func (r *RPMLimiter) recordRequestRedis(ctx context.Context, authKeyID uint, now int64) error {
+	key := r.getRPMKey(authKeyID)
 
 	// 使用有序集合存储请求时间戳
 	// score和member都使用时间戳，确保唯一性
@@ -134,8 +134,8 @@ func (r *RPMLimiter) recordRequestRedis(ctx context.Context, providerID uint, no
 	return nil
 }
 
-func (r *RPMLimiter) getCurrentRPMCountRedis(ctx context.Context, providerID uint, windowStart, now int64) (int, error) {
-	key := r.getRPMKey(providerID)
+func (r *RPMLimiter) getCurrentRPMCountRedis(ctx context.Context, authKeyID uint, windowStart, now int64) (int, error) {
+	key := r.getRPMKey(authKeyID)
 
 	pipe := r.redis.TxPipeline()
 
@@ -155,8 +155,8 @@ func (r *RPMLimiter) getCurrentRPMCountRedis(ctx context.Context, providerID uin
 
 // ==================== 内存实现 ====================
 
-func (r *RPMLimiter) checkRPMLimitMemory(providerID uint, rpmLimit int, now, windowStart int64) bool {
-	key := r.getRPMKey(providerID)
+func (r *RPMLimiter) checkRPMLimitMemory(authKeyID uint, rpmLimit int, now, windowStart int64) bool {
+	key := r.getRPMKey(authKeyID)
 
 	value, exists := r.memory.Load(key)
 	if !exists {
@@ -183,8 +183,8 @@ func (r *RPMLimiter) checkRPMLimitMemory(providerID uint, rpmLimit int, now, win
 	return len(validTimestamps) < rpmLimit
 }
 
-func (r *RPMLimiter) recordRequestMemory(providerID uint, now int64) {
-	key := r.getRPMKey(providerID)
+func (r *RPMLimiter) recordRequestMemory(authKeyID uint, now int64) {
+	key := r.getRPMKey(authKeyID)
 
 	value, exists := r.memory.Load(key)
 	var record *RequestRecord
@@ -215,8 +215,8 @@ func (r *RPMLimiter) recordRequestMemory(providerID uint, now int64) {
 	r.memory.Store(key, record)
 }
 
-func (r *RPMLimiter) getCurrentRPMCountMemory(providerID uint, windowStart int64) int {
-	key := r.getRPMKey(providerID)
+func (r *RPMLimiter) getCurrentRPMCountMemory(authKeyID uint, windowStart int64) int {
+	key := r.getRPMKey(authKeyID)
 
 	value, exists := r.memory.Load(key)
 	if !exists {
@@ -248,50 +248,50 @@ func (r *RPMLimiter) ClearMemoryData() {
 func (r *RPMLimiter) GetStats(ctx context.Context) map[string]interface{} {
 	stats := map[string]interface{}{
 		"storage_type": "memory",
-		"providers":    make(map[string]int),
+		"auth_keys":    make(map[string]int),
 	}
 
 	if r.redis != nil {
 		stats["storage_type"] = "redis"
 
 		// 获取Redis中的RPM键
-		keys, err := r.redis.Keys(ctx, "rpm:provider:*").Result()
+		keys, err := r.redis.Keys(ctx, "rpm:auth_key:*").Result()
 		if err == nil {
-			providerStats := make(map[string]int)
+			authKeyStats := make(map[string]int)
 			for _, key := range keys {
 				count, err := r.redis.ZCard(ctx, key).Result()
 				if err == nil {
-					providerStats[key] = int(count)
+					authKeyStats[key] = int(count)
 				}
 			}
-			stats["providers"] = providerStats
+			stats["auth_keys"] = authKeyStats
 			return stats
 		}
 	} else {
 		// 内存统计
-		providerStats := make(map[string]int)
+		authKeyStats := make(map[string]int)
 		r.memory.Range(func(key, value interface{}) bool {
 			if keyStr, ok := key.(string); ok {
 				if record, ok := value.(*RequestRecord); ok {
-					providerStats[keyStr] = len(record.Timestamps)
+					authKeyStats[keyStr] = len(record.Timestamps)
 				}
 			}
 			return true
 		})
-		stats["providers"] = providerStats
+		stats["auth_keys"] = authKeyStats
 	}
 
 	// Redis 不可用时回退内存统计
-	providerStats := make(map[string]int)
+	authKeyStats := make(map[string]int)
 	r.memory.Range(func(key, value interface{}) bool {
 		if keyStr, ok := key.(string); ok {
 			if record, ok := value.(*RequestRecord); ok {
-				providerStats[keyStr] = len(record.Timestamps)
+				authKeyStats[keyStr] = len(record.Timestamps)
 			}
 		}
 		return true
 	})
 	stats["storage_type"] = "memory"
-	stats["providers"] = providerStats
+	stats["auth_keys"] = authKeyStats
 	return stats
 }

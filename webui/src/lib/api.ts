@@ -9,7 +9,6 @@ export interface Provider {
   Type: string;
   Config: string;
   Console: string;
-  RpmLimit: number; // 每分钟请求数限制，0 表示无限制
 }
 
 export interface Model {
@@ -53,9 +52,6 @@ export interface ModelWithProvider {
   ModelID: number;
   ProviderModel: string;
   ProviderID: number;
-  ToolCall: boolean;
-  StructuredOutput: boolean;
-  Image: boolean;
   WithHeader: boolean;
   CustomerHeaders: Record<string, string> | null;
   Status: boolean | null;
@@ -81,6 +77,7 @@ export interface AuthKey {
   AllowAll: boolean;
   Models: string[] | null;
   ExpiresAt: string | null;
+  RpmLimit: number;
   UsageCount: number;
   TotalCost: number;
   LastUsedAt: string | null;
@@ -225,14 +222,12 @@ const normalizeAuthKey = (raw: any): AuthKey => {
     Status: toBoolean(raw?.Status),
     AllowAll: allowAll,
     Models: allowAll ? [] : parseStringArray(raw?.Models),
+    RpmLimit: typeof raw?.RpmLimit === "number" ? raw.RpmLimit : 0,
   } as AuthKey;
 };
 
 const normalizeModelWithProvider = (raw: any): ModelWithProvider => ({
   ...raw,
-  ToolCall: toBoolean(raw?.ToolCall),
-  StructuredOutput: toBoolean(raw?.StructuredOutput),
-  Image: toBoolean(raw?.Image),
   WithHeader: toBoolean(raw?.WithHeader),
   Status: raw?.Status == null ? null : toBoolean(raw?.Status),
   CustomerHeaders: parseRecordStringString(raw?.CustomerHeaders),
@@ -411,7 +406,6 @@ export async function createProvider(provider: {
   type: string;
   config: string;
   console: string;
-  rpm_limit?: number;
 }): Promise<Provider> {
   return apiRequest<Provider>('/providers', {
     method: 'POST',
@@ -424,7 +418,6 @@ export async function updateProvider(id: number, provider: {
   type?: string;
   config?: string;
   console?: string;
-  rpm_limit?: number;
 }): Promise<Provider> {
   return apiRequest<Provider>(`/providers/${id}`, {
     method: 'PUT',
@@ -513,6 +506,7 @@ export type AuthKeyPayload = {
   allow_all: boolean;
   models: string[];
   expires_at?: string | null;
+  rpm_limit?: number;
 };
 
 export async function getAuthKeys(params: {
@@ -595,9 +589,6 @@ export async function createModelProvider(association: {
   model_id: number;
   provider_name: string;
   provider_id: number;
-  tool_call: boolean;
-  structured_output: boolean;
-  image: boolean;
   with_header: boolean;
   customer_headers: Record<string, string>;
   weight: number;
@@ -613,9 +604,6 @@ export async function updateModelProvider(id: number, association: {
   model_id?: number;
   provider_name?: string;
   provider_id?: number;
-  tool_call?: boolean;
-  structured_output?: boolean;
-  image?: boolean;
   with_header?: boolean;
   customer_headers?: Record<string, string>;
   weight?: number;
@@ -716,19 +704,6 @@ export interface ProviderTemplate {
 
 export async function getProviderTemplates(): Promise<ProviderTemplate[]> {
   return apiRequest<ProviderTemplate[]>('/providers/template');
-}
-
-export interface ProviderStatsItem {
-  provider_id: number;
-  rpm_count: number;
-  rpm_loaded: boolean;
-}
-
-export async function getProvidersStats(providerIds: number[]): Promise<ProviderStatsItem[]> {
-  return apiRequest<ProviderStatsItem[]>('/providers/stats', {
-    method: 'POST',
-    body: JSON.stringify({ provider_ids: providerIds }),
-  });
 }
 
 // Provider Models API functions

@@ -469,17 +469,6 @@ export default function LoginPage() {
                 );
               })}
 
-              <a
-                href="https://fawney19.github.io/Aether/guide"
-                target="_blank"
-                rel="noopener noreferrer"
-                className={`group relative px-3 py-2 text-sm font-medium transition ${
-                  darkMode ? "text-[#c9c3b4] hover:text-white" : "text-[#666663] hover:text-[#191919]"
-                }`}
-              >
-                文档
-              </a>
-
               <button
                 onClick={() => scrollToSection("more")}
                 className={`group relative px-3 py-2 text-sm font-medium transition ${

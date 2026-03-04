@@ -14,7 +14,6 @@ CREATE TABLE IF NOT EXISTS providers (
     type VARCHAR(100) NOT NULL,
     config TEXT NOT NULL DEFAULT '{}',
     console VARCHAR(500) NOT NULL DEFAULT '',
-    rpm_limit INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     deleted_at TIMESTAMPTZ
@@ -43,9 +42,6 @@ CREATE TABLE IF NOT EXISTS model_with_providers (
     model_id INTEGER NOT NULL REFERENCES models(id) ON DELETE CASCADE,
     provider_id INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
     provider_model VARCHAR(255) NOT NULL,
-    tool_call INTEGER NOT NULL DEFAULT 0,
-    structured_output INTEGER NOT NULL DEFAULT 0,
-    image INTEGER NOT NULL DEFAULT 0,
     with_header INTEGER NOT NULL DEFAULT 0,
     status INTEGER NOT NULL DEFAULT 1,
     customer_headers TEXT NOT NULL DEFAULT '{}',
@@ -64,6 +60,7 @@ CREATE TABLE IF NOT EXISTS auth_keys (
     allow_all INTEGER NOT NULL DEFAULT 1,
     models TEXT NOT NULL DEFAULT '[]',
     expires_at TIMESTAMPTZ,
+    rpm_limit INTEGER NOT NULL DEFAULT 0,
     usage_count BIGINT NOT NULL DEFAULT 0,
     total_cost DOUBLE PRECISION NOT NULL DEFAULT 0,
     last_used_at TIMESTAMPTZ,
@@ -71,6 +68,7 @@ CREATE TABLE IF NOT EXISTS auth_keys (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     deleted_at TIMESTAMPTZ
 );
+ALTER TABLE auth_keys ADD COLUMN IF NOT EXISTS rpm_limit INTEGER NOT NULL DEFAULT 0;
 
 -- 创建 configs 表
 CREATE TABLE IF NOT EXISTS configs (

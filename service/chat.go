@@ -64,6 +64,7 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, before B
 	client := providers.GetClient(responseHeaderTimeout)
 
 	authKeyID, _ := ctx.Value(consts.ContextKeyAuthKeyID).(uint)
+	authKeyRPMLimit, _ := ctx.Value(consts.ContextKeyAuthKeyRPMLimit).(int)
 
 	timer := time.NewTimer(time.Second * time.Duration(providersWithMeta.TimeOut))
 	defer timer.Stop()
@@ -93,18 +94,17 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, before B
 
 			provider := providerMap[modelWithProvider.ProviderID]
 
-			// 已按需求临时禁用限流检查
-			// if enableLimiter {
-			// 	canProceed, reason, err := CheckProviderLimits(ctx, provider.ID, provider.RpmLimit, modelWithProvider.ID, authKeyID)
-			// 	if err != nil {
-			// 		return nil, nil, err
-			// 	}
-			// 	if !canProceed {
-			// 		slog.Info("Provider blocked by limiter", "provider", provider.Name, "reason", reason)
-			// 		balancer.Reduce(id) // 降低权重，但不完全删除
-			// 		continue
-			// 	}
-			// }
+			if enableLimiter && authKeyID > 0 {
+				canProceed, reason, err := CheckAuthKeyLimits(ctx, authKeyID, authKeyRPMLimit, modelWithProvider.ID)
+				if err != nil {
+					return nil, nil, err
+				}
+				if !canProceed {
+					slog.Info("Auth key blocked by limiter", "auth_key_id", authKeyID, "reason", reason)
+					balancer.Reduce(id)
+					continue
+				}
+			}
 
 			slog.Info("using provider", "provider", provider.Name, "model", modelWithProvider.ProviderModel)
 
@@ -207,10 +207,9 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, before B
 				// success
 				balancer.Success(id)
 
-				//已按需求临时禁用限流访问记录
-				if enableLimiter && c != nil {
-					if err := RecordProviderAccess(ctx, provider.ID, provider.RpmLimit); err != nil {
-						slog.Warn("Failed to record provider access", "provider", provider.Name, "error", err)
+				if enableLimiter && authKeyID > 0 && c != nil {
+					if err := RecordAuthKeyAccess(ctx, authKeyID, authKeyRPMLimit); err != nil {
+						slog.Warn("Failed to record auth key access", "auth_key_id", authKeyID, "error", err)
 					}
 				}
 
@@ -380,20 +379,8 @@ func ProvidersWithMetaBymodelsName(ctx context.Context, providerType string, log
 		return nil, errors.New("model disabled " + before.Model)
 	}
 
-	// model_with_providers.status/tool_call/structured_output/image 在数据库中是 0/1（int）
+	// model_with_providers.status 在数据库中是 0/1（int）
 	modelWithProviderChain := gorm.G[models.ModelWithProvider](models.DB).Where("model_id = ?", model.ID).Where("status = ?", 1)
-
-	if before.toolCall {
-		modelWithProviderChain = modelWithProviderChain.Where("tool_call = ?", 1)
-	}
-
-	if before.structuredOutput {
-		modelWithProviderChain = modelWithProviderChain.Where("structured_output = ?", 1)
-	}
-
-	if before.image {
-		modelWithProviderChain = modelWithProviderChain.Where("image = ?", 1)
-	}
 
 	modelWithProviders, err := modelWithProviderChain.Find(ctx)
 	if err != nil {

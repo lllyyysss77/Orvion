@@ -207,7 +207,6 @@ func registerConfigRoutes(api *gin.RouterGroup) {
 func registerLimiterRoutes(api *gin.RouterGroup) {
 	api.GET("/limiter/stats", handler.GetLimiterStats)
 	api.GET("/limiter/health", handler.GetLimiterHealth)
-	api.POST("/providers/stats", handler.GetProvidersStats)
 }
 
 func registerTestRoutes(api *gin.RouterGroup) {
