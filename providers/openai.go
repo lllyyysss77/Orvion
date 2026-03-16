@@ -26,7 +26,8 @@ func (o *OpenAI) BuildReq(ctx context.Context, header http.Header, model string,
 
 	endpoint, _ := ctx.Value(consts.ContextKeyOpenAIEndpoint).(string)
 	path := "chat/completions"
-	if strings.EqualFold(strings.TrimSpace(endpoint), "embeddings") {
+	normalizedEndpoint := strings.ToLower(strings.TrimSpace(endpoint))
+	if normalizedEndpoint == "embeddings" {
 		path = "embeddings"
 		// 兼容部分上游（如 ModelScope）要求显式传 encoding_format。
 		if !gjson.GetBytes(body, "encoding_format").Exists() {
@@ -35,6 +36,9 @@ func (o *OpenAI) BuildReq(ctx context.Context, header http.Header, model string,
 				return nil, err
 			}
 		}
+	} else if normalizedEndpoint != "" {
+		// 允许通过上下文覆盖 OpenAI 目标路径，如 images/generations、images/edits、videos
+		path = normalizedEndpoint
 	}
 	base := strings.TrimRight(o.BaseURL, "/")
 	req, err := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("%s/%s", base, path), bytes.NewReader(body))

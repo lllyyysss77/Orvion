@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Trash2, Plus } from "lucide-react";
+import { Trash2, Eye, EyeOff } from "lucide-react";
 
 export type ConfigValueType = "string" | "number" | "boolean" | "json";
 
@@ -20,6 +20,10 @@ type Props = {
 	value: string;
 	onChange: (nextJson: string) => void;
 	providerType?: string;
+};
+
+export type ProviderConfigEditorRef = {
+	addItem: () => void;
 };
 
 const BASE_DEFAULT_ITEMS: Omit<ConfigItem, "id">[] = [
@@ -43,12 +47,9 @@ function newId() {
 		: `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-function normalizeJsonToItems(raw: string, defaults: Omit<ConfigItem, "id">[]): { items: ConfigItem[]; isJson: boolean } {
+function normalizeJsonToItems(raw: string, defaults: Omit<ConfigItem, "id">[]): ConfigItem[] {
 	if (!raw) {
-		return {
-			items: defaults.map(item => ({ ...item, id: newId() })),
-			isJson: true,
-		};
+		return defaults.map(item => ({ ...item, id: newId() }));
 	}
 	try {
 		const parsed = JSON.parse(raw);
@@ -90,12 +91,9 @@ function normalizeJsonToItems(raw: string, defaults: Omit<ConfigItem, "id">[]): 
 			}
 		}
 
-		return { items: baseItems, isJson: true };
+		return baseItems;
 	} catch {
-		return {
-			items: defaults.map(item => ({ ...item, id: newId() })),
-			isJson: false,
-		};
+		return defaults.map(item => ({ ...item, id: newId() }));
 	}
 }
 
@@ -141,20 +139,16 @@ function serializeItems(items: ConfigItem[], providerType?: string): { json: str
 	return { json: JSON.stringify(obj, null, 2), error: null };
 }
 
-type Mode = "visual" | "json";
-
-export default function ProviderConfigEditor({ value, onChange, providerType }: Props) {
+const ProviderConfigEditor = forwardRef<ProviderConfigEditorRef, Props>(function ProviderConfigEditor(
+	{ value, onChange, providerType },
+	ref,
+) {
 	const defaults = useMemo(() => defaultItemsByType(providerType), [providerType]);
 
 	const lastEmittedRef = useRef<string | null>(null);
 	const lastDefaultsRef = useRef<Omit<ConfigItem, "id">[]>(defaults);
-	const [mode, setMode] = useState<Mode>(() => {
-		const normalized = normalizeJsonToItems(value, defaults);
-		return normalized.isJson ? "visual" : "json";
-	});
-	const [items, setItems] = useState<ConfigItem[]>(() => normalizeJsonToItems(value, defaults).items);
-	const [rawText, setRawText] = useState<string>(() => value);
-	const [rawParseError, setRawParseError] = useState<string | null>(null);
+	const [items, setItems] = useState<ConfigItem[]>(() => normalizeJsonToItems(value, defaults));
+	const [visibleApiKeyIds, setVisibleApiKeyIds] = useState<Record<string, boolean>>({});
 
 	useEffect(() => {
 		// 外部变化（例如切换类型/打开编辑不同 provider）：同步到内部状态
@@ -166,112 +160,39 @@ export default function ProviderConfigEditor({ value, onChange, providerType }: 
 
 		// 使用当前的 value（包含用户已填的数据）重新解析，保留额外字段
 		const normalized = normalizeJsonToItems(value, defaults);
-		setItems(normalized.items);
-		setRawText(value);
-		setRawParseError(null);
-		setMode(normalized.isJson ? "visual" : "json");
+		setItems(normalized);
+		lastEmittedRef.current = value;
 	}, [value, defaults]);
 
 	const { json, error } = useMemo(() => serializeItems(items, providerType), [items, providerType]);
 
 	useEffect(() => {
-		if (mode !== "visual") return;
 		if (error) return;
 		lastEmittedRef.current = json;
 		onChange(json);
-	}, [json, error, onChange, mode]);
+	}, [json, error, onChange]);
 
 	const updateItem = (id: string, patch: Partial<ConfigItem>) => {
 		setItems(prev => prev.map(item => (item.id === id ? { ...item, ...patch } : item)));
 	};
 
-	const addItem = () => {
+	const addItem = useCallback(() => {
 		setItems(prev => prev.concat([{ id: newId(), key: "", type: "string", value: "" }]));
-	};
+	}, []);
 
 	const removeItem = (id: string) => {
 		setItems(prev => prev.filter(item => item.id !== id));
 	};
 
-	const applyRawToVisual = () => {
-		try {
-			const parsed = JSON.parse(rawText);
-			if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-				setRawParseError("必须是 JSON 对象（例如 {\"base_url\":\"...\"}）");
-				return;
-			}
-			const normalized = normalizeJsonToItems(JSON.stringify(parsed), defaults);
-			setItems(normalized.items);
-			const { json: nextJson, error: nextErr } = serializeItems(normalized.items, providerType);
-			if (nextErr) {
-				setRawParseError(nextErr);
-				return;
-			}
-			lastEmittedRef.current = nextJson;
-			onChange(nextJson);
-			setRawParseError(null);
-			setMode("visual");
-		} catch {
-			setRawParseError("JSON 解析失败，请检查格式");
-		}
+	const toggleApiKeyVisibility = (id: string) => {
+		setVisibleApiKeyIds(prev => ({ ...prev, [id]: !prev[id] }));
 	};
 
-	if (mode === "json") {
-		return (
-			<div className="space-y-2">
-				<div className="flex items-center justify-between gap-2">
-					<div className="text-xs text-muted-foreground">
-						<div>原始 JSON 编辑（不会自动切回可视化，需手动“应用并切换”）</div>
-						{providerType === "anthropic" && (
-							<div>Anthropic 需要配置 anthropic-version（字段名：version，例如 2023-06-01）</div>
-						)}
-						{rawParseError && <div className="text-destructive">{rawParseError}</div>}
-					</div>
-					<div className="flex items-center gap-2">
-						<Button type="button" variant="secondary" size="sm" onClick={applyRawToVisual}>
-							应用并切换
-						</Button>
-						<Button type="button" variant="outline" size="sm" onClick={() => setMode("visual")}>
-							仅切换可视化
-						</Button>
-					</div>
-				</div>
-				<Textarea
-					value={rawText}
-					onChange={(e) => {
-						const next = e.target.value;
-						setRawText(next);
-						setRawParseError(null);
-						lastEmittedRef.current = next;
-						onChange(next);
-					}}
-					// api_key 等字段可能很长：避免 textarea 因内容过长撑破弹窗宽度
-					className="resize-none w-full max-w-full min-w-0 whitespace-pre-wrap break-all overflow-x-auto [field-sizing:fixed]"
-				/>
-			</div>
-		);
-	}
+	useImperativeHandle(ref, () => ({ addItem }), [addItem]);
 
 	return (
 		<div className="space-y-3">
-			<div className="flex items-center justify-between gap-2">
-				<div className="text-xs text-muted-foreground">
-					{error ? (
-						<span className="text-destructive">{error}</span>
-					) : (
-						"填写完成后会自动序列化为 JSON 保存"
-					)}
-				</div>
-				<div className="flex items-center gap-2">
-					<Button type="button" variant="outline" size="sm" onClick={() => setMode("json")}>
-						切换原始 JSON
-					</Button>
-					<Button type="button" variant="secondary" size="sm" onClick={addItem}>
-						<Plus className="size-4" />
-						添加字段
-					</Button>
-				</div>
-			</div>
+			{error && <div className="text-xs text-destructive">{error}</div>}
 
 			<div className="grid grid-cols-12 gap-2 text-xs text-muted-foreground">
 				<div className="col-span-4">键</div>
@@ -333,17 +254,39 @@ export default function ProviderConfigEditor({ value, onChange, providerType }: 
 									aria-label="JSON 值"
 								/>
 							) : (
-								<Input
-									type={item.type === "number" ? "number" : item.key === "api_key" ? "password" : "text"}
-									value={item.value}
-									onChange={(e) => updateItem(item.id, { value: e.target.value })}
-									placeholder={
-										item.key === "version"
-											? "例如: 2023-06-01（对应 anthropic-version）"
-											: `请输入 ${item.key || "值"}`
-									}
-									aria-label="值"
-								/>
+								(() => {
+									const isApiKeyField = item.key.trim().toLowerCase() === "api_key";
+									const showApiKey = Boolean(visibleApiKeyIds[item.id]);
+									const inputType = item.type === "number" ? "number" : (isApiKeyField && !showApiKey ? "password" : "text");
+									return (
+										<div className="relative">
+											<Input
+												type={inputType}
+												value={item.value}
+												onChange={(e) => updateItem(item.id, { value: e.target.value })}
+												placeholder={
+													item.key === "version"
+														? "例如: 2023-06-01（对应 anthropic-version）"
+														: `请输入 ${item.key || "值"}`
+												}
+												aria-label="值"
+												className={isApiKeyField ? "pr-10" : undefined}
+											/>
+											{isApiKeyField && (
+												<Button
+													type="button"
+													variant="ghost"
+													size="icon"
+													className="absolute right-1 top-1/2 size-8 -translate-y-1/2"
+													onClick={() => toggleApiKeyVisibility(item.id)}
+													aria-label={showApiKey ? "隐藏 API Key" : "显示 API Key"}
+												>
+													{showApiKey ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+												</Button>
+											)}
+										</div>
+									);
+								})()
 							)}
 						</div>
 
@@ -364,4 +307,6 @@ export default function ProviderConfigEditor({ value, onChange, providerType }: 
 			</div>
 		</div>
 	);
-}
+});
+
+export default ProviderConfigEditor;

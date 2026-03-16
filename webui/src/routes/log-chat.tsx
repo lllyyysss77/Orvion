@@ -144,11 +144,16 @@ export default function LogChatPage() {
   const navigate = useNavigate();
   const [chatIO, setChatIO] = useState<ChatIO | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadingFull, setLoadingFull] = useState(false);
   const [loadErrorMessage, setLoadErrorMessage] = useState<string | null>(null);
   const outputList = chatIO?.OfStringArray ?? [];
   const hasArrayOutput = outputList.length > 0;
   const singleOutput = chatIO?.OfString ?? "";
   const syntaxStyle = useSyntaxStyle();
+  const isSummary = chatIO?.summary;
+  const isTruncated = Boolean(
+    chatIO?.truncated_input || chatIO?.truncated_output || chatIO?.truncated_output_items
+  );
 
   useEffect(() => {
     if (!logId) {
@@ -171,7 +176,12 @@ export default function LogChatPage() {
 
     const fetchChatIO = async () => {
       try {
-        const data = await getChatIO(logId);
+        const data = await getChatIO(logId, {
+          mode: "summary",
+          inputLimit: 20000,
+          outputLimit: 20000,
+          outputItemsLimit: 50
+        });
         setChatIO(data);
         setLoadErrorMessage(null);
       } catch (fetchError) {
@@ -192,6 +202,25 @@ export default function LogChatPage() {
 
     fetchChatIO();
   }, [logId]);
+
+  const handleLoadFull = async () => {
+    if (!logId || loadingFull) return;
+    setLoadingFull(true);
+    try {
+      const data = await getChatIO(logId, { mode: "full" });
+      setChatIO(data);
+      setLoadErrorMessage(null);
+    } catch (fetchError) {
+      let message = "获取完整会话日志失败";
+      if (fetchError instanceof Error) {
+        message = fetchError.message;
+      }
+      toast.error(message);
+      setLoadErrorMessage(message);
+    } finally {
+      setLoadingFull(false);
+    }
+  };
 
   if (loading) {
     return <Loading message="加载会话详情" />;
@@ -223,6 +252,29 @@ export default function LogChatPage() {
 
       {!loadErrorMessage && chatIO && (
         <div className="space-y-6">
+          {isSummary && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base font-semibold">摘要模式</CardTitle>
+                <CardDescription>
+                  为避免大文本加载卡顿，当前仅展示摘要。{isTruncated ? "内容已截断。" : ""}
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-3 text-sm text-muted-foreground">
+                <div className="flex flex-wrap gap-4">
+                  <span>输入大小：{chatIO.input_bytes ?? 0} 字节</span>
+                  <span>输出大小：{chatIO.output_bytes ?? 0} 字节</span>
+                  <span>输出条目：{chatIO.output_items ?? outputList.length}</span>
+                </div>
+                <div>
+                  <Button onClick={handleLoadFull} disabled={loadingFull}>
+                    {loadingFull ? "加载完整内容中..." : "加载完整内容"}
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
           <JsonBlock title="请求输入" raw={chatIO.Input} syntaxStyle={syntaxStyle} />
 
           <Card>

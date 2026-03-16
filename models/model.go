@@ -9,10 +9,11 @@ import (
 
 type Provider struct {
 	gorm.Model
-	Name    string
-	Type    string
-	Config  string
-	Console string // 控制台地址
+	Name            string
+	Type            string
+	Config          string
+	Console         string // 控制台地址
+	ModelsFetchMode string `gorm:"column:models_fetch_mode"` // 模型获取方式：v1_models/api_pricing
 }
 
 type AnthropicConfig struct {
@@ -23,14 +24,15 @@ type AnthropicConfig struct {
 
 type Model struct {
 	gorm.Model
-	Name     string
-	Remark   string
-	MaxRetry int    // 重试次数限制
-	TimeOut  int    // 超时时间 单位秒
-	IOLog    int    // 是否记录IO (0/1)
-	Strategy string // 负载均衡策略 默认 lottery
-	Breaker  int    // 是否开启熔断 (0/1)
-	Status   int    // 是否启用 (0/1)
+	Name         string
+	Remark       string
+	MaxRetry     int               // 重试次数限制
+	TimeOut      int               // 超时时间 单位秒
+	IOLog        int               // 是否记录IO (0/1)
+	Strategy     string            // 负载均衡策略 默认 lottery
+	Breaker      int               // 是否开启熔断 (0/1)
+	Status       int               // 是否启用 (0/1)
+	Capabilities ModelCapabilities // 模型能力类型（JSON 数组）
 }
 
 type ModelWithProvider struct {

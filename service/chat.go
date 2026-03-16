@@ -263,8 +263,24 @@ func RecordLog(ctx context.Context, reqStart time.Time, reader io.ReadCloser, pr
 			fallback := estimateUsageFromIO(style, before.Model, before.raw, output)
 			log.Usage = runtimesvc.MergeUsage(log.Usage, fallback)
 		}
+		// 当上游只返回了输入 token，且确实有输出内容时，补齐输出 token 估算。
+		// 这样不会覆盖已有真实值，只填补 completion_tokens 缺失场景。
+		if log.Usage.CompletionTokens == 0 && runtimesvc.EstimateOutputSize(output) > 0 {
+			fallback := estimateUsageFromIO(style, before.Model, before.raw, output)
+			if fallback.CompletionTokens > 0 {
+				log.Usage.CompletionTokens = fallback.CompletionTokens
+			}
+			if log.Usage.TotalTokens == 0 && fallback.TotalTokens > 0 {
+				log.Usage.TotalTokens = fallback.TotalTokens
+			}
+		}
 		if log.Usage.TotalTokens == 0 {
 			log.Usage.TotalTokens = log.Usage.PromptTokens + log.Usage.CompletionTokens
+		} else {
+			computedTotal := log.Usage.PromptTokens + log.Usage.CompletionTokens
+			if computedTotal > log.Usage.TotalTokens {
+				log.Usage.TotalTokens = computedTotal
+			}
 		}
 		log.TotalCost = runtimesvc.CalculateTotalCost(ctx, before.Model, log.Usage)
 		effectiveAuthKeyID := log.AuthKeyID

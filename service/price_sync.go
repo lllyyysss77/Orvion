@@ -46,6 +46,14 @@ func StartPriceSync(ctx context.Context) {
 	go priceSyncLoop(ctx)
 }
 
+func TriggerModelPriceSync(ctx context.Context) error {
+	cfg, err := loadPriceSyncConfig(ctx)
+	if err != nil {
+		return err
+	}
+	return syncModelPrices(ctx, cfg.SourceURL)
+}
+
 func priceSyncLoop(ctx context.Context) {
 	for {
 		cfg, err := loadPriceSyncConfig(ctx)

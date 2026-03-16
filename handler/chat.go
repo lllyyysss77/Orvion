@@ -20,16 +20,16 @@ import (
 )
 
 func ChatCompletionsHandler(c *gin.Context) {
-	chatHandler(c, service.BeforerOpenAI, service.ProcesserOpenAI, consts.StyleOpenAI, consts.StyleOpenAI)
+	chatHandler(c, service.BeforerOpenAI, service.ProcesserOpenAI, consts.StyleOpenAI, consts.StyleOpenAI, "chat")
 }
 
 func ResponsesHandler(c *gin.Context) {
-	chatHandler(c, service.BeforerOpenAIRes, service.ProcesserOpenAiRes, consts.StyleOpenAIRes, consts.StyleOpenAIRes)
+	chatHandler(c, service.BeforerOpenAIRes, service.ProcesserOpenAiRes, consts.StyleOpenAIRes, consts.StyleOpenAIRes, "responses")
 }
 
 func Messages(c *gin.Context) {
 	slog.Info("Request headers captured", "path", c.FullPath(), "headers", formatHeadersJSON(c.Request.Header))
-	chatHandler(c, service.BeforerAnthropic, service.ProcesserAnthropic, consts.StyleAnthropic, consts.StyleAnthropic)
+	chatHandler(c, service.BeforerAnthropic, service.ProcesserAnthropic, consts.StyleAnthropic, consts.StyleAnthropic, "messages")
 }
 
 // EmbeddingsHandler 转发 OpenAI 兼容 embeddings 接口:
@@ -37,10 +37,34 @@ func Messages(c *gin.Context) {
 func EmbeddingsHandler(c *gin.Context) {
 	ctx := context.WithValue(c.Request.Context(), consts.ContextKeyOpenAIEndpoint, "embeddings")
 	c.Request = c.Request.WithContext(ctx)
-	chatHandler(c, service.BeforerOpenAI, service.ProcesserOpenAI, consts.StyleOpenAI, consts.StyleOpenAIEmbeddings)
+	chatHandler(c, service.BeforerOpenAI, service.ProcesserOpenAI, consts.StyleOpenAI, consts.StyleOpenAIEmbeddings, "embeddings")
 }
 
-func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor service.Processer, providerType string, logStyle string) {
+// ImagesGenerationsHandler 转发 OpenAI 兼容 images/generations 接口:
+// POST /v1/images/generations
+func ImagesGenerationsHandler(c *gin.Context) {
+	ctx := context.WithValue(c.Request.Context(), consts.ContextKeyOpenAIEndpoint, "images/generations")
+	c.Request = c.Request.WithContext(ctx)
+	chatHandler(c, service.BeforerOpenAIMedia, service.ProcesserOpenAI, consts.StyleOpenAI, consts.StyleOpenAI, "images")
+}
+
+// ImagesEditsHandler 转发 OpenAI 兼容 images/edits 接口:
+// POST /v1/images/edits
+func ImagesEditsHandler(c *gin.Context) {
+	ctx := context.WithValue(c.Request.Context(), consts.ContextKeyOpenAIEndpoint, "images/edits")
+	c.Request = c.Request.WithContext(ctx)
+	chatHandler(c, service.BeforerOpenAIMedia, service.ProcesserOpenAI, consts.StyleOpenAI, consts.StyleOpenAI, "images")
+}
+
+// VideosHandler 转发 OpenAI 兼容 videos 接口:
+// POST /v1/videos
+func VideosHandler(c *gin.Context) {
+	ctx := context.WithValue(c.Request.Context(), consts.ContextKeyOpenAIEndpoint, "videos")
+	c.Request = c.Request.WithContext(ctx)
+	chatHandler(c, service.BeforerOpenAIMedia, service.ProcesserOpenAI, consts.StyleOpenAI, consts.StyleOpenAI, "videos")
+}
+
+func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor service.Processer, providerType string, logStyle string, endpoint string) {
 	// 读取原始请求体
 	reqBody, err := io.ReadAll(c.Request.Body)
 	if err != nil {
@@ -56,6 +80,12 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 	}
 
 	ctx := c.Request.Context()
+	if endpoint != "" {
+		if err := service.ValidateModelCapability(ctx, before.Model, endpoint); err != nil {
+			common.BadRequest(c, err.Error())
+			return
+		}
+	}
 	// 校验 authKey 是否有权限使用该模型
 	valid, err := ValidateAuthKey(ctx, before.Model)
 	if err != nil {

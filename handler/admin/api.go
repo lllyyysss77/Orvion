@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +18,7 @@ import (
 	"github.com/racio/orvion/consts"
 	"github.com/racio/orvion/models"
 	"github.com/racio/orvion/providers"
+	"github.com/racio/orvion/service"
 	"github.com/racio/orvion/service/subscription"
 	"github.com/samber/lo"
 	"gorm.io/gorm"
@@ -22,21 +26,30 @@ import (
 
 // ProviderRequest represents the request body for creating/updating a provider
 type ProviderRequest struct {
-	Name    string `json:"name"`
-	Type    string `json:"type"`
-	Config  string `json:"config"`
-	Console string `json:"console"`
+	Name            string `json:"name"`
+	Type            string `json:"type"`
+	Config          string `json:"config"`
+	Console         string `json:"console"`
+	ModelsFetchMode string `json:"models_fetch_mode"`
 }
+
+const (
+	modelsFetchModeV1Models = "v1_models"
+	modelsFetchModePricing  = "api_pricing"
+)
 
 // ModelRequest represents the request body for creating/updating a model
 type ModelRequest struct {
-	Name     string `json:"name"`
-	Remark   string `json:"remark"`
-	MaxRetry int    `json:"max_retry"`
-	TimeOut  int    `json:"time_out"`
-	IOLog    bool   `json:"io_log"`
-	Strategy string `json:"strategy"`
-	Breaker  bool   `json:"breaker"`
+	Name         string   `json:"name"`
+	Remark       string   `json:"remark"`
+	MaxRetry     int      `json:"max_retry"`
+	TimeOut      int      `json:"time_out"`
+	IOLog        bool     `json:"io_log"`
+	Strategy     string   `json:"strategy"`
+	Breaker      bool     `json:"breaker"`
+	Capabilities []string `json:"capabilities"`
+	InputPrice   *float64 `json:"input_price"`
+	OutputPrice  *float64 `json:"output_price"`
 }
 
 type ModelWithPrice struct {
@@ -133,17 +146,123 @@ func GetProviderModels(c *gin.Context) {
 		common.Success(c, modelList)
 		return
 	default:
-		chatModel, modelErr := providers.New(provider.Type, provider.Config)
-		if modelErr != nil {
-			common.InternalServerError(c, "Failed to get models: "+modelErr.Error())
-			return
-		}
-		modelList, modelErr := chatModel.Models(c.Request.Context())
+		modelList, modelErr := listProviderModelsWithMode(c.Request.Context(), provider)
 		if modelErr != nil {
 			common.NotFound(c, "Failed to get models: "+modelErr.Error())
 			return
 		}
 		common.Success(c, modelList)
+	}
+}
+
+func normalizeModelsFetchMode(raw string) string {
+	mode := strings.TrimSpace(strings.ToLower(raw))
+	switch mode {
+	case modelsFetchModePricing:
+		return modelsFetchModePricing
+	case modelsFetchModeV1Models, "":
+		return modelsFetchModeV1Models
+	default:
+		return modelsFetchModeV1Models
+	}
+}
+
+func listProviderModelsWithMode(ctx context.Context, provider models.Provider) ([]providers.Model, error) {
+	mode := normalizeModelsFetchMode(provider.ModelsFetchMode)
+	if mode == modelsFetchModePricing {
+		return listProviderModelsFromPricing(ctx, provider.Config)
+	}
+	chatModel, err := providers.New(provider.Type, provider.Config)
+	if err != nil {
+		return nil, err
+	}
+	return chatModel.Models(ctx)
+}
+
+func listProviderModelsFromPricing(ctx context.Context, configRaw string) ([]providers.Model, error) {
+	var cfg struct {
+		BaseURL string `json:"base_url"`
+		APIKey  string `json:"api_key"`
+	}
+	if err := json.Unmarshal([]byte(configRaw), &cfg); err != nil {
+		return nil, fmt.Errorf("invalid provider config: %w", err)
+	}
+	baseURL := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
+	if baseURL == "" {
+		return nil, fmt.Errorf("base_url is empty")
+	}
+	baseURL = strings.TrimSuffix(baseURL, "/v1")
+	url := baseURL + "/api/pricing"
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(cfg.APIKey) != "" {
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(cfg.APIKey))
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(res.Body)
+		return nil, fmt.Errorf("status code: %d body: %s", res.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		return nil, err
+	}
+	var payload any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, err
+	}
+	modelSet := make(map[string]struct{})
+	collectPricingModelIDs(payload, modelSet)
+	if len(modelSet) == 0 {
+		return []providers.Model{}, nil
+	}
+	ids := make([]string, 0, len(modelSet))
+	for id := range modelSet {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	models := make([]providers.Model, 0, len(ids))
+	for _, id := range ids {
+		models = append(models, providers.Model{
+			ID:      id,
+			Object:  "model",
+			Created: 0,
+			OwnedBy: "newapi",
+		})
+	}
+	return models, nil
+}
+
+func collectPricingModelIDs(node any, out map[string]struct{}) {
+	switch value := node.(type) {
+	case map[string]any:
+		for _, key := range []string{"model_name", "model", "id", "name"} {
+			if raw, ok := value[key]; ok {
+				if text, ok := raw.(string); ok {
+					text = strings.TrimSpace(text)
+					if text != "" {
+						out[text] = struct{}{}
+					}
+				}
+			}
+		}
+		for _, key := range []string{"data", "models", "items", "list", "result", "results"} {
+			if child, ok := value[key]; ok {
+				collectPricingModelIDs(child, out)
+			}
+		}
+	case []any:
+		for _, item := range value {
+			collectPricingModelIDs(item, out)
+		}
 	}
 }
 
@@ -216,10 +335,11 @@ func CreateProvider(c *gin.Context) {
 	}
 
 	provider := models.Provider{
-		Name:    req.Name,
-		Type:    req.Type,
-		Config:  req.Config,
-		Console: req.Console,
+		Name:            req.Name,
+		Type:            req.Type,
+		Config:          req.Config,
+		Console:         req.Console,
+		ModelsFetchMode: normalizeModelsFetchMode(req.ModelsFetchMode),
 	}
 
 	if err := gorm.G[models.Provider](models.DB).Create(c.Request.Context(), &provider); err != nil {
@@ -257,10 +377,11 @@ func UpdateProvider(c *gin.Context) {
 
 	// Update fields
 	updates := models.Provider{
-		Name:    req.Name,
-		Type:    req.Type,
-		Config:  req.Config,
-		Console: req.Console,
+		Name:            req.Name,
+		Type:            req.Type,
+		Config:          req.Config,
+		Console:         req.Console,
+		ModelsFetchMode: normalizeModelsFetchMode(req.ModelsFetchMode),
 	}
 
 	if _, err := gorm.G[models.Provider](models.DB).Where("id = ?", id).Updates(c.Request.Context(), updates); err != nil {
@@ -338,6 +459,17 @@ func GetModels(c *gin.Context) {
 			query = query.Where("io_log = ?", ioLog == "true")
 		default:
 			common.BadRequest(c, "invalid io_log filter")
+			return
+		}
+	}
+
+	if capability := strings.TrimSpace(c.Query("capability")); capability != "" {
+		capability = strings.ToLower(capability)
+		switch capability {
+		case "chat", "vision", "video", "embedding", "rerank":
+			query = query.Where("capabilities LIKE ?", fmt.Sprintf("%%\"%s\"%%", capability))
+		default:
+			common.BadRequest(c, "invalid capability filter")
 			return
 		}
 	}
@@ -435,20 +567,30 @@ func CreateModel(c *gin.Context) {
 	if req.Breaker {
 		breaker = 1
 	}
+	capabilities := normalizeModelCapabilities(req.Capabilities)
+	if len(capabilities) == 0 {
+		capabilities = []string{"chat"}
+	}
 
 	model := models.Model{
-		Name:     req.Name,
-		Remark:   req.Remark,
-		MaxRetry: req.MaxRetry,
-		TimeOut:  req.TimeOut,
-		IOLog:    ioLog,
-		Strategy: strategy,
-		Breaker:  breaker,
-		Status:   1,
+		Name:         req.Name,
+		Remark:       req.Remark,
+		MaxRetry:     req.MaxRetry,
+		TimeOut:      req.TimeOut,
+		IOLog:        ioLog,
+		Strategy:     strategy,
+		Breaker:      breaker,
+		Status:       1,
+		Capabilities: models.ModelCapabilities(capabilities),
 	}
 
 	if err := gorm.G[models.Model](models.DB).Create(c.Request.Context(), &model); err != nil {
 		common.InternalServerError(c, "Failed to create model: "+err.Error())
+		return
+	}
+
+	if err := upsertModelPrice(c.Request.Context(), model.Name, req.InputPrice, req.OutputPrice); err != nil {
+		common.InternalServerError(c, "Failed to save model price: "+err.Error())
 		return
 	}
 
@@ -495,28 +637,39 @@ func UpdateModel(c *gin.Context) {
 	if req.Breaker {
 		breaker = 1
 	}
+	capabilities := normalizeModelCapabilities(req.Capabilities)
+	if len(capabilities) == 0 {
+		capabilities = []string{"chat"}
+	}
 	updates := models.Model{
-		Name:     req.Name,
-		Remark:   req.Remark,
-		MaxRetry: req.MaxRetry,
-		TimeOut:  req.TimeOut,
-		IOLog:    ioLog,
-		Strategy: strategy,
-		Breaker:  breaker,
+		Name:         req.Name,
+		Remark:       req.Remark,
+		MaxRetry:     req.MaxRetry,
+		TimeOut:      req.TimeOut,
+		IOLog:        ioLog,
+		Strategy:     strategy,
+		Breaker:      breaker,
+		Capabilities: models.ModelCapabilities(capabilities),
 	}
 
 	// 使用 map 更新，避免 GORM 忽略 0 值（例如 IOLog 关闭）
 	updateMap := map[string]any{
-		"name":      updates.Name,
-		"remark":    updates.Remark,
-		"max_retry": updates.MaxRetry,
-		"time_out":  updates.TimeOut,
-		"io_log":    updates.IOLog,
-		"strategy":  updates.Strategy,
-		"breaker":   updates.Breaker,
+		"name":         updates.Name,
+		"remark":       updates.Remark,
+		"max_retry":    updates.MaxRetry,
+		"time_out":     updates.TimeOut,
+		"io_log":       updates.IOLog,
+		"strategy":     updates.Strategy,
+		"breaker":      updates.Breaker,
+		"capabilities": updates.Capabilities,
 	}
 	if err := models.DB.WithContext(c.Request.Context()).Model(&models.Model{}).Where("id = ?", id).Updates(updateMap).Error; err != nil {
 		common.InternalServerError(c, "Failed to update model: "+err.Error())
+		return
+	}
+
+	if err := upsertModelPrice(c.Request.Context(), updates.Name, req.InputPrice, req.OutputPrice); err != nil {
+		common.InternalServerError(c, "Failed to save model price: "+err.Error())
 		return
 	}
 
@@ -999,7 +1152,117 @@ func GetChatIO(c *gin.Context) {
 		return
 	}
 
-	common.Success(c, chatIO)
+	mode := strings.ToLower(strings.TrimSpace(c.Query("mode")))
+	if mode == "" || mode == "full" {
+		common.Success(c, chatIO)
+		return
+	}
+
+	inputLimit := parsePositiveInt(c.Query("input_limit"), 20000)
+	outputLimit := parsePositiveInt(c.Query("output_limit"), 20000)
+	outputItemsLimit := parsePositiveInt(c.Query("output_items_limit"), 50)
+
+	summary := buildChatIOSummary(chatIO, inputLimit, outputLimit, outputItemsLimit)
+	common.Success(c, summary)
+}
+
+type chatIOSummary struct {
+	ID                   uint     `json:"ID"`
+	LogId                uint     `json:"LogId"`
+	Input                string   `json:"Input"`
+	OutputString         string   `json:"OutputString,omitempty"`
+	OutputStringArray    []string `json:"OutputStringArray,omitempty"`
+	InputBytes           int      `json:"input_bytes"`
+	OutputBytes          int      `json:"output_bytes"`
+	OutputItems          int      `json:"output_items"`
+	Summary              bool     `json:"summary"`
+	TruncatedInput       bool     `json:"truncated_input"`
+	TruncatedOutput      bool     `json:"truncated_output"`
+	TruncatedOutputItems bool     `json:"truncated_output_items"`
+}
+
+func buildChatIOSummary(chatIO models.ChatIO, inputLimit, outputLimit, outputItemsLimit int) chatIOSummary {
+	input, inputTruncated := truncateString(chatIO.Input, inputLimit)
+	outputBytes := len(chatIO.OutputString)
+	outputItems := 0
+	outputTruncated := false
+	outputItemsTruncated := false
+	outputString := ""
+	var outputArray []string
+
+	parsed, totalItems, itemsTruncated := parseChatIOStringArray(chatIO.OutputStringArray, outputItemsLimit)
+	if len(parsed) > 0 {
+		outputItems = totalItems
+		outputItemsTruncated = itemsTruncated
+		outputArray = make([]string, 0, len(parsed))
+		for _, entry := range parsed {
+			truncatedEntry, truncated := truncateString(entry, outputLimit)
+			if truncated {
+				outputTruncated = true
+			}
+			outputArray = append(outputArray, truncatedEntry)
+		}
+		outputBytes = len(chatIO.OutputStringArray)
+	} else if chatIO.OutputString != "" {
+		outputItems = 1
+		outputString, outputTruncated = truncateString(chatIO.OutputString, outputLimit)
+	}
+
+	return chatIOSummary{
+		ID:                   chatIO.ID,
+		LogId:                chatIO.LogId,
+		Input:                input,
+		OutputString:         outputString,
+		OutputStringArray:    outputArray,
+		InputBytes:           len(chatIO.Input),
+		OutputBytes:          outputBytes,
+		OutputItems:          outputItems,
+		Summary:              true,
+		TruncatedInput:       inputTruncated,
+		TruncatedOutput:      outputTruncated,
+		TruncatedOutputItems: outputItemsTruncated,
+	}
+}
+
+func parseChatIOStringArray(raw string, limit int) ([]string, int, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil, 0, false
+	}
+	if limit <= 0 {
+		limit = 1
+	}
+	const maxParseBytes = 2 * 1024 * 1024
+	if len(trimmed) > maxParseBytes {
+		return []string{trimmed}, 1, len(trimmed) > maxParseBytes
+	}
+	var parsed []string
+	if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
+		return []string{trimmed}, 1, false
+	}
+	if len(parsed) <= limit {
+		return parsed, len(parsed), false
+	}
+	return parsed[:limit], len(parsed), true
+}
+
+func truncateString(raw string, limit int) (string, bool) {
+	if limit <= 0 {
+		return raw, false
+	}
+	runes := []rune(raw)
+	if len(runes) <= limit {
+		return raw, false
+	}
+	return string(runes[:limit]) + "\n...(已截断)", true
+}
+
+func parsePositiveInt(raw string, defaultValue int) int {
+	value, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || value <= 0 {
+		return defaultValue
+	}
+	return value
 }
 
 // GetUserAgents 获取所有不重复的用户代理种类
@@ -1085,6 +1348,17 @@ func UpdateConfigByKey(c *gin.Context) {
 	})
 }
 
+// RunModelPriceSync 立刻拉取模型价格表
+func RunModelPriceSync(c *gin.Context) {
+	if err := service.TriggerModelPriceSync(c.Request.Context()); err != nil {
+		common.InternalServerError(c, "Failed to sync model prices: "+err.Error())
+		return
+	}
+	common.Success(c, map[string]any{
+		"status": "ok",
+	})
+}
+
 // CleanLogsRequest 清理日志请求
 type CleanLogsRequest struct {
 	Type  string `json:"type"`  // "count" 或 "days"
@@ -1162,4 +1436,79 @@ func CleanLogs(c *gin.Context) {
 	}
 
 	common.Success(c, map[string]any{"deleted_count": deletedCount})
+}
+
+func normalizeModelCapabilities(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, raw := range values {
+		value := strings.ToLower(strings.TrimSpace(raw))
+		if value == "" {
+			continue
+		}
+		switch value {
+		case "embeddings", "embed":
+			value = "embedding"
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
+}
+
+func upsertModelPrice(ctx context.Context, modelName string, input, output *float64) error {
+	if modelName == "" {
+		return nil
+	}
+	if input != nil && *input == 0 {
+		input = nil
+	}
+	if output != nil && *output == 0 {
+		output = nil
+	}
+	if input == nil && output == nil {
+		return nil
+	}
+
+	key := strings.ToLower(strings.TrimSpace(modelName))
+	if key == "" {
+		return nil
+	}
+
+	var price models.ModelPrice
+	exists := true
+	if err := models.DB.WithContext(ctx).Where("model_id = ?", key).First(&price).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			exists = false
+		} else {
+			return err
+		}
+	}
+
+	updates := models.ModelPrice{
+		ModelID:  key,
+		Provider: price.Provider,
+		Input:    price.Input,
+		Output:   price.Output,
+	}
+	if input != nil {
+		updates.Input = *input
+	}
+	if output != nil {
+		updates.Output = *output
+	}
+
+	if !exists {
+		return models.DB.WithContext(ctx).Create(&updates).Error
+	}
+	return models.DB.WithContext(ctx).Model(&models.ModelPrice{}).Where("model_id = ?", key).Updates(map[string]any{
+		"input":  updates.Input,
+		"output": updates.Output,
+	}).Error
 }

@@ -39,17 +39,9 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import Loading from "@/components/loading";
 import { Label } from "@/components/ui/label";
-import ProviderConfigEditor from "@/components/provider-config-editor";
+import Loading from "@/components/loading";
+import ProviderConfigEditor, { type ProviderConfigEditorRef } from "@/components/provider-config-editor";
 import iconSvg from "@/assets/icon.svg";
 import {
   getProviders,
@@ -61,7 +53,7 @@ import {
 } from "@/lib/api";
 import type { Provider, ProviderTemplate, ProviderModel } from "@/lib/api";
 import { toast } from "sonner";
-import { ExternalLink, Pencil, Trash2, Boxes } from "lucide-react";
+import { ExternalLink, Pencil, Trash2, Boxes, Plus } from "lucide-react";
 
 const parseConfigJson = (raw?: string | null): Record<string, unknown> | null => {
   if (!raw) return null;
@@ -95,6 +87,7 @@ const ensureAuthTemplateConfig = (template?: ProviderTemplate, providerType?: st
 // 定义表单验证模式
 const formSchema = z.object({
   name: z.string().min(1, { message: "提供商名称不能为空" }),
+  models_fetch_mode: z.enum(["v1_models", "api_pricing"]),
   type: z.string().min(1, { message: "提供商类型不能为空" }),
   config: z.string().min(1, { message: "配置不能为空" }),
   console: z.string().optional(),
@@ -114,6 +107,7 @@ export default function ProvidersPage() {
   const [modelsLoading, setModelsLoading] = useState(false);
   const [structuredConfigEnabled, setStructuredConfigEnabled] = useState(false);
   const configCacheRef = useRef<Record<string, string>>({});
+  const providerConfigEditorRef = useRef<ProviderConfigEditorRef | null>(null);
 
   // 筛选条件
   const [nameFilter, setNameFilter] = useState<string>("");
@@ -126,11 +120,14 @@ export default function ProvidersPage() {
   // 初始化表单
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
-    defaultValues: { name: "", type: "", config: "", console: "" },
+    defaultValues: { name: "", models_fetch_mode: "v1_models", type: "", config: "", console: "" },
   });
   const selectedProviderType = form.watch("type");
   const selectedTemplate = providerTemplates.find((item) => item.type === selectedProviderType);
   const selectedIsAuthType = isAuthProviderTemplate(selectedTemplate, selectedProviderType);
+  const getFetchModeBadgeLabel = (mode?: string) => (
+    mode === "api_pricing" ? "newapi" : "通用"
+  );
 
   useEffect(() => {
     fetchProviders();
@@ -279,10 +276,11 @@ export default function ProvidersPage() {
         type: values.type,
         config: isAuthType ? ensureAuthTemplateConfig(templateMeta, values.type) : values.config,
         console: isAuthType ? "" : (values.console || ""),
+        models_fetch_mode: values.models_fetch_mode,
       });
       setOpen(false);
       toast.success(`提供商 ${values.name} 创建成功`);
-      form.reset({ name: "", type: "", config: "", console: "" });
+      form.reset({ name: "", models_fetch_mode: "v1_models", type: "", config: "", console: "" });
       fetchProviders();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -301,11 +299,12 @@ export default function ProvidersPage() {
         type: values.type,
         config: isAuthType ? ensureAuthTemplateConfig(templateMeta, values.type) : values.config,
         console: isAuthType ? "" : (values.console || ""),
+        models_fetch_mode: values.models_fetch_mode,
       });
       setOpen(false);
       toast.success(`提供商 ${values.name} 更新成功`);
       setEditingProvider(null);
-      form.reset({ name: "", type: "", config: "", console: "" });
+      form.reset({ name: "", models_fetch_mode: "v1_models", type: "", config: "", console: "" });
       fetchProviders();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -334,6 +333,7 @@ export default function ProvidersPage() {
     setEditingProvider(provider);
     form.reset({
       name: provider.Name,
+      models_fetch_mode: provider.ModelsFetchMode === "api_pricing" ? "api_pricing" : "v1_models",
       type: provider.Type,
       config: provider.Config,
       console: provider.Console || "",
@@ -360,6 +360,7 @@ export default function ProvidersPage() {
       : "";
     form.reset({
       name: "",
+      models_fetch_mode: "v1_models",
       type: defaultType,
       config: defaultConfig,
       console: "",
@@ -411,96 +412,84 @@ export default function ProvidersPage() {
           </div>
         </div>
       </div>
-      <div className="flex-1 min-h-0 border rounded-md bg-background shadow-sm">
+      <div className="relative flex-1 min-h-0 overflow-hidden rounded-2xl border border-border/70 bg-background shadow-sm">
         {loading ? (
-          <div className="flex h-full items-center justify-center">
+          <div className="relative z-10 flex h-full items-center justify-center">
             <Loading message="加载提供商列表" />
           </div>
         ) : providers.length === 0 ? (
-          <div className="flex h-full items-center justify-center text-muted-foreground text-sm text-center px-6">
+          <div className="relative z-10 flex h-full items-center justify-center text-muted-foreground text-sm text-center px-6">
             {hasFilter ? '未找到匹配的提供商' : '暂无提供商数据'}
           </div>
         ) : (
-          <div className="h-full flex flex-col">
+          <div className="relative z-10 h-full flex flex-col">
             <div className="flex-1 min-h-0 overflow-y-auto p-3">
-              <div className="rounded-md border overflow-hidden">
-                <Table>
-                  <TableHeader className="bg-secondary/60">
-                    <TableRow>
-                      <TableHead className="w-[28%]">名称</TableHead>
-                      <TableHead className="w-[20%]">类型</TableHead>
-                      <TableHead className="w-[30%]">控制台</TableHead>
-                      <TableHead className="w-[22%] text-right">操作</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {providers.map((provider) => (
-                      <TableRow key={provider.ID}>
-                        <TableCell className="font-medium truncate" title={provider.Name}>
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                {providers.map((provider) => (
+                  <div
+                    key={provider.ID}
+                    className="group rounded-2xl border border-border/70 bg-card p-4 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md"
+                  >
+                    <div className="mb-3 flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <h3 className="truncate text-sm font-semibold text-foreground" title={provider.Name}>
                           {provider.Name}
-                        </TableCell>
-                        <TableCell className="text-muted-foreground">
+                        </h3>
+                        <p className="mt-1 text-xs text-muted-foreground">
                           {providerTypeDisplayMap.get(provider.Type) || provider.Type || "未知"}
-                        </TableCell>
-                        <TableCell>
-                          {provider.Console ? (
-                            <button
-                              type="button"
-                              className="text-xs text-primary hover:underline truncate max-w-[320px] text-left"
-                              title={provider.Console}
-                              onClick={() => window.open(provider.Console, "_blank")}
-                            >
-                              {provider.Console}
-                            </button>
-                          ) : (
-                            <span className="text-xs text-muted-foreground">未配置</span>
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex items-center justify-end gap-2">
-                            <Button
-                              title="打开控制台"
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8"
-                              disabled={!provider.Console}
-                              onClick={() => provider.Console && window.open(provider.Console, "_blank")}
-                            >
-                              <ExternalLink className="h-4 w-4" />
-                            </Button>
-                            <Button
-                              title="编辑"
-                              variant="outline"
-                              size="icon"
-                              className="h-8 w-8"
-                              onClick={() => openEditDialog(provider)}
-                            >
-                              <Pencil className="h-4 w-4" />
-                            </Button>
-                            <Button
-                              title="查看模型"
-                              variant="secondary"
-                              size="icon"
-                              className="h-8 w-8"
-                              onClick={() => openModelsDialog(provider.ID)}
-                            >
-                              <Boxes className="h-4 w-4" />
-                            </Button>
-                            <Button
-                              title="删除"
-                              variant="destructive"
-                              size="icon"
-                              className="h-8 w-8"
-                              onClick={() => openDeleteDialog(provider.ID)}
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <div className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">
+                          {getFetchModeBadgeLabel(provider.ModelsFetchMode)}
+                        </div>
+                        <div className="rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+                          Provider
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-end gap-2">
+                      <Button
+                        title="打开控制台"
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 rounded-full"
+                        disabled={!provider.Console}
+                        onClick={() => provider.Console && window.open(provider.Console, "_blank")}
+                      >
+                        <ExternalLink className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        title="编辑"
+                        variant="outline"
+                        size="icon"
+                        className="h-8 w-8 rounded-full"
+                        onClick={() => openEditDialog(provider)}
+                      >
+                        <Pencil className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        title="查看模型"
+                        variant="secondary"
+                        size="icon"
+                        className="h-8 w-8 rounded-full"
+                        onClick={() => openModelsDialog(provider.ID)}
+                      >
+                        <Boxes className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        title="删除"
+                        variant="destructive"
+                        size="icon"
+                        className="h-8 w-8 rounded-full"
+                        onClick={() => openDeleteDialog(provider.ID)}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
           </div>
@@ -520,19 +509,42 @@ export default function ProvidersPage() {
 
           <Form {...form}>
             <form onSubmit={form.handleSubmit(editingProvider ? handleUpdate : handleCreate)} className="space-y-4 min-w-0">
-              <FormField
-                control={form.control}
-                name="name"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>名称</FormLabel>
-                    <FormControl>
-                      <Input {...field} />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
+              <div className="grid gap-3 md:grid-cols-[1.4fr_1fr]">
+                <FormField
+                  control={form.control}
+                  name="name"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>名称</FormLabel>
+                      <FormControl>
+                        <Input {...field} className="max-w-[360px]" />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="models_fetch_mode"
+                  render={({ field }) => (
+                    <FormItem className="min-w-[220px]">
+                      <FormLabel>模型获取方式</FormLabel>
+                      <Select value={field.value} onValueChange={field.onChange}>
+                        <FormControl>
+                          <SelectTrigger className="w-full min-w-[220px]">
+                            <SelectValue placeholder="选择获取方式" />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          <SelectItem value="v1_models">通用</SelectItem>
+                          <SelectItem value="api_pricing">NewAPI</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
 
               <FormField
                 control={form.control}
@@ -666,9 +678,27 @@ export default function ProvidersPage() {
                     name="config"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>配置</FormLabel>
+                        <div className="flex items-center justify-between gap-2">
+                          <FormLabel>配置</FormLabel>
+                          {structuredConfigEnabled && (
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              size="sm"
+                              onClick={() => providerConfigEditorRef.current?.addItem()}
+                            >
+                              <Plus className="size-4" />
+                              添加字段
+                            </Button>
+                          )}
+                        </div>
                         {structuredConfigEnabled ? (
-                          <ProviderConfigEditor value={field.value} onChange={handleStructuredConfigChange} providerType={selectedProviderType} />
+                          <ProviderConfigEditor
+                            ref={providerConfigEditorRef}
+                            value={field.value}
+                            onChange={handleStructuredConfigChange}
+                            providerType={selectedProviderType}
+                          />
                         ) : (
                           <FormControl>
                             {/* 避免 api_key 等超长字段撑破弹窗宽度 */}

@@ -64,6 +64,11 @@ import {
   RefreshCw,
   Timer,
   Coins,
+  Eye,
+  Video,
+  Layers,
+  ArrowUpDown,
+  MessageSquare,
 } from "lucide-react";
 import hunyuanIcon from "@/assets/modelIcon/hunyuan.svg";
 import doubaoIcon from "@/assets/modelIcon/doubao.svg";
@@ -75,6 +80,7 @@ import claudeIcon from "@/assets/modelIcon/claude.svg";
 import geminiIcon from "@/assets/modelIcon/gemini.svg";
 import glmIcon from "@/assets/modelIcon/glm.svg";
 import kimiIcon from "@/assets/modelIcon/kimi.svg";
+import { cn } from "@/lib/utils";
 
 type ModelIconConfig = {
   test: RegExp;
@@ -93,6 +99,53 @@ const modelIconConfigs: ModelIconConfig[] = [
   { test: /gemini|google/i, src: geminiIcon, alt: "Gemini" },
   { test: /glm|zhipu/i, src: glmIcon, alt: "GLM" },
   { test: /kimi|moonshot/i, src: kimiIcon, alt: "Kimi" },
+];
+
+const capabilityValues = ["chat", "vision", "video", "embedding", "rerank"] as const;
+type ModelCapability = (typeof capabilityValues)[number];
+
+const capabilityOptions: {
+  value: ModelCapability;
+  label: string;
+  icon: typeof MessageSquare;
+  activeClass: string;
+  iconClass: string;
+}[] = [
+  {
+    value: "chat",
+    label: "对话",
+    icon: MessageSquare,
+    activeClass: "bg-blue-50 text-blue-700 border-blue-200",
+    iconClass: "text-blue-500",
+  },
+  {
+    value: "vision",
+    label: "视觉",
+    icon: Eye,
+    activeClass: "bg-emerald-50 text-emerald-700 border-emerald-200",
+    iconClass: "text-emerald-500",
+  },
+  {
+    value: "video",
+    label: "视频",
+    icon: Video,
+    activeClass: "bg-purple-50 text-purple-700 border-purple-200",
+    iconClass: "text-purple-500",
+  },
+  {
+    value: "embedding",
+    label: "嵌入",
+    icon: Layers,
+    activeClass: "bg-orange-50 text-orange-700 border-orange-200",
+    iconClass: "text-orange-500",
+  },
+  {
+    value: "rerank",
+    label: "重排",
+    icon: ArrowUpDown,
+    activeClass: "bg-slate-100 text-slate-700 border-slate-300",
+    iconClass: "text-slate-500",
+  },
 ];
 
 const ModelIcon = ({ name }: { name: string }) => {
@@ -130,6 +183,9 @@ const formSchema = z.object({
   io_log: z.boolean(),
   strategy: z.enum(["lottery", "rotor"]),
   breaker: z.boolean(),
+  capabilities: z.array(z.enum(capabilityValues)).min(1, { message: "至少选择一个模型类型" }),
+  input_price: z.number().min(0, { message: "输入价格不能为负数" }),
+  output_price: z.number().min(0, { message: "输出价格不能为负数" }),
   status: z.boolean(),
 });
 
@@ -144,6 +200,7 @@ export default function ModelsPage() {
   const [pages, setPages] = useState(0);
   const [searchInput, setSearchInput] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
+  const [capabilityFilter, setCapabilityFilter] = useState<string>("all");
   const [providerPanelOpen, setProviderPanelOpen] = useState(false);
   const [providerPanelModel, setProviderPanelModel] = useState<Model | null>(null);
 
@@ -158,6 +215,9 @@ export default function ModelsPage() {
       io_log: false,
       strategy: "lottery",
       breaker: false,
+      capabilities: ["chat"],
+      input_price: 0,
+      output_price: 0,
       status: true,
     },
   });
@@ -177,6 +237,7 @@ export default function ModelsPage() {
         page,
         page_size: pageSize,
         search: searchTerm || undefined,
+        capability: capabilityFilter !== "all" ? capabilityFilter : undefined,
       });
       setModels(response.data);
       setPages(response.pages);
@@ -197,7 +258,7 @@ export default function ModelsPage() {
 
   useEffect(() => {
     fetchModels();
-  }, [page, pageSize, searchTerm]);
+  }, [page, pageSize, searchTerm, capabilityFilter]);
 
   const handleCreate = async (values: z.infer<typeof formSchema>) => {
     try {
@@ -209,10 +270,24 @@ export default function ModelsPage() {
         io_log: values.io_log,
         strategy: values.strategy,
         breaker: values.breaker,
+        capabilities: values.capabilities,
+        input_price: values.input_price,
+        output_price: values.output_price,
       });
       setOpen(false);
       toast.success(`模型: ${values.name} 创建成功`);
-      form.reset({ name: "", remark: "", max_retry: 10, time_out: 60, io_log: false, strategy: "lottery", breaker: false });
+      form.reset({
+        name: "",
+        remark: "",
+        max_retry: 10,
+        time_out: 60,
+        io_log: false,
+        strategy: "lottery",
+        breaker: false,
+        capabilities: ["chat"],
+        input_price: 0,
+        output_price: 0,
+      });
       await fetchModels();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -231,6 +306,9 @@ export default function ModelsPage() {
         io_log: values.io_log,
         strategy: values.strategy,
         breaker: values.breaker,
+        capabilities: values.capabilities,
+        input_price: values.input_price,
+        output_price: values.output_price,
       });
       const previousEnabled = editingModel.Status == null ? true : Number(editingModel.Status) === 1;
       if (previousEnabled !== values.status) {
@@ -239,7 +317,19 @@ export default function ModelsPage() {
       setOpen(false);
       toast.success(`模型: ${values.name} 更新成功`);
       setEditingModel(null);
-      form.reset({ name: "", remark: "", max_retry: 10, time_out: 60, io_log: false, strategy: "lottery", breaker: false, status: true });
+      form.reset({
+        name: "",
+        remark: "",
+        max_retry: 10,
+        time_out: 60,
+        io_log: false,
+        strategy: "lottery",
+        breaker: false,
+        capabilities: ["chat"],
+        input_price: 0,
+        output_price: 0,
+        status: true,
+      });
       await fetchModels();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -266,6 +356,10 @@ export default function ModelsPage() {
   const openEditDialog = (model: Model) => {
     setEditingModel(model);
     const statusEnabled = model.Status == null ? true : Number(model.Status) === 1;
+    const rawCapabilities = Array.isArray(model.Capabilities) ? model.Capabilities : [];
+    const normalizedCapabilities = rawCapabilities
+      .map((item) => item.trim().toLowerCase())
+      .filter((item): item is ModelCapability => capabilityValues.includes(item as ModelCapability));
     form.reset({
       name: model.Name,
       remark: model.Remark,
@@ -274,6 +368,9 @@ export default function ModelsPage() {
       io_log: Boolean(model.IOLog),
       strategy: model.Strategy === "rotor" ? "rotor" : "lottery",
       breaker: Boolean(model.Breaker),
+      capabilities: normalizedCapabilities.length > 0 ? normalizedCapabilities : ["chat"],
+      input_price: model.InputPrice ?? 0,
+      output_price: model.OutputPrice ?? 0,
       status: statusEnabled,
     });
     setOpen(true);
@@ -286,7 +383,19 @@ export default function ModelsPage() {
 
   const openCreateDialog = () => {
     setEditingModel(null);
-    form.reset({ name: "", remark: "", max_retry: 10, time_out: 60, io_log: false, strategy: "lottery", breaker: false, status: true });
+    form.reset({
+      name: "",
+      remark: "",
+      max_retry: 10,
+      time_out: 60,
+      io_log: false,
+      strategy: "lottery",
+      breaker: false,
+      capabilities: ["chat"],
+      input_price: 0,
+      output_price: 0,
+      status: true,
+    });
     setOpen(true);
   };
 
@@ -317,6 +426,25 @@ export default function ModelsPage() {
                 className="h-8 w-44 rounded-full pl-9 text-xs bg-muted/60 border-transparent focus-visible:ring-1 focus-visible:ring-primary/40"
               />
             </div>
+            <Select
+              value={capabilityFilter}
+              onValueChange={(value) => {
+                setCapabilityFilter(value);
+                setPage(1);
+              }}
+            >
+              <SelectTrigger className="h-8 w-36 rounded-full bg-muted/60 text-xs">
+                <SelectValue placeholder="模型类型" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">全部类型</SelectItem>
+                {capabilityOptions.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <Button
               variant="ghost"
               size="icon"
@@ -392,6 +520,28 @@ export default function ModelsPage() {
                               {model.Remark}
                             </div>
                           ) : null}
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {(model.Capabilities && model.Capabilities.length > 0 ? model.Capabilities : ["chat"]).map((capability) => {
+                              const option = capabilityOptions.find((item) => item.value === capability);
+                              if (!option) {
+                                return (
+                                  <span key={capability} className="rounded-full border border-border/60 bg-muted/40 px-2 py-0.5 text-[10px] text-muted-foreground">
+                                    {capability}
+                                  </span>
+                                );
+                              }
+                              const Icon = option.icon;
+                              return (
+                                <span
+                                  key={capability}
+                                  className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium", option.activeClass)}
+                                >
+                                  <Icon className={cn("size-3", option.iconClass)} />
+                                  <span>{option.label}</span>
+                                </span>
+                              );
+                            })}
+                          </div>
                           <div className="mt-2 flex items-start justify-between gap-4 text-xs text-muted-foreground">
                             <div className="space-y-1">
                               <div className="flex items-center gap-2">
@@ -525,6 +675,93 @@ export default function ModelsPage() {
                   </FormItem>
                 )}
               />
+
+              <FormField
+                control={form.control}
+                name="capabilities"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel className="flex items-center gap-2">
+                      模型类型
+                      <span className="text-xs text-muted-foreground">支持多选</span>
+                    </FormLabel>
+                    <FormControl>
+                      <div className="flex flex-wrap gap-2">
+                        {capabilityOptions.map((option) => {
+                          const selected = field.value?.includes(option.value);
+                          const Icon = option.icon;
+                          return (
+                            <button
+                              key={option.value}
+                              type="button"
+                              onClick={() => {
+                                const current = new Set<ModelCapability>(field.value ?? []);
+                                if (current.has(option.value)) {
+                                  current.delete(option.value);
+                                } else {
+                                  current.add(option.value);
+                                }
+                                field.onChange(Array.from(current));
+                              }}
+                              className={cn(
+                                "inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium transition",
+                                selected
+                                  ? option.activeClass
+                                  : "border-border/60 bg-muted/40 text-muted-foreground hover:bg-muted/60"
+                              )}
+                            >
+                              <Icon className={cn("size-3.5", selected ? option.iconClass : "text-muted-foreground")} />
+                              <span>{option.label}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <FormField
+                  control={form.control}
+                  name="input_price"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>输入价格($/M)</FormLabel>
+                      <FormControl>
+                        <Input
+                          type="number"
+                          className="h-9"
+                          step="0.0001"
+                          {...field}
+                          onChange={(e) => field.onChange(+e.target.value)}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="output_price"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>输出价格($/M)</FormLabel>
+                      <FormControl>
+                        <Input
+                          type="number"
+                          className="h-9"
+                          step="0.0001"
+                          {...field}
+                          onChange={(e) => field.onChange(+e.target.value)}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <FormField

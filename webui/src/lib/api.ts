@@ -9,6 +9,7 @@ export interface Provider {
   Type: string;
   Config: string;
   Console: string;
+  ModelsFetchMode?: "v1_models" | "api_pricing" | string;
 }
 
 export interface Model {
@@ -24,6 +25,7 @@ export interface Model {
   Breaker?: number | null;
   // 后端当前返回为 0/1（对应 models.status）
   Status?: number | null;
+  Capabilities?: string[] | null;
   InputPrice?: number | null;
   OutputPrice?: number | null;
 }
@@ -292,6 +294,34 @@ async function apiRequest<T>(endpoint: string, options: RequestInit = {}): Promi
   return data.data as T;
 }
 
+async function apiRequestFormData<T>(endpoint: string, formData: FormData): Promise<T> {
+  const url = `${API_BASE}${endpoint}`;
+  const token = getStoredAuthToken();
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+    },
+    body: formData,
+  });
+
+  if (response.status === 401) {
+    window.location.href = '/login';
+    throw new Error('Unauthorized');
+  }
+
+  if (!response.ok) {
+    throw new Error(`API request failed: ${response.status} ${response.statusText}`);
+  }
+
+  const data = await response.json();
+  if (data.code !== 200) {
+    throw new Error(`${data.message}`);
+  }
+  return data.data as T;
+}
+
 async function authKeyRequest<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const token = getStoredAuthToken();
 
@@ -406,6 +436,7 @@ export async function createProvider(provider: {
   type: string;
   config: string;
   console: string;
+  models_fetch_mode?: "v1_models" | "api_pricing";
 }): Promise<Provider> {
   return apiRequest<Provider>('/providers', {
     method: 'POST',
@@ -418,6 +449,7 @@ export async function updateProvider(id: number, provider: {
   type?: string;
   config?: string;
   console?: string;
+  models_fetch_mode?: "v1_models" | "api_pricing";
 }): Promise<Provider> {
   return apiRequest<Provider>(`/providers/${id}`, {
     method: 'PUT',
@@ -438,6 +470,7 @@ export type ModelQuery = {
   search?: string;
   strategy?: string;
   io_log?: 'true' | 'false';
+  capability?: string;
 };
 
 export async function getModels(params: ModelQuery = {}): Promise<PaginatedResponse<Model>> {
@@ -447,6 +480,7 @@ export async function getModels(params: ModelQuery = {}): Promise<PaginatedRespo
   if (params.search) searchParams.append('search', params.search);
   if (params.strategy) searchParams.append('strategy', params.strategy);
   if (params.io_log) searchParams.append('io_log', params.io_log);
+  if (params.capability) searchParams.append('capability', params.capability);
   const query = searchParams.toString();
   return apiRequest<PaginatedResponse<Model>>(query ? `/models?${query}` : '/models');
 }
@@ -463,6 +497,9 @@ export async function createModel(model: {
   io_log: boolean;
   strategy: string;
   breaker: boolean;
+  capabilities: string[];
+  input_price?: number | null;
+  output_price?: number | null;
 }): Promise<Model> {
   return apiRequest<Model>('/models', {
     method: 'POST',
@@ -478,6 +515,9 @@ export async function updateModel(id: number, model: {
   io_log?: boolean;
   strategy?: string;
   breaker?: boolean;
+  capabilities?: string[];
+  input_price?: number | null;
+  output_price?: number | null;
 }): Promise<Model> {
   return apiRequest<Model>(`/models/${id}`, {
     method: 'PUT',
@@ -574,6 +614,33 @@ export async function toggleAuthKeyStatus(id: number): Promise<AuthKey> {
 export async function getModelProviders(modelId: number): Promise<ModelWithProvider[]> {
   const res = await apiRequest<any[]>(`/model-providers?model_id=${modelId}`);
   return (res ?? []).map(normalizeModelWithProvider);
+}
+
+export async function testModelChat(
+  modelProviderId: number,
+  prompt: string,
+  endpoint: string,
+  extra?: {
+    imageUrl?: string;
+    maskUrl?: string;
+    size?: string;
+  }
+): Promise<{ content: string }> {
+  const payload: Record<string, unknown> = { prompt, endpoint };
+  if (extra?.imageUrl) payload.image_url = extra.imageUrl;
+  if (extra?.maskUrl) payload.mask_url = extra.maskUrl;
+  if (extra?.size) payload.size = extra.size;
+  return apiRequest<{ content: string }>(`/test/chat/${modelProviderId}`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function testModelChatWithFiles(
+  modelProviderId: number,
+  formData: FormData
+): Promise<{ content: string }> {
+  return apiRequestFormData<{ content: string }>(`/test/chat/${modelProviderId}`, formData);
 }
 
 export async function getModelProviderStatus(providerId: number, modelName: string, providerModel: string): Promise<boolean[]> {
@@ -714,8 +781,41 @@ export interface ProviderModel {
   owned_by: string;
 }
 
-export async function getProviderModels(providerId: number): Promise<ProviderModel[]> {
-  return apiRequest<ProviderModel[]>(`/providers/models/${providerId}`);
+const PROVIDER_MODELS_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const providerModelsCache = new Map<number, { expiresAt: number; data: ProviderModel[] }>();
+
+const cloneProviderModels = (models: ProviderModel[]): ProviderModel[] => (
+  models.map((item) => ({ ...item }))
+);
+
+export function clearProviderModelsCache(providerId?: number): void {
+  if (typeof providerId === "number") {
+    providerModelsCache.delete(providerId);
+    return;
+  }
+  providerModelsCache.clear();
+}
+
+export async function getProviderModels(
+  providerId: number,
+  options?: { forceRefresh?: boolean }
+): Promise<ProviderModel[]> {
+  if (!options?.forceRefresh) {
+    const cached = providerModelsCache.get(providerId);
+    if (cached) {
+      if (cached.expiresAt > Date.now()) {
+        return cloneProviderModels(cached.data);
+      }
+      providerModelsCache.delete(providerId);
+    }
+  }
+
+  const data = await apiRequest<ProviderModel[]>(`/providers/models/${providerId}`);
+  providerModelsCache.set(providerId, {
+    expiresAt: Date.now() + PROVIDER_MODELS_CACHE_TTL_MS,
+    data: cloneProviderModels(data),
+  });
+  return data;
 }
 
 // Config API functions
@@ -749,6 +849,11 @@ export const configAPI = {
     apiRequest<ConfigResponse>(`/config/${key}`, {
       method: 'PUT',
       body: JSON.stringify({ value: JSON.stringify(data) }),
+    }),
+
+  runModelPriceSync: () =>
+    apiRequest<{ status: string }>(`/config/model-price-sync/run`, {
+      method: 'POST',
     }),
 };
 
@@ -795,6 +900,13 @@ export interface ChatIO {
   Input: string;
   OfString?: string | null;
   OfStringArray?: string[] | null;
+  summary?: boolean;
+  input_bytes?: number;
+  output_bytes?: number;
+  output_items?: number;
+  truncated_input?: boolean;
+  truncated_output?: boolean;
+  truncated_output_items?: boolean;
 }
 
 type RawChatIO = ChatIO & {
@@ -878,8 +990,25 @@ export async function getDailyModelCostTrend(days: number = 7, top: number = 5):
   return apiRequest<DailyModelCostSummary>(`/metrics/daily-model-cost?${params.toString()}`);
 }
 
-export async function getChatIO(logId: number | string): Promise<ChatIO> {
-  const raw = await apiRequest<RawChatIO>(`/logs/${logId}/chat-io`);
+export async function getChatIO(
+  logId: number | string,
+  options: {
+    mode?: "summary" | "full";
+    inputLimit?: number;
+    outputLimit?: number;
+    outputItemsLimit?: number;
+  } = {}
+): Promise<ChatIO> {
+  const params = new URLSearchParams();
+  const mode = options.mode ?? "summary";
+  if (mode) params.append("mode", mode);
+  if (options.inputLimit) params.append("input_limit", options.inputLimit.toString());
+  if (options.outputLimit) params.append("output_limit", options.outputLimit.toString());
+  if (options.outputItemsLimit) params.append("output_items_limit", options.outputItemsLimit.toString());
+
+  const query = params.toString();
+  const url = query ? `/logs/${logId}/chat-io?${query}` : `/logs/${logId}/chat-io`;
+  const raw = await apiRequest<RawChatIO>(url);
   return normalizeChatIO(raw);
 }
 

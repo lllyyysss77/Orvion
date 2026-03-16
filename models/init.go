@@ -89,6 +89,19 @@ func Init(ctx context.Context, dsn string) {
 			_ = DB.Migrator().AddColumn(&ChatLog{}, "CachedTokens")
 		}
 	}
+	if DB.Migrator().HasTable(&Model{}) {
+		if !DB.Migrator().HasColumn(&Model{}, "capabilities") {
+			_ = DB.Migrator().AddColumn(&Model{}, "Capabilities")
+		}
+	}
+	if DB.Migrator().HasTable(&Provider{}) {
+		if !DB.Migrator().HasColumn(&Provider{}, "models_fetch_mode") {
+			_ = DB.Migrator().AddColumn(&Provider{}, "ModelsFetchMode")
+		}
+		if _, err := gorm.G[Provider](DB).Where("models_fetch_mode IS NULL OR models_fetch_mode = ''").Update(ctx, "models_fetch_mode", "v1_models"); err != nil {
+			// 忽略错误
+		}
+	}
 
 	// 兼容性数据修复
 	if _, err := gorm.G[ModelWithProvider](DB).Where("status IS NULL").Update(ctx, "status", true); err != nil {
@@ -104,6 +117,9 @@ func Init(ctx context.Context, dsn string) {
 		// 忽略错误
 	}
 	if _, err := gorm.G[Model](DB).Where("status IS NULL").Update(ctx, "status", 1); err != nil {
+		// 忽略错误
+	}
+	if _, err := gorm.G[Model](DB).Where("capabilities IS NULL OR capabilities = '' OR capabilities = '[]'").Update(ctx, "capabilities", ModelCapabilities{"chat"}); err != nil {
 		// 忽略错误
 	}
 	if _, err := gorm.G[ChatLog](DB).Where("auth_key_id IS NULL").Update(ctx, "auth_key_id", 0); err != nil {

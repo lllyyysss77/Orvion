@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"slices"
+
 	"github.com/gin-gonic/gin"
 	"github.com/racio/orvion/common"
 	"github.com/racio/orvion/consts"
@@ -15,8 +17,13 @@ func OpenAIModelsHandler(c *gin.Context) {
 		common.InternalServerError(c, err.Error())
 		return
 	}
+	allowAll, _ := ctx.Value(consts.ContextKeyAllowAllModel).(bool)
+	allowedModels, _ := ctx.Value(consts.ContextKeyAllowModels).([]string)
 	resModels := make([]providers.Model, 0)
 	for _, model := range models {
+		if !allowAll && len(allowedModels) > 0 && !slices.Contains(allowedModels, model.Name) {
+			continue
+		}
 		resModels = append(resModels, providers.Model{
 			ID:      model.Name,
 			Object:  "model",

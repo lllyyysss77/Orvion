@@ -55,7 +55,7 @@ var (
 		{ID: "qwen3-vl-plus", Object: "model", Created: 1758672000, OwnedBy: "iflow", Type: "iflow", DisplayName: "Qwen3-VL-Plus"},
 		{ID: "qwen3-max-preview", Object: "model", Created: 1757030400, OwnedBy: "iflow", Type: "iflow", DisplayName: "Qwen3-Max-Preview"},
 		{ID: "kimi-k2-0905", Object: "model", Created: 1757030400, OwnedBy: "iflow", Type: "iflow", DisplayName: "Kimi-K2-Instruct-0905"},
-		{ID: "glm-4.6", Object: "model", Created: 1759190400, OwnedBy: "iflow", Type: "iflow", DisplayName: "GLM-4.6"},
+		{ID: "glm-5", Object: "model", Created: 1759190400, OwnedBy: "iflow", Type: "iflow", DisplayName: "GLM-5"},
 		{ID: "glm-4.7", Object: "model", Created: 1766448000, OwnedBy: "iflow", Type: "iflow", DisplayName: "GLM-4.7"},
 		{ID: "kimi-k2", Object: "model", Created: 1752192000, OwnedBy: "iflow", Type: "iflow", DisplayName: "Kimi-K2"},
 		{ID: "kimi-k2-thinking", Object: "model", Created: 1762387200, OwnedBy: "iflow", Type: "iflow", DisplayName: "Kimi-K2-Thinking"},

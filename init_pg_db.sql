@@ -14,10 +14,12 @@ CREATE TABLE IF NOT EXISTS providers (
     type VARCHAR(100) NOT NULL,
     config TEXT NOT NULL DEFAULT '{}',
     console VARCHAR(500) NOT NULL DEFAULT '',
+    models_fetch_mode VARCHAR(50) NOT NULL DEFAULT 'v1_models',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     deleted_at TIMESTAMPTZ
 );
+ALTER TABLE providers ADD COLUMN IF NOT EXISTS models_fetch_mode VARCHAR(50) NOT NULL DEFAULT 'v1_models';
 
 -- 创建 models 表
 CREATE TABLE IF NOT EXISTS models (
@@ -30,11 +32,13 @@ CREATE TABLE IF NOT EXISTS models (
     strategy VARCHAR(50) NOT NULL DEFAULT 'lottery',
     breaker INTEGER NOT NULL DEFAULT 0,
     status INTEGER NOT NULL DEFAULT 1,
+    capabilities JSONB NOT NULL DEFAULT '["chat"]',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     deleted_at TIMESTAMPTZ
 );
 ALTER TABLE models ADD COLUMN IF NOT EXISTS status INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE models ADD COLUMN IF NOT EXISTS capabilities JSONB NOT NULL DEFAULT '["chat"]';
 
 -- 创建 model_with_providers 表
 CREATE TABLE IF NOT EXISTS model_with_providers (

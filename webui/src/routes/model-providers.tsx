@@ -474,7 +474,7 @@ export function ModelProvidersPanel({ embedded = false, fixedModel = null }: Mod
 
     setProviderModelsLoading((prev) => ({ ...prev, [providerId]: true }));
     try {
-      const data = await getProviderModels(providerId);
+      const data = await getProviderModels(providerId, { forceRefresh: force });
       setProviderModelsMap((prev) => ({ ...prev, [providerId]: data }));
     } catch (err) {
       toast.warning(`获取提供商模型列表失败: ${err}`);

@@ -29,14 +29,14 @@ const FEATURE_CARDS = [
   },
   {
     icon: Puzzle,
-    title: "格式转换",
-    desc: "支持接口格式转换与自定义请求头能力",
+    title: "图像生成",
+    desc: "支持图片接口",
     status: "completed" as const,
   },
   {
     icon: Rocket,
-    title: "协同开发",
-    desc: "远程开发、Skill 分享与 Playground 正在开发中",
+    title: "格式转换",
+    desc: "支持接口格式转换与自定义请求头能力",
     status: "in-progress" as const,
   },
 ];

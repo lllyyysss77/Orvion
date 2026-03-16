@@ -8,6 +8,7 @@ import {
   FaHome,
   FaCloud,
   FaRobot,
+  FaComments,
   FaFileAlt,
   FaSignOutAlt,
   FaCog,
@@ -123,6 +124,7 @@ export default function Layout() {
       items: [
         { to: "/providers", label: "提供商管理", icon: <FaCloud /> },
         { to: "/models", label: "模型管理", icon: <FaRobot /> },
+        { to: "/model-chat", label: "模型对话测试", icon: <FaComments /> },
         { to: "/logs", label: "请求日志", icon: <FaFileAlt /> },
       ],
     },

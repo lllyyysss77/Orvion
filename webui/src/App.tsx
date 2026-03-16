@@ -10,6 +10,7 @@ const Home = lazy(() => import('./routes/home'));
 const HealthPage = lazy(() => import('./routes/health'));
 const ProvidersPage = lazy(() => import('./routes/providers'));
 const ModelsPage = lazy(() => import('./routes/models'));
+const ModelChatTestPage = lazy(() => import('./routes/model-chat'));
 const LogsPage = lazy(() => import('./routes/logs'));
 const LogChatPage = lazy(() => import('./routes/log-chat'));
 const LoginPage = lazy(() => import('./routes/login'));
@@ -37,6 +38,7 @@ function App() {
               <Route path="health-ui" element={<HealthPage />} />
               <Route path="providers" element={<ProvidersPage />} />
               <Route path="models" element={<ModelsPage />} />
+              <Route path="model-chat" element={<ModelChatTestPage />} />
               <Route path="logs" element={<LogsPage />} />
               <Route path="logs/:logId/chat-io" element={<LogChatPage />} />
               <Route path="config" element={<ConfigPage />} />

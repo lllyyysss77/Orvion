@@ -38,6 +38,7 @@ type PriceSyncForm = z.infer<typeof priceSyncSchema>;
 
 export default function ConfigPage() {
   const [loading, setLoading] = useState(true);
+  const [priceSyncing, setPriceSyncing] = useState(false);
   const proxyForm = useForm<AnthropicProxyForm>({
     resolver: zodResolver(anthropicProxySchema),
     defaultValues: {
@@ -112,6 +113,19 @@ export default function ConfigPage() {
     } catch (error) {
       console.error('Failed to save model price sync config:', error);
       toast.error('保存模型价格同步配置失败');
+    }
+  };
+
+  const handleRunPriceSync = async () => {
+    try {
+      setPriceSyncing(true);
+      await configAPI.runModelPriceSync();
+      toast.success('模型价格已开始同步');
+    } catch (error) {
+      console.error('Failed to run model price sync:', error);
+      toast.error('模型价格同步失败');
+    } finally {
+      setPriceSyncing(false);
     }
   };
 
@@ -251,6 +265,9 @@ export default function ConfigPage() {
               </Form>
             </CardContent>
             <CardFooter className="flex justify-between">
+              <Button type="button" variant="outline" onClick={handleRunPriceSync} disabled={priceSyncing}>
+                {priceSyncing ? '正在拉取...' : '立刻拉取'}
+              </Button>
               <Button type="submit" form="price-sync-form">保存配置</Button>
             </CardFooter>
           </Card>

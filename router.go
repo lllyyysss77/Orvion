@@ -101,6 +101,9 @@ func registerUnifiedRoutes(router *gin.Engine, authOpenAI gin.HandlerFunc, authA
 	v1.POST("/chat/completions", authOpenAI, handler.ChatCompletionsHandler)
 	v1.POST("/responses", authOpenAI, handler.ResponsesHandler)
 	v1.POST("/embeddings", authOpenAI, handler.EmbeddingsHandler)
+	v1.POST("/images/generations", authOpenAI, handler.ImagesGenerationsHandler)
+	v1.POST("/images/edits", authOpenAI, handler.ImagesEditsHandler)
+	v1.POST("/videos", authOpenAI, handler.VideosHandler)
 	v1.POST("/messages", authAnthropic, handler.Messages)
 	v1.POST("/messages/count_tokens", authAnthropic, handler.CountTokens)
 }
@@ -202,6 +205,7 @@ func registerIFlowRoutes(api *gin.RouterGroup) {
 func registerConfigRoutes(api *gin.RouterGroup) {
 	api.GET("/config/:key", adminhandler.GetConfigByKey)
 	api.PUT("/config/:key", adminhandler.UpdateConfigByKey)
+	api.POST("/config/model-price-sync/run", adminhandler.RunModelPriceSync)
 }
 
 func registerLimiterRoutes(api *gin.RouterGroup) {
@@ -213,6 +217,7 @@ func registerTestRoutes(api *gin.RouterGroup) {
 	api.GET("/test/:id", handler.ProviderTestHandler)
 	api.GET("/test/react/:id", handler.TestReactHandler)
 	api.GET("/test/count_tokens", handler.TestCountTokens)
+	api.POST("/test/chat/:id", handler.ModelChatTestHandler)
 }
 
 //go:embed webui/dist
