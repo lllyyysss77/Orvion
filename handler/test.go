@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -156,10 +157,14 @@ func ProviderTestHandler(c *gin.Context) {
 		header = http.Header{}
 	}
 	mergeHeaders(header, extraHeaders, map[string]struct{}{
-		"authorization":  {},
-		"content-length": {},
-		"host":           {},
+		"authorization":   {},
+		"accept-encoding": {},
+		"content-length":  {},
+		"host":            {},
 	})
+	// 避免将浏览器的压缩协商（br/zstd）透传到上游，导致回包为不可读压缩字节。
+	header.Del("Accept-Encoding")
+	header.Set("Accept-Encoding", "identity")
 	req, err := providerInstance.BuildReq(ctx, header, chatModel.Model, []byte(testBody))
 	if err != nil {
 		common.ErrorWithHttpStatus(c, http.StatusOK, 502, "Failed to connect to provider: "+err.Error())
@@ -180,6 +185,7 @@ func ProviderTestHandler(c *gin.Context) {
 		common.ErrorWithHttpStatus(c, http.StatusOK, res.StatusCode, "Failed to send request: "+err.Error())
 		return
 	}
+	content = decodeHTTPResponseBody(res.Header, content)
 
 	if res.StatusCode != http.StatusOK {
 		common.ErrorWithHttpStatus(c, http.StatusOK, res.StatusCode, fmt.Sprintf("code: %d body: %s", res.StatusCode, string(content)))
@@ -291,10 +297,14 @@ func ModelChatTestHandler(c *gin.Context) {
 		header = http.Header{}
 	}
 	mergeHeaders(header, extraHeaders, map[string]struct{}{
-		"authorization":  {},
-		"content-length": {},
-		"host":           {},
+		"authorization":   {},
+		"accept-encoding": {},
+		"content-length":  {},
+		"host":            {},
 	})
+	// 避免将浏览器的压缩协商（br/zstd）透传到上游，导致回包为不可读压缩字节。
+	header.Del("Accept-Encoding")
+	header.Set("Accept-Encoding", "identity")
 
 	var request *http.Request
 	if endpoint == "images/edits" {
@@ -338,6 +348,7 @@ func ModelChatTestHandler(c *gin.Context) {
 		common.ErrorWithHttpStatus(c, http.StatusOK, res.StatusCode, "Failed to read response: "+err.Error())
 		return
 	}
+	content = decodeHTTPResponseBody(res.Header, content)
 
 	if res.StatusCode != http.StatusOK {
 		common.ErrorWithHttpStatus(c, http.StatusOK, res.StatusCode, fmt.Sprintf("code: %d body: %s", res.StatusCode, string(content)))
@@ -448,6 +459,31 @@ func buildChatTestBody(style string, endpoint string, req ChatTestRequest) ([]by
 	default:
 		return nil, fmt.Errorf("unsupported provider type")
 	}
+}
+
+// decodeHTTPResponseBody 根据响应头自动解压响应体，目前支持 gzip。
+func decodeHTTPResponseBody(header http.Header, body []byte) []byte {
+	if len(body) == 0 {
+		return body
+	}
+
+	encoding := strings.ToLower(strings.TrimSpace(header.Get("Content-Encoding")))
+	isGzip := strings.Contains(encoding, "gzip") || (len(body) >= 2 && body[0] == 0x1f && body[1] == 0x8b)
+	if !isGzip {
+		return body
+	}
+
+	reader, err := gzip.NewReader(bytes.NewReader(body))
+	if err != nil {
+		return body
+	}
+	defer reader.Close()
+
+	decoded, err := io.ReadAll(reader)
+	if err != nil {
+		return body
+	}
+	return decoded
 }
 
 func extractChatContent(style string, endpoint string, raw []byte) string {
