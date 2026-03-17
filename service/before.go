@@ -2,6 +2,8 @@ package service
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -37,6 +39,20 @@ func BeforerOpenAI(data []byte) (*Before, error) {
 	model := gjson.GetBytes(data, "model").String()
 	if model == "" {
 		return nil, errors.New("model is empty")
+	}
+	// Gemini 兼容层：Gemini 对 tool schema 中的 patternProperties 支持不稳定，转发前移除该字段。
+	if strings.HasPrefix(strings.ToLower(model), "gemini") {
+		tools := gjson.GetBytes(data, "tools").Array()
+		for i := range tools {
+			path := fmt.Sprintf("tools.%d.function.parameters.patternProperties", i)
+			if gjson.GetBytes(data, path).Exists() {
+				next, err := sjson.DeleteBytes(data, path)
+				if err != nil {
+					return nil, err
+				}
+				data = next
+			}
+		}
 	}
 	stream := gjson.GetBytes(data, "stream").Bool()
 	if stream {
