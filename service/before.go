@@ -1,8 +1,8 @@
 package service
 
 import (
+	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 
 	"github.com/tidwall/gjson"
@@ -40,19 +40,13 @@ func BeforerOpenAI(data []byte) (*Before, error) {
 	if model == "" {
 		return nil, errors.New("model is empty")
 	}
-	// Gemini 兼容层：Gemini 对 tool schema 中的 patternProperties 支持不稳定，转发前移除该字段。
+	// Gemini 兼容层：Gemini 对 tool schema 中的 patternProperties 支持不稳定，转发前递归移除该字段。
 	if strings.HasPrefix(strings.ToLower(model), "gemini") {
-		tools := gjson.GetBytes(data, "tools").Array()
-		for i := range tools {
-			path := fmt.Sprintf("tools.%d.function.parameters.patternProperties", i)
-			if gjson.GetBytes(data, path).Exists() {
-				next, err := sjson.DeleteBytes(data, path)
-				if err != nil {
-					return nil, err
-				}
-				data = next
-			}
+		next, err := removePatternPropertiesDeep(data)
+		if err != nil {
+			return nil, err
 		}
+		data = next
 	}
 	stream := gjson.GetBytes(data, "stream").Bool()
 	if stream {
@@ -98,6 +92,33 @@ func BeforerOpenAI(data []byte) (*Before, error) {
 		image:            image,
 		raw:              data,
 	}, nil
+}
+
+func removePatternPropertiesDeep(data []byte) ([]byte, error) {
+	var payload any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, err
+	}
+	prunePatternProperties(&payload)
+	return json.Marshal(payload)
+}
+
+func prunePatternProperties(node *any) {
+	switch v := (*node).(type) {
+	case map[string]any:
+		delete(v, "patternProperties")
+		for key := range v {
+			child := v[key]
+			prunePatternProperties(&child)
+			v[key] = child
+		}
+	case []any:
+		for i := range v {
+			child := v[i]
+			prunePatternProperties(&child)
+			v[i] = child
+		}
+	}
 }
 
 func BeforerOpenAIRes(data []byte) (*Before, error) {
