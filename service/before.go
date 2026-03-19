@@ -3,6 +3,8 @@ package service
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
 	"strings"
 
 	"github.com/tidwall/gjson"
@@ -40,9 +42,15 @@ func BeforerOpenAI(data []byte) (*Before, error) {
 	if model == "" {
 		return nil, errors.New("model is empty")
 	}
-	// Gemini 兼容层：Gemini 对 tool schema 中的 patternProperties 支持不稳定，转发前递归移除该字段。
-	if strings.HasPrefix(strings.ToLower(model), "gemini") {
+	// Gemini 兼容层（可通过 GEMINI_COMPAT_ENABLED 开关）：
+	// 1) 移除 patternProperties
+	// 2) 降级 tool/function 历史，规避部分网关的 function_response.name 空值错误
+	if strings.HasPrefix(strings.ToLower(model), "gemini") && isGeminiCompatEnabled() {
 		next, err := removePatternPropertiesDeep(data)
+		if err != nil {
+			return nil, err
+		}
+		next, err = normalizeGeminiToolHistory(next)
 		if err != nil {
 			return nil, err
 		}
@@ -94,6 +102,19 @@ func BeforerOpenAI(data []byte) (*Before, error) {
 	}, nil
 }
 
+func isGeminiCompatEnabled() bool {
+	raw := strings.ToLower(strings.TrimSpace(os.Getenv("GEMINI_COMPAT_ENABLED")))
+	switch raw {
+	case "", "1", "true", "on", "yes", "y":
+		return true
+	case "0", "false", "off", "no", "n":
+		return false
+	default:
+		// 非法值时默认开启，避免兼容回退。
+		return true
+	}
+}
+
 func removePatternPropertiesDeep(data []byte) ([]byte, error) {
 	var payload any
 	if err := json.Unmarshal(data, &payload); err != nil {
@@ -118,6 +139,139 @@ func prunePatternProperties(node *any) {
 			prunePatternProperties(&child)
 			v[i] = child
 		}
+	}
+}
+
+// normalizeGeminiToolHistory 将 OpenAI 工具历史降级为普通文本消息，规避部分 Gemini 网关
+// 在 function_response 映射阶段丢失 name 导致的 400 错误。
+func normalizeGeminiToolHistory(data []byte) ([]byte, error) {
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, err
+	}
+
+	rawMessages, ok := payload["messages"].([]any)
+	if !ok || len(rawMessages) == 0 {
+		return data, nil
+	}
+
+	normalized := make([]any, 0, len(rawMessages))
+	for _, raw := range rawMessages {
+		msg, ok := raw.(map[string]any)
+		if !ok {
+			normalized = append(normalized, raw)
+			continue
+		}
+
+		role := strings.ToLower(strings.TrimSpace(asString(msg["role"])))
+		switch role {
+		case "tool", "function":
+			name := strings.TrimSpace(asString(msg["name"]))
+			toolCallID := strings.TrimSpace(asString(msg["tool_call_id"]))
+			contentText := normalizeContentToText(msg["content"])
+
+			prefix := "工具返回"
+			if name != "" {
+				prefix += fmt.Sprintf("(%s)", name)
+			}
+			if toolCallID != "" {
+				prefix += fmt.Sprintf("[tool_call_id=%s]", toolCallID)
+			}
+			normalized = append(normalized, map[string]any{
+				"role":    "user",
+				"content": fmt.Sprintf("%s: %s", prefix, contentText),
+			})
+			continue
+		case "assistant":
+			contentText := strings.TrimSpace(normalizeContentToText(msg["content"]))
+			lines := make([]string, 0, 2)
+			if contentText != "" {
+				lines = append(lines, contentText)
+			}
+
+			if toolCalls, ok := msg["tool_calls"].([]any); ok && len(toolCalls) > 0 {
+				for _, tc := range toolCalls {
+					tcMap, ok := tc.(map[string]any)
+					if !ok {
+						continue
+					}
+					callID := strings.TrimSpace(asString(tcMap["id"]))
+					fnName := ""
+					fnArgs := ""
+					if fn, ok := tcMap["function"].(map[string]any); ok {
+						fnName = strings.TrimSpace(asString(fn["name"]))
+						fnArgs = strings.TrimSpace(asString(fn["arguments"]))
+					}
+					if fnName == "" {
+						fnName = "unknown"
+					}
+					line := fmt.Sprintf("工具调用请求(%s)", fnName)
+					if callID != "" {
+						line += fmt.Sprintf("[id=%s]", callID)
+					}
+					if fnArgs != "" {
+						line += fmt.Sprintf(": %s", fnArgs)
+					}
+					lines = append(lines, line)
+				}
+				delete(msg, "tool_calls")
+			}
+
+			if functionCall, ok := msg["function_call"].(map[string]any); ok && len(functionCall) > 0 {
+				fnName := strings.TrimSpace(asString(functionCall["name"]))
+				fnArgs := strings.TrimSpace(asString(functionCall["arguments"]))
+				if fnName == "" {
+					fnName = "unknown"
+				}
+				line := fmt.Sprintf("函数调用请求(%s)", fnName)
+				if fnArgs != "" {
+					line += fmt.Sprintf(": %s", fnArgs)
+				}
+				lines = append(lines, line)
+				delete(msg, "function_call")
+			}
+
+			if len(lines) > 0 {
+				msg["content"] = strings.Join(lines, "\n")
+			}
+		}
+
+		normalized = append(normalized, msg)
+	}
+
+	payload["messages"] = normalized
+	return json.Marshal(payload)
+}
+
+func asString(v any) string {
+	if v == nil {
+		return ""
+	}
+	switch t := v.(type) {
+	case string:
+		return t
+	default:
+		b, err := json.Marshal(t)
+		if err != nil {
+			return ""
+		}
+		return string(b)
+	}
+}
+
+func normalizeContentToText(v any) string {
+	if v == nil {
+		return ""
+	}
+	switch t := v.(type) {
+	case string:
+		return t
+	default:
+		b, err := json.Marshal(t)
+		if err != nil {
+			return ""
+		}
+		return string(b)
 	}
 }
 
