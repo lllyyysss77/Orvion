@@ -182,58 +182,6 @@ func normalizeGeminiToolHistory(data []byte) ([]byte, error) {
 				"content": fmt.Sprintf("%s: %s", prefix, contentText),
 			})
 			continue
-		case "assistant":
-			contentText := strings.TrimSpace(normalizeContentToText(msg["content"]))
-			lines := make([]string, 0, 2)
-			if contentText != "" {
-				lines = append(lines, contentText)
-			}
-
-			if toolCalls, ok := msg["tool_calls"].([]any); ok && len(toolCalls) > 0 {
-				for _, tc := range toolCalls {
-					tcMap, ok := tc.(map[string]any)
-					if !ok {
-						continue
-					}
-					callID := strings.TrimSpace(asString(tcMap["id"]))
-					fnName := ""
-					fnArgs := ""
-					if fn, ok := tcMap["function"].(map[string]any); ok {
-						fnName = strings.TrimSpace(asString(fn["name"]))
-						fnArgs = strings.TrimSpace(asString(fn["arguments"]))
-					}
-					if fnName == "" {
-						fnName = "unknown"
-					}
-					line := fmt.Sprintf("工具调用请求(%s)", fnName)
-					if callID != "" {
-						line += fmt.Sprintf("[id=%s]", callID)
-					}
-					if fnArgs != "" {
-						line += fmt.Sprintf(": %s", fnArgs)
-					}
-					lines = append(lines, line)
-				}
-				delete(msg, "tool_calls")
-			}
-
-			if functionCall, ok := msg["function_call"].(map[string]any); ok && len(functionCall) > 0 {
-				fnName := strings.TrimSpace(asString(functionCall["name"]))
-				fnArgs := strings.TrimSpace(asString(functionCall["arguments"]))
-				if fnName == "" {
-					fnName = "unknown"
-				}
-				line := fmt.Sprintf("函数调用请求(%s)", fnName)
-				if fnArgs != "" {
-					line += fmt.Sprintf(": %s", fnArgs)
-				}
-				lines = append(lines, line)
-				delete(msg, "function_call")
-			}
-
-			if len(lines) > 0 {
-				msg["content"] = strings.Join(lines, "\n")
-			}
 		}
 
 		normalized = append(normalized, msg)
