@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
@@ -15,9 +15,14 @@ import {
 import Loading from '@/components/loading';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Switch } from '@/components/ui/switch';
-import { configAPI, type AnthropicProxyIPConfig, type ModelPriceSyncConfig } from '@/lib/api';
+import {
+  configAPI,
+  type AnthropicProxyIPConfig,
+  type ModelPriceSyncConfig,
+  type SystemLogCleanupConfig,
+} from '@/lib/api';
 import { toast } from 'sonner';
-import { Settings, Network, Coins } from 'lucide-react';
+import { Settings, Network, Coins, FileClock } from 'lucide-react';
 
 const anthropicProxySchema = z.object({
   enabled: z.boolean(),
@@ -33,8 +38,14 @@ const priceSyncSchema = z.object({
   source_url: z.string().trim(),
 });
 
+const systemLogCleanupSchema = z.object({
+  enabled: z.boolean(),
+  interval_minutes: z.number().min(1, { message: '清理间隔必须大于 0' }),
+});
+
 type AnthropicProxyForm = z.infer<typeof anthropicProxySchema>;
 type PriceSyncForm = z.infer<typeof priceSyncSchema>;
+type SystemLogCleanupForm = z.infer<typeof systemLogCleanupSchema>;
 
 export default function ConfigPage() {
   const [loading, setLoading] = useState(true);
@@ -56,45 +67,67 @@ export default function ConfigPage() {
     },
   });
 
+  const systemLogCleanupForm = useForm<SystemLogCleanupForm>({
+    resolver: zodResolver(systemLogCleanupSchema),
+    defaultValues: {
+      enabled: true,
+      interval_minutes: 1440,
+    },
+  });
+
+  const fetchConfig = useCallback(async () => {
+    try {
+      setLoading(true);
+      // 获取全局代理 IP 配置
+      const proxyResponse = await configAPI.getConfig('anthropic_proxy_ip');
+      if (proxyResponse.value) {
+        const proxyCfg = JSON.parse(proxyResponse.value) as AnthropicProxyIPConfig;
+        const nextProxyConfig = {
+          enabled: Boolean(proxyCfg.enabled),
+          proxy_ip: proxyCfg.proxy_ip || '',
+        };
+        proxyForm.reset(nextProxyConfig);
+      }
+    } catch (error) {
+      console.error('Failed to load config:', error);
+    }
+
+    try {
+      // 获取模型价格同步配置
+      const priceSyncResponse = await configAPI.getConfig('model_price_sync');
+      if (priceSyncResponse.value) {
+        const priceSyncCfg = JSON.parse(priceSyncResponse.value) as ModelPriceSyncConfig;
+        const nextPriceSyncConfig = {
+          enabled: Boolean(priceSyncCfg.enabled),
+          interval_minutes: Number(priceSyncCfg.interval_minutes || 1440),
+          source_url: priceSyncCfg.source_url || 'https://models.dev/api.json',
+        };
+        priceSyncForm.reset(nextPriceSyncConfig);
+      }
+    } catch (error) {
+      console.error('Failed to load model price sync config:', error);
+    }
+
+    try {
+      const systemLogCleanupResponse = await configAPI.getConfig('system_log_cleanup');
+      if (systemLogCleanupResponse.value) {
+        const cleanupCfg = JSON.parse(systemLogCleanupResponse.value) as SystemLogCleanupConfig;
+        const nextCleanupConfig = {
+          enabled: Boolean(cleanupCfg.enabled),
+          interval_minutes: Number(cleanupCfg.interval_minutes || 1440),
+        };
+        systemLogCleanupForm.reset(nextCleanupConfig);
+      }
+    } catch (error) {
+      console.error('Failed to load system log cleanup config:', error);
+    }
+
+    setLoading(false);
+  }, [priceSyncForm, proxyForm, systemLogCleanupForm]);
+
   useEffect(() => {
-    const fetchConfig = async () => {
-      try {
-        setLoading(true);
-        // 获取全局代理 IP 配置
-        const proxyResponse = await configAPI.getConfig('anthropic_proxy_ip');
-        if (proxyResponse.value) {
-          const proxyCfg = JSON.parse(proxyResponse.value) as AnthropicProxyIPConfig;
-          const nextProxyConfig = {
-            enabled: Boolean(proxyCfg.enabled),
-            proxy_ip: proxyCfg.proxy_ip || '',
-          };
-          proxyForm.reset(nextProxyConfig);
-        }
-      } catch (error) {
-        console.error('Failed to load config:', error);
-      }
-
-      try {
-        // 获取模型价格同步配置
-        const priceSyncResponse = await configAPI.getConfig('model_price_sync');
-        if (priceSyncResponse.value) {
-          const priceSyncCfg = JSON.parse(priceSyncResponse.value) as ModelPriceSyncConfig;
-          const nextPriceSyncConfig = {
-            enabled: Boolean(priceSyncCfg.enabled),
-            interval_minutes: Number(priceSyncCfg.interval_minutes || 1440),
-            source_url: priceSyncCfg.source_url || 'https://models.dev/api.json',
-          };
-          priceSyncForm.reset(nextPriceSyncConfig);
-        }
-      } catch (error) {
-        console.error('Failed to load model price sync config:', error);
-      }
-
-      setLoading(false);
-    };
-
-    fetchConfig();
-  }, []);
+    void fetchConfig();
+  }, [fetchConfig]);
 
   const onProxySubmit = async (values: AnthropicProxyForm) => {
     try {
@@ -113,6 +146,16 @@ export default function ConfigPage() {
     } catch (error) {
       console.error('Failed to save model price sync config:', error);
       toast.error('保存模型价格同步配置失败');
+    }
+  };
+
+  const onSystemLogCleanupSubmit = async (values: SystemLogCleanupForm) => {
+    try {
+      await configAPI.updateConfig('system_log_cleanup', values);
+      toast.success('系统日志自动清理配置已保存');
+    } catch (error) {
+      console.error('Failed to save system log cleanup config:', error);
+      toast.error('保存系统日志自动清理配置失败');
     }
   };
 
@@ -147,7 +190,7 @@ export default function ConfigPage() {
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto">
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 xl:grid-cols-3">
           <Card className="rounded-2xl border border-border/60 bg-card/90 shadow-[0_18px_45px_rgba(0,0,0,0.08)]">
             <CardHeader className="pb-2">
               <CardTitle className="flex items-center gap-2 text-sm font-semibold">
@@ -269,6 +312,61 @@ export default function ConfigPage() {
                 {priceSyncing ? '正在拉取...' : '立刻拉取'}
               </Button>
               <Button type="submit" form="price-sync-form">保存配置</Button>
+            </CardFooter>
+          </Card>
+
+          <Card className="rounded-2xl border border-border/60 bg-card/90 shadow-[0_18px_45px_rgba(0,0,0,0.08)]">
+            <CardHeader className="pb-2">
+              <CardTitle className="flex items-center gap-2 text-sm font-semibold">
+                <FileClock className="size-4 text-emerald-600" />
+                系统日志自动清理
+              </CardTitle>
+              <CardDescription className="text-xs">
+                定时清空系统日志文件内容，避免日志文件持续增大
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <Form {...systemLogCleanupForm}>
+                <form id="system-log-cleanup-form" onSubmit={systemLogCleanupForm.handleSubmit(onSystemLogCleanupSubmit)} className="space-y-4">
+                  <FormField
+                    control={systemLogCleanupForm.control}
+                    name="enabled"
+                    render={({ field }) => (
+                      <FormItem className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/50 px-3 py-2">
+                        <FormLabel className="text-xs text-muted-foreground">启用自动清理</FormLabel>
+                        <FormControl>
+                          <Switch
+                            checked={field.value === true}
+                            onCheckedChange={(checked) => field.onChange(checked === true)}
+                          />
+                        </FormControl>
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={systemLogCleanupForm.control}
+                    name="interval_minutes"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>清理间隔（分钟）</FormLabel>
+                        <FormControl>
+                          <Input
+                            type="number"
+                            min={1}
+                            value={field.value}
+                            onChange={(event) => field.onChange(Number(event.target.value))}
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </form>
+              </Form>
+            </CardContent>
+            <CardFooter className="justify-end">
+              <Button type="submit" form="system-log-cleanup-form">保存配置</Button>
             </CardFooter>
           </Card>
         </div>

@@ -3,12 +3,11 @@ import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Button } from "@/components/ui/button";
-import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import Loading from "@/components/loading";
-import { getLogs, getProviders, getModelOptions, getAuthKeysList, type ChatLog, type Provider, type Model, type AuthKeyItem, getProviderTemplates, cleanLogs } from "@/lib/api";
+import { getLogs, type ChatLog, cleanLogs } from "@/lib/api";
 import { ChevronLeft, ChevronRight, RefreshCw, Trash2, Eye, EyeOff, Timer, Zap, ArrowDown, ArrowUp, Database, Coins } from "lucide-react";
 import hunyuanIcon from "@/assets/modelIcon/hunyuan.svg";
 import doubaoIcon from "@/assets/modelIcon/doubao.svg";
@@ -200,11 +199,6 @@ const LogCard = memo(({ log, onOpenDetail, onViewChatIO }: LogCardProps) => {
                 {log.ProviderModel || "-"}
               </span>
               <span className="text-[11px] text-muted-foreground">{createdAt}</span>
-              {log.Style ? (
-                <span className="rounded-full bg-background/70 px-2 py-0.5 text-[11px] text-muted-foreground">
-                  {log.Style}
-                </span>
-              ) : null}
               {log.key_name ? (
                 <span className="rounded-full bg-background/70 px-2 py-0.5 text-[11px] text-muted-foreground">
                   {log.key_name}
@@ -318,16 +312,6 @@ export default function LogsPage() {
   const [pageSize, setPageSize] = useState(10);
   const [total, setTotal] = useState(0);
   const [pages, setPages] = useState(0);
-  const [providers, setProviders] = useState<Provider[]>([]);
-  const [models, setModels] = useState<Model[]>([]);
-  const [authKeys, setAuthKeys] = useState<AuthKeyItem[]>([]);
-  // 筛选条件
-  const [providerNameFilter, setProviderNameFilter] = useState<string>("all");
-  const [modelFilter, setModelFilter] = useState<string>("all");
-  const [statusFilter, setStatusFilter] = useState<string>("all");
-  const [styleFilter, setStyleFilter] = useState<string>("all");
-  const [authKeyFilter, setAuthKeyFilter] = useState<string>("all");
-  const [availableStyles, setAvailableStyles] = useState<string[]>([]);
   const navigate = useNavigate();
   // 详情弹窗
   const [selectedLog, setSelectedLog] = useState<ChatLog | null>(null);
@@ -337,44 +321,10 @@ export default function LogsPage() {
   const [cleanValue, setCleanValue] = useState<string>('1000');
   const [isCleanDialogOpen, setIsCleanDialogOpen] = useState(false);
   const [cleanLoading, setCleanLoading] = useState(false);
-  // 获取数据
-  const fetchProviders = async () => {
-    try {
-      const providerList = await getProviders();
-      setProviders(providerList);
-      const templates = await getProviderTemplates();
-      const styleTypes = templates.map(template => template.type);
-      setAvailableStyles(styleTypes);
-    } catch (error) {
-      console.error("Error fetching providers:", error);
-    }
-  };
-  const fetchModels = async () => {
-    try {
-      const modelList = await getModelOptions();
-      setModels(modelList);
-    } catch (error) {
-      console.error("Error fetching models:", error);
-    }
-  };
-  const fetchAuthKeys = async () => {
-    try {
-      const authKeyList = await getAuthKeysList();
-      setAuthKeys(authKeyList);
-    } catch (error) {
-      console.error("Error fetching auth keys:", error);
-    }
-  };
-  const fetchLogs = async () => {
+  const fetchLogs = useCallback(async () => {
     setLoading(true);
     try {
-      const result = await getLogs(page, pageSize, {
-        providerName: providerNameFilter === "all" ? undefined : providerNameFilter,
-        name: modelFilter === "all" ? undefined : modelFilter,
-        status: statusFilter === "all" ? undefined : statusFilter,
-        style: styleFilter === "all" ? undefined : styleFilter,
-        authKeyId: authKeyFilter === "all" ? undefined : authKeyFilter
-      });
+      const result = await getLogs(page, pageSize);
       setLogs(result.data);
       setTotal(result.total);
       setPages(result.pages);
@@ -383,19 +333,11 @@ export default function LogsPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [page, pageSize]);
+
   useEffect(() => {
-    fetchProviders();
-    fetchModels();
-    fetchAuthKeys();
-    fetchLogs();
-  }, [page, pageSize, providerNameFilter, modelFilter, statusFilter, styleFilter, authKeyFilter]);
-  const handleFilterChange = () => {
-    setPage(1);
-  };
-  useEffect(() => {
-    handleFilterChange();
-  }, [providerNameFilter, modelFilter, statusFilter, styleFilter, authKeyFilter]);
+    void fetchLogs();
+  }, [fetchLogs]);
   const handlePageChange = (newPage: number) => {
     if (newPage >= 1 && newPage <= pages) setPage(newPage);
   };
@@ -405,7 +347,7 @@ export default function LogsPage() {
     setPageSize(size);
   };
   const handleRefresh = () => {
-    fetchLogs();
+    void fetchLogs();
   };
   const handleCleanTypeChange = (type: 'count' | 'days') => {
     setCleanType(type);
@@ -419,7 +361,7 @@ export default function LogsPage() {
     try {
       const result = await cleanLogs({ type: cleanType, value });
       toast.success(`已清理 ${result.deleted_count} 条日志`);
-      fetchLogs();
+      await fetchLogs();
     } catch (error) {
       console.error("Error cleaning logs:", error);
       toast.error('清理失败');
@@ -454,63 +396,6 @@ export default function LogsPage() {
             <h2 className="text-2xl font-bold tracking-tight">请求日志</h2>
           </div>
           <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
-            <Label className="sr-only">模型名称</Label>
-            <Select value={modelFilter} onValueChange={setModelFilter}>
-              <SelectTrigger className="h-8 text-xs w-[160px] px-2">
-                <SelectValue placeholder="选择模型" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">全部</SelectItem>
-                {models.map((model) => (
-                  <SelectItem key={model.ID} value={model.Name}>{model.Name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Label className="sr-only">项目</Label>
-            <Select value={authKeyFilter} onValueChange={setAuthKeyFilter}>
-              <SelectTrigger className="h-8 text-xs w-[120px] px-2">
-                <SelectValue placeholder="项目" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">全部</SelectItem>
-                {authKeys.map((key) => (
-                  <SelectItem key={key.id} value={key.id.toString()}>{key.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Label className="sr-only">状态</Label>
-            <Select value={statusFilter} onValueChange={setStatusFilter}>
-              <SelectTrigger className="h-8 text-xs w-[120px] px-2">
-                <SelectValue placeholder="状态" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">全部</SelectItem>
-                <SelectItem value="success">成功</SelectItem>
-                <SelectItem value="error">错误</SelectItem>
-              </SelectContent>
-            </Select>
-            <Label className="sr-only">类型</Label>
-            <Select value={styleFilter} onValueChange={setStyleFilter}>
-              <SelectTrigger className="h-8 text-xs w-[120px] px-2">
-                <SelectValue placeholder="类型" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">全部</SelectItem>
-                {availableStyles.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
-              </SelectContent>
-            </Select>
-            <Label className="sr-only">提供商</Label>
-            <Select value={providerNameFilter} onValueChange={setProviderNameFilter}>
-              <SelectTrigger className="h-8 text-xs w-[140px] px-2">
-                <SelectValue placeholder="提供商" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">全部</SelectItem>
-                {providers.map((p) => (
-                  <SelectItem key={p.ID} value={p.Name}>{p.Name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
             <Button
               onClick={() => setIsCleanDialogOpen(true)}
               variant="outline"
@@ -627,9 +512,6 @@ export default function LogsPage() {
                 <span className={selectedLog.Status === "success" ? "text-emerald-600" : "text-rose-600"}>
                   {selectedLog.Status}
                 </span>
-                {selectedLog.Style ? (
-                  <span className="rounded-full bg-muted/60 px-2 py-0.5">{selectedLog.Style}</span>
-                ) : null}
                 {selectedLog.key_name ? (
                   <span className="rounded-full bg-muted/60 px-2 py-0.5">{selectedLog.key_name}</span>
                 ) : null}

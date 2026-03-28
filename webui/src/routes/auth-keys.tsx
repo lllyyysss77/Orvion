@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { z } from "zod";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -184,45 +184,17 @@ export default function AuthKeysPage() {
 
   const allowAll = form.watch("allow_all");
 
-  useEffect(() => {
-    fetchModels();
-  }, []);
-
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setSearchTerm(searchInput.trim());
-      setPage(1);
-    }, 400);
-    return () => clearTimeout(timer);
-  }, [searchInput]);
-
-  useEffect(() => {
-    setPage(1);
-  }, [statusFilter, allowAllFilter]);
-
-  useEffect(() => {
-    fetchAuthKeys();
-  }, [page, pageSize, statusFilter, allowAllFilter, searchTerm]);
-
-
-  const filteredModels = useMemo(() => {
-    if (!modelSearch) return models;
-    return models.filter((model) =>
-      model.Name.toLowerCase().includes(modelSearch.toLowerCase())
-    );
-  }, [models, modelSearch]);
-
-  const fetchModels = async () => {
+  const fetchModels = useCallback(async () => {
     try {
-    const list = await getModelOptions();
+      const list = await getModelOptions();
       setModels(list);
     } catch (error) {
       console.error(error);
       toast.error("获取模型列表失败");
     }
-  };
+  }, []);
 
-  const fetchAuthKeys = async () => {
+  const fetchAuthKeys = useCallback(async () => {
     setLoading(true);
     try {
       const response = await getAuthKeys({
@@ -246,7 +218,34 @@ export default function AuthKeysPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [allowAllFilter, page, pageSize, searchTerm, statusFilter]);
+
+  useEffect(() => {
+    void fetchModels();
+  }, [fetchModels]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setSearchTerm(searchInput.trim());
+      setPage(1);
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [statusFilter, allowAllFilter]);
+
+  useEffect(() => {
+    void fetchAuthKeys();
+  }, [fetchAuthKeys]);
+
+  const filteredModels = useMemo(() => {
+    if (!modelSearch) return models;
+    return models.filter((model) =>
+      model.Name.toLowerCase().includes(modelSearch.toLowerCase())
+    );
+  }, [models, modelSearch]);
 
   const handleDialogOpenChange = (open: boolean) => {
     setDialogOpen(open);

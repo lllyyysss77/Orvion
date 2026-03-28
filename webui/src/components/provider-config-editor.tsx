@@ -19,7 +19,6 @@ export type ConfigItem = {
 type Props = {
 	value: string;
 	onChange: (nextJson: string) => void;
-	providerType?: string;
 };
 
 export type ProviderConfigEditorRef = {
@@ -93,8 +92,32 @@ function normalizeJsonToItems(raw: string, defaults: Omit<ConfigItem, "id">[]): 
 
 		return baseItems;
 	} catch {
-		return defaults.map(item => ({ ...item, id: newId() }));
+	return defaults.map(item => ({ ...item, id: newId() }));
 	}
+}
+
+function inferProviderTypeFromConfig(raw: string): string | undefined {
+	try {
+		const parsed = JSON.parse(raw || "{}") as Record<string, unknown>;
+		const version = String(parsed.version ?? "").trim();
+		if (version) {
+			return "anthropic";
+		}
+		const baseURL = String(parsed.base_url ?? "").trim().toLowerCase();
+		if (baseURL.includes("anthropic")) {
+			return "anthropic";
+		}
+		if (
+			baseURL.includes("generativelanguage.googleapis.com") ||
+			baseURL.includes("googleapis.com/v1beta") ||
+			baseURL.includes("googleapis.com/v1alpha")
+		) {
+			return "gemini";
+		}
+	} catch {
+		return undefined;
+	}
+	return undefined;
 }
 
 function serializeItems(items: ConfigItem[], providerType?: string): { json: string; error: string | null } {
@@ -140,9 +163,10 @@ function serializeItems(items: ConfigItem[], providerType?: string): { json: str
 }
 
 const ProviderConfigEditor = forwardRef<ProviderConfigEditorRef, Props>(function ProviderConfigEditor(
-	{ value, onChange, providerType },
+	{ value, onChange },
 	ref,
 ) {
+	const providerType = useMemo(() => inferProviderTypeFromConfig(value), [value]);
 	const defaults = useMemo(() => defaultItemsByType(providerType), [providerType]);
 
 	const lastEmittedRef = useRef<string | null>(null);

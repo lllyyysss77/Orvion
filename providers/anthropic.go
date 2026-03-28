@@ -19,6 +19,16 @@ type Anthropic struct {
 	Version string `json:"version"`
 }
 
+const defaultAnthropicVersion = "2023-06-01"
+
+func (a *Anthropic) resolvedVersion() string {
+	version := a.Version
+	if version == "" {
+		return defaultAnthropicVersion
+	}
+	return version
+}
+
 func appendQueryParam(rawURL string, key string, value string) (string, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
@@ -54,7 +64,8 @@ func (a *Anthropic) BuildReq(ctx context.Context, header http.Header, model stri
 	req.Header.Set("x-api-key", a.APIKey)
 	// 兼容部分上游（或网关）仅识别 Authorization: Bearer <key>
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", a.APIKey))
-	req.Header.Set("anthropic-version", a.Version)
+	// 未显式配置版本时，messages 接口默认回落到 Anthropic 官方稳定版本。
+	req.Header.Set("anthropic-version", a.resolvedVersion())
 	return req, nil
 }
 
@@ -80,7 +91,7 @@ func (a *Anthropic) Models(ctx context.Context) ([]Model, error) {
 	req.Header.Set("content-type", "application/json")
 	req.Header.Set("x-api-key", a.APIKey)
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", a.APIKey))
-	req.Header.Set("anthropic-version", a.Version)
+	req.Header.Set("anthropic-version", a.resolvedVersion())
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -116,6 +127,6 @@ func (a *Anthropic) BuildCountTokensReq(ctx context.Context, header http.Header,
 	req.Header.Set("content-type", "application/json")
 	req.Header.Set("x-api-key", a.APIKey)
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", a.APIKey))
-	req.Header.Set("anthropic-version", a.Version)
+	req.Header.Set("anthropic-version", a.resolvedVersion())
 	return req, nil
 }

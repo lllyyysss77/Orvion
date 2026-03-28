@@ -1,12 +1,14 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import Loading from "@/components/loading";
 import { getSystemHealthDetail, getProviders, type Provider, type SystemHealth, type ProviderHealth, type ModelHealth } from "@/lib/api";
 import { toast } from "sonner";
-import { RefreshCw, CheckCircle2, AlertCircle, XCircle, Activity, ChevronDown } from "lucide-react";
+import { CheckCircle2, AlertCircle, XCircle, Activity, ChevronDown } from "lucide-react";
+
+const HEALTH_WINDOW_MINUTES = 1440;
+const AUTO_REFRESH_INTERVAL_MS = 10_000;
 
 // 状态指示器组件
 const StatusBadge = ({ status }: { status: "healthy" | "degraded" | "unhealthy" | "unknown" }) => {
@@ -75,6 +77,26 @@ const formatShortTime = (value: string) => {
   const mi = String(date.getMinutes()).padStart(2, "0");
   const ss = String(date.getSeconds()).padStart(2, "0");
   return `${mm}/${dd} ${hh}:${mi}:${ss}`;
+};
+
+const formatAutoDisabledUntil = (value?: string) => {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+
+  const diffMs = date.getTime() - Date.now();
+  if (diffMs <= 0) {
+    return "即将恢复";
+  }
+
+  const totalMinutes = Math.ceil(diffMs / 60000);
+  if (totalMinutes < 60) {
+    return `${totalMinutes} 分钟后恢复`;
+  }
+
+  const hh = String(date.getHours()).padStart(2, "0");
+  const mm = String(date.getMinutes()).padStart(2, "0");
+  return `预计 ${hh}:${mm} 恢复`;
 };
 
 const calcProviderSuccessRate = (provider: ProviderHealth): number => {
@@ -195,6 +217,11 @@ const HealthProviderRow = ({
                       </div>
                       <div className="flex flex-wrap items-center gap-2 text-[11px]">
                         <StatusBadge status={model.status} />
+                        {model.autoDisabledUntil ? (
+                          <span className="rounded-full bg-amber-500/15 px-2 py-1 text-[11px] font-semibold text-amber-700 ring-1 ring-amber-500/20">
+                            自动熔断中
+                          </span>
+                        ) : null}
                         <span className={cn("rounded-full px-2 py-1 text-[11px] font-semibold", modelRateClass)}>
                           {modelRate.toFixed(0)}%
                         </span>
@@ -203,11 +230,11 @@ const HealthProviderRow = ({
                         <span className="text-muted-foreground">最近 {formatShortTime(model.lastCheck)}</span>
                       </div>
                     </div>
-                    {model.lastError && (
-                      <div className="mt-1 text-[11px] text-rose-500">
-                        错误：{model.lastError}
+                    {model.autoDisabledUntil ? (
+                      <div className="mt-1 text-[11px] text-amber-700/90">
+                        {formatAutoDisabledUntil(model.autoDisabledUntil)}
                       </div>
-                    )}
+                    ) : null}
                   </div>
                 );
               })}
@@ -226,32 +253,45 @@ const HealthProviderRow = ({
 export default function HealthPage() {
   const [loading, setLoading] = useState(true);
   const [health, setHealth] = useState<SystemHealth | null>(null);
-  const [timeWindow, setTimeWindow] = useState<number>(1440); // 默认 24 小时
   const [providerConsoleMap, setProviderConsoleMap] = useState<Record<number, string>>({});
   const [consoleLatencyMap, setConsoleLatencyMap] = useState<Record<number, ConsoleLatencyState>>({});
   const [expandedProviders, setExpandedProviders] = useState<Record<number, boolean>>({});
   const consoleLatencyRef = useRef<Record<number, ConsoleLatencyState>>({});
   const inFlightControllersRef = useRef<AbortController[]>([]);
 
-  const fetchHealth = useCallback(async () => {
+  const fetchHealth = useCallback(async (showErrorToast: boolean) => {
     try {
-      const data = await getSystemHealthDetail(timeWindow);
+      const data = await getSystemHealthDetail(HEALTH_WINDOW_MINUTES);
       setHealth(data);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error(`获取健康状态失败: ${message}`);
+      if (showErrorToast) {
+        toast.error(`获取健康状态失败: ${message}`);
+      }
       console.error(err);
     }
-  }, [timeWindow]);
+  }, []);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    await fetchHealth();
-    setLoading(false);
+  const load = useCallback(async (showLoading = false) => {
+    if (showLoading) {
+      setLoading(true);
+    }
+    await fetchHealth(showLoading);
+    if (showLoading) {
+      setLoading(false);
+    }
   }, [fetchHealth]);
 
   useEffect(() => {
-    void load();
+    void load(true);
+  }, [load]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void load(false);
+    }, AUTO_REFRESH_INTERVAL_MS);
+
+    return () => window.clearInterval(timer);
   }, [load]);
 
   const toggleProviderExpanded = useCallback((providerId: number) => {
@@ -382,37 +422,12 @@ export default function HealthPage() {
   return (
     <div className="h-full min-h-0 flex flex-col gap-4 p-1">
       {/* 页面头部 */}
-      <div className="flex flex-wrap items-center justify-between gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <div>
           <h2 className="text-2xl font-bold tracking-tight flex items-center gap-2">
             <Activity className="size-6" />
             健康监控
           </h2>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <span>回溯时间：</span>
-            <Select value={timeWindow.toString()} onValueChange={(v) => setTimeWindow(Number(v))}>
-              <SelectTrigger className="w-[140px]">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="60">最近 1 小时</SelectItem>
-                <SelectItem value="360">最近 6 小时</SelectItem>
-                <SelectItem value="1440">最近 24 小时</SelectItem>
-                <SelectItem value="4320">最近 3 天</SelectItem>
-                <SelectItem value="10080">最近 7 天</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <Button
-            onClick={() => void load()}
-            variant="outline"
-            size="icon"
-            title="刷新"
-          >
-            <RefreshCw className="size-4" />
-          </Button>
         </div>
       </div>
 

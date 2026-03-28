@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/racio/orvion/consts"
 )
@@ -26,8 +27,49 @@ type Provider interface {
 	Models(ctx context.Context) ([]Model, error)
 }
 
-func New(Type, providerConfig string) (Provider, error) {
-	switch Type {
+type providerConfigBase struct {
+	BaseURL string `json:"base_url"`
+}
+
+func normalizeStyle(style string) string {
+	switch strings.TrimSpace(strings.ToLower(style)) {
+	case consts.StyleOpenAIEmbeddings:
+		return consts.StyleOpenAI
+	case consts.StyleGeminiEmbeddings:
+		return consts.StyleGemini
+	default:
+		return strings.TrimSpace(strings.ToLower(style))
+	}
+}
+
+func inferStyleFromConfig(providerConfig string) string {
+	var cfg providerConfigBase
+	if err := json.Unmarshal([]byte(providerConfig), &cfg); err != nil {
+		return consts.StyleOpenAI
+	}
+
+	baseURL := strings.ToLower(strings.TrimSpace(cfg.BaseURL))
+	switch {
+	case strings.Contains(baseURL, "anthropic"):
+		return consts.StyleAnthropic
+	case strings.Contains(baseURL, "generativelanguage.googleapis.com"),
+		strings.Contains(baseURL, "googleapis.com/v1beta"),
+		strings.Contains(baseURL, "googleapis.com/v1alpha"):
+		return consts.StyleGemini
+	default:
+		return consts.StyleOpenAI
+	}
+}
+
+func ResolveStyle(preferredStyle string, providerConfig string) string {
+	if style := normalizeStyle(preferredStyle); style != "" {
+		return style
+	}
+	return inferStyleFromConfig(providerConfig)
+}
+
+func NewForStyle(preferredStyle, providerConfig string) (Provider, error) {
+	switch ResolveStyle(preferredStyle, providerConfig) {
 	case consts.StyleOpenAI:
 		var openai OpenAI
 		if err := json.Unmarshal([]byte(providerConfig), &openai); err != nil {
@@ -42,28 +84,6 @@ func New(Type, providerConfig string) (Provider, error) {
 		}
 
 		return &openaiRes, nil
-	case consts.StyleCodexAuths:
-		// codex-auths 与 codex 复用同一 Responses 协议，仅凭据来源不同。
-		var openaiRes OpenAIRes
-		if err := json.Unmarshal([]byte(providerConfig), &openaiRes); err != nil {
-			return nil, errors.New("invalid codex-auths config")
-		}
-
-		return &openaiRes, nil
-	case consts.StyleIFlow:
-		// iflow 与 openai 复用 ChatCompletions 协议，凭据由订阅池自动注入。
-		var openai OpenAI
-		if err := json.Unmarshal([]byte(providerConfig), &openai); err != nil {
-			return nil, errors.New("invalid iflow config")
-		}
-		return &openai, nil
-	case consts.StyleIFlowAuths:
-		// iflow-auths 与 openai 复用 ChatCompletions 协议，仅凭据来源为 auth_files。
-		var openai OpenAI
-		if err := json.Unmarshal([]byte(providerConfig), &openai); err != nil {
-			return nil, errors.New("invalid iflow-auths config")
-		}
-		return &openai, nil
 	case consts.StyleAnthropic:
 		var anthropic Anthropic
 		if err := json.Unmarshal([]byte(providerConfig), &anthropic); err != nil {
@@ -79,4 +99,8 @@ func New(Type, providerConfig string) (Provider, error) {
 	default:
 		return nil, errors.New("unknown provider")
 	}
+}
+
+func New(providerConfig string) (Provider, error) {
+	return NewForStyle("", providerConfig)
 }

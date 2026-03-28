@@ -12,7 +12,7 @@ import (
 
 func OpenAIModelsHandler(c *gin.Context) {
 	ctx := c.Request.Context()
-	models, err := service.ModelsByTypes(ctx, consts.StyleOpenAI, consts.StyleOpenAIRes, consts.StyleCodexAuths, consts.StyleIFlow, consts.StyleIFlowAuths)
+	models, err := service.ModelsByTypes(ctx, consts.StyleOpenAI, consts.StyleOpenAIRes)
 	if err != nil {
 		common.InternalServerError(c, err.Error())
 		return

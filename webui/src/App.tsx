@@ -13,11 +13,10 @@ const ModelsPage = lazy(() => import('./routes/models'));
 const ModelChatTestPage = lazy(() => import('./routes/model-chat'));
 const LogsPage = lazy(() => import('./routes/logs'));
 const LogChatPage = lazy(() => import('./routes/log-chat'));
+const SystemLogsPage = lazy(() => import('./routes/system-logs'));
 const LoginPage = lazy(() => import('./routes/login'));
 const ConfigPage = lazy(() => import('./routes/config'));
 const AuthKeysPage = lazy(() => import('./routes/auth-keys'));
-const CodexOfficialPage = lazy(() => import('./routes/codex-official'));
-const IFlowAuthPage = lazy(() => import('./routes/iflow-auth'));
 
 // 简单的加载组件
 const PageLoader = () => (
@@ -41,10 +40,9 @@ function App() {
               <Route path="model-chat" element={<ModelChatTestPage />} />
               <Route path="logs" element={<LogsPage />} />
               <Route path="logs/:logId/chat-io" element={<LogChatPage />} />
+              <Route path="system-logs" element={<SystemLogsPage />} />
               <Route path="config" element={<ConfigPage />} />
               <Route path="auth-keys" element={<AuthKeysPage />} />
-              <Route path="codex-official" element={<CodexOfficialPage />} />
-              <Route path="iflow-auth" element={<IFlowAuthPage />} />
             </Route>
           </Routes>
         </Suspense>

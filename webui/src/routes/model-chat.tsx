@@ -44,6 +44,30 @@ type ChatMessage = {
   status?: "streaming" | "done" | "error";
 };
 
+type StreamMessageContentPart = {
+  text?: string;
+  content?: string;
+};
+
+type StreamChoice = {
+  delta?: {
+    content?: string | StreamMessageContentPart[];
+  };
+  message?: {
+    content?: string;
+  };
+};
+
+type StreamPayload = {
+  choices?: StreamChoice[];
+  output_text?: string;
+  content?: string;
+  data?: {
+    content?: string;
+  };
+  text?: string;
+};
+
 const STREAMABLE_ENDPOINTS = ["chat/completions", "messages", "responses"];
 const BASE_ENDPOINTS = ["chat/completions", "images/generations", "images/edits"];
 const IMAGE_URL_PATTERN = /^https?:\/\/\S+\.(png|jpe?g|webp|gif|bmp|svg)(\?.*)?$/i;
@@ -137,7 +161,7 @@ export default function ModelChatTestPage() {
     if (model && model.Name !== modelSearch) {
       setModelSearch(model.Name);
     }
-  }, [selectedModelId, models]);
+  }, [selectedModelId, models, modelSearch]);
 
   const normalizedCapabilities = useMemo<string[]>(() => {
     const raw = selectedModel?.Capabilities ?? [];
@@ -223,12 +247,12 @@ export default function ModelChatTestPage() {
       return "";
     }
     try {
-      const parsed = JSON.parse(data) as Record<string, any>;
+      const parsed = JSON.parse(data) as StreamPayload;
       const choice = parsed.choices?.[0];
       if (typeof choice?.delta?.content === "string") return choice.delta.content;
       if (Array.isArray(choice?.delta?.content)) {
         return choice.delta.content
-          .map((item: any) => item?.text || item?.content || "")
+          .map((item) => item?.text || item?.content || "")
           .join("");
       }
       if (typeof choice?.message?.content === "string") return choice.message.content;
@@ -249,7 +273,7 @@ export default function ModelChatTestPage() {
     if (!payload || typeof payload !== "object") {
       return "";
     }
-    const data = payload as Record<string, any>;
+    const data = payload as { content?: string; data?: { content?: string } };
     if (typeof data.content === "string") {
       return data.content;
     }
@@ -466,9 +490,9 @@ export default function ModelChatTestPage() {
     : "请输入一段对话内容";
 
   return (
-    <div className="h-full overflow-hidden rounded-2xl border border-border/60 bg-background">
-      <div className="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[340px_1fr]">
-        <aside className="h-full min-h-0 overflow-y-auto border-b border-border/60 bg-muted/20 p-4 lg:border-b-0 lg:border-r">
+    <div className="h-full overflow-hidden">
+      <div className="grid h-full min-h-0 grid-cols-1 gap-4 lg:grid-cols-[360px_1fr]">
+        <aside className="h-full min-h-0 overflow-y-auto rounded-[30px] border border-border/65 bg-card/82 p-5 shadow-[0_18px_50px_rgba(98,71,47,0.07)]">
           <div className="flex items-center gap-3 px-1">
             <Settings className="h-5 w-5 text-foreground/80" />
             <h2 className="text-2xl font-semibold leading-none tracking-tight text-foreground">模型配置</h2>
@@ -643,8 +667,8 @@ export default function ModelChatTestPage() {
           </div>
         </aside>
 
-        <section className="flex h-full min-h-0 flex-col bg-background">
-          <div className="flex items-start justify-between gap-3 px-5 pb-3 pt-5">
+        <section className="flex h-full min-h-0 flex-col rounded-[32px] border border-border/65 bg-background/74 shadow-[0_20px_56px_rgba(98,71,47,0.08)] backdrop-blur-xl">
+          <div className="flex items-start justify-between gap-3 px-6 pb-3 pt-6">
             <div>
               <h1 className="text-2xl font-semibold tracking-tight text-foreground">AI 对话</h1>
               <p className="text-sm text-muted-foreground">
@@ -657,7 +681,7 @@ export default function ModelChatTestPage() {
             </div>
           </div>
 
-          <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 pb-4">
+          <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 pb-4">
             {messages.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-border/60 bg-white/55 px-4 py-3 text-sm text-muted-foreground">
                 在下方输入测试内容后发送，右侧会按聊天气泡展示请求与响应结果。
@@ -774,7 +798,7 @@ export default function ModelChatTestPage() {
             )}
           </div>
 
-          <div className="px-5 pb-5 pt-3">
+          <div className="px-6 pb-6 pt-3">
             <div className="rounded-3xl border border-border/60 bg-white/80 p-3 shadow-sm backdrop-blur-sm">
               <Textarea
                 value={prompt}

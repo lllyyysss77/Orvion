@@ -57,13 +57,13 @@ export const cliSections: CliSectionItem[] = [
     installHint: "npm",
     installCommand: "npm install -g @openai/codex",
     configPath: "~/.codex/config.toml",
-    configContent: `model_provider = "aether"
+    configContent: `model_provider = "orvion"
 model = "latest-model-name"
 model_reasoning_effort = "high"
 network_access = "enabled"
 disable_response_storage = true
 
-[model_providers.aether]
+[model_providers.orvion]
 name = "OpenAI"
 base_url = "https://your-domain/v1"
 wire_api = "responses"

@@ -10,7 +10,6 @@ import (
 type Provider struct {
 	gorm.Model
 	Name            string
-	Type            string
 	Config          string
 	Console         string // 控制台地址
 	ModelsFetchMode string `gorm:"column:models_fetch_mode"` // 模型获取方式：v1_models/api_pricing
@@ -37,27 +36,29 @@ type Model struct {
 
 type ModelWithProvider struct {
 	gorm.Model
-	ModelID         uint
-	ProviderModel   string
-	ProviderID      uint
-	WithHeader      int    // 是否透传header (0/1)
-	Status          int    // 是否启用 (0/1)
-	CustomerHeaders string // 自定义headers (JSON)
-	Weight          int
+	ModelID           uint
+	ProviderModel     string
+	ProviderID        uint
+	WithHeader        int        // 是否透传header (0/1)
+	Status            int        // 是否启用 (0/1)
+	AutoDisabledUntil *time.Time `gorm:"column:auto_disabled_until"`
+	CustomerHeaders   string     // 自定义headers (JSON)
+	Weight            int
 }
 
 type ChatLog struct {
 	gorm.Model
-	UUID          string `gorm:"column:uuid"`
-	Name          string `gorm:"index"`
-	ProviderModel string `gorm:"index"`
-	ProviderName  string `gorm:"index"`
-	Status        string `gorm:"index"` // error or success
-	Style         string // 类型
-	UserAgent     string `gorm:"index"` // 用户代理
-	RemoteIP      string // 访问ip
-	AuthKeyID     uint   `gorm:"index"` // 使用的AuthKey ID
-	ChatIO        int    // 是否开启IO记录 (0/1)
+	UUID                string `gorm:"column:uuid"`
+	Name                string `gorm:"index"`
+	ProviderModel       string `gorm:"index"`
+	ProviderName        string `gorm:"index"`
+	ModelWithProviderID uint   `gorm:"column:model_with_provider_id;index"`
+	Status              string `gorm:"index"` // error or success
+	Style               string // 类型
+	UserAgent           string `gorm:"index"` // 用户代理
+	RemoteIP            string // 访问ip
+	AuthKeyID           uint   `gorm:"index"` // 使用的AuthKey ID
+	ChatIO              int    // 是否开启IO记录 (0/1)
 
 	Error            string // if status is error, this field will be set
 	Retry            int    // 重试次数

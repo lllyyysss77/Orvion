@@ -1,23 +1,26 @@
-import { useEffect, useState } from "react";
-import { Link, Outlet, useNavigate, useLocation } from "react-router-dom";
-import { Button } from "@/components/ui/button";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { cn } from "@/lib/utils";
 import iconSvg from "@/assets/icon.svg";
 import {
-  FaBars,
-  FaHome,
-  FaCloud,
-  FaRobot,
-  FaComments,
-  FaFileAlt,
-  FaSignOutAlt,
-  FaCog,
-  FaKey,
-  FaHeartbeat,
-  FaCrown,
-  FaUserShield,
-  FaTimes,
-} from "react-icons/fa";
+  Activity,
+  Boxes,
+  ChevronsUpDown,
+  Cloud,
+  FileTerminal,
+  House,
+  KeyRound,
+  LogOut,
+  MessageSquareText,
+  PanelLeft,
+  ScrollText,
+  Settings2,
+  UserCircle2,
+  X,
+} from "lucide-react";
 import { getVersion, checkLatestRelease, type GitHubRelease } from "@/lib/api";
 import { clearStoredAuthToken, getStoredAuthToken } from "@/lib/auth";
 import {
@@ -28,22 +31,66 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
+const AUTH_KEY_PREFIXES = ["sk-github.com/racio/orvion-", "sk-github.com/racio/llmio-"];
+const SIDEBAR_STORAGE_KEY = "orvion_sidebar_collapsed";
+const DESKTOP_SIDEBAR_WIDTH = "14rem";
+const DESKTOP_SIDEBAR_COLLAPSED_WIDTH = "4rem";
+const SIDEBAR_GROUP_PADDING = "p-1.5";
+const SIDEBAR_BUTTON_BASE =
+  "flex h-10 w-full items-center gap-2 overflow-hidden rounded-[18px] px-2.5 py-2 text-left text-[13px] outline-none ring-sidebar-ring transition-all duration-200 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2";
+
+const navSections = [
+  {
+    title: "管理",
+    items: [
+      { to: "/", label: "仪表板", icon: House },
+      { to: "/providers", label: "提供商", icon: Cloud },
+      { to: "/models", label: "模型", icon: Boxes },
+      { to: "/health-ui", label: "健康监控", icon: Activity },
+    ],
+  },
+  {
+    title: "项目",
+    items: [
+      { to: "/auth-keys", label: "API 密钥", icon: KeyRound },
+      { to: "/model-chat", label: "测试场", icon: MessageSquareText },
+      { to: "/logs", label: "请求日志", icon: ScrollText },
+      { to: "/system-logs", label: "系统日志", icon: FileTerminal },
+    ],
+  },
+  {
+    title: "设置",
+    items: [{ to: "/config", label: "系统配置", icon: Settings2 }],
+  },
+] as const;
+
+function getInitialSidebarCollapsed() {
+  if (typeof window === "undefined") {
+    return false;
+  }
+  return window.localStorage.getItem(SIDEBAR_STORAGE_KEY) === "1";
+}
+
 export default function Layout() {
   const [version, setVersion] = useState("dev");
   const [latestRelease, setLatestRelease] = useState<GitHubRelease | null>(null);
   const [showUpdateDialog, setShowUpdateDialog] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(getInitialSidebarCollapsed);
+  const [navigationProgressVisible, setNavigationProgressVisible] = useState(false);
+  const [navigationProgressValue, setNavigationProgressValue] = useState(0);
   const navigate = useNavigate();
-  const location = useLocation(); // 用于高亮当前选中的菜单
+  const location = useLocation();
   const token = getStoredAuthToken();
-  const isAuthKeyToken = ["sk-github.com/racio/orvion-", "sk-github.com/racio/llmio-"].some((prefix) =>
-    token.startsWith(prefix)
-  );
+  const isAuthKeyToken = AUTH_KEY_PREFIXES.some((prefix) => token.startsWith(prefix));
+  const progressTimersRef = useRef<number[]>([]);
+  const progressStartedRef = useRef(false);
 
   useEffect(() => {
     if (isAuthKeyToken) {
       return undefined;
     }
+
     let active = true;
 
     const fetchVersion = async () => {
@@ -53,7 +100,7 @@ export default function Layout() {
           setVersion(value);
         }
       } catch {
-        // Keep default version when API is unreachable or unauthorized.
+        // 保持默认版本号。
       }
     };
 
@@ -62,44 +109,103 @@ export default function Layout() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [isAuthKeyToken]);
 
-  // Check for updates when on home page
+  useEffect(() => {
+    if (isAuthKeyToken || location.pathname !== "/") {
+      return;
+    }
+
+    const checkForUpdates = async () => {
+      try {
+        const release = await checkLatestRelease("raciott", "llmio");
+        if (release && release.tag_name !== version) {
+          setLatestRelease(release);
+          setShowUpdateDialog(true);
+        }
+      } catch (error) {
+        console.error("Failed to check for updates:", error);
+      }
+    };
+
+    void checkForUpdates();
+  }, [isAuthKeyToken, location.pathname, version]);
+
   useEffect(() => {
     if (isAuthKeyToken) {
       return;
     }
-    if (location.pathname === '/') {
-      const checkForUpdates = async () => {
-        try {
-          const release = await checkLatestRelease('raciott', 'llmio');
-          if (release && release.tag_name !== version) {
-            setLatestRelease(release);
-            setShowUpdateDialog(true);
-          }
-        } catch (error) {
-          console.error('Failed to check for updates:', error);
-        }
-      };
+    window.localStorage.setItem(SIDEBAR_STORAGE_KEY, sidebarCollapsed ? "1" : "0");
+  }, [isAuthKeyToken, sidebarCollapsed]);
 
-      void checkForUpdates();
+  useEffect(() => {
+    if (isAuthKeyToken) {
+      return undefined;
     }
-  }, [location.pathname, version]);
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() === "b" && (event.metaKey || event.ctrlKey)) {
+        event.preventDefault();
+        if (window.innerWidth >= 768) {
+          setSidebarCollapsed((value) => !value);
+        } else {
+          setMobileSidebarOpen((value) => !value);
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isAuthKeyToken]);
 
   useEffect(() => {
     setMobileSidebarOpen(false);
   }, [location.pathname]);
 
   useEffect(() => {
-    if (!mobileSidebarOpen) return;
+    if (!progressStartedRef.current) {
+      return;
+    }
+
+    progressTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+    progressTimersRef.current = [];
+    setNavigationProgressValue(100);
+
+    const completeTimer = window.setTimeout(() => {
+      setNavigationProgressVisible(false);
+      setNavigationProgressValue(0);
+      progressStartedRef.current = false;
+    }, 260);
+
+    progressTimersRef.current.push(completeTimer);
+
+    return () => {
+      window.clearTimeout(completeTimer);
+    };
+  }, [location.pathname]);
+
+  useEffect(() => {
+    return () => {
+      progressTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+      progressTimersRef.current = [];
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!mobileSidebarOpen) {
+      return undefined;
+    }
+
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setMobileSidebarOpen(false);
       }
     };
+
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     window.addEventListener("keydown", handleKeyDown);
+
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
       document.body.style.overflow = prevOverflow;
@@ -111,207 +217,324 @@ export default function Layout() {
     navigate("/login");
   };
 
-  const navSections = [
-    {
-      title: "01 概览",
-      items: [
-        { to: "/", label: "首页", icon: <FaHome /> },
-        { to: "/health-ui", label: "健康监控", icon: <FaHeartbeat /> },
-      ],
-    },
-    {
-      title: "02 运营",
-      items: [
-        { to: "/providers", label: "提供商管理", icon: <FaCloud /> },
-        { to: "/models", label: "模型管理", icon: <FaRobot /> },
-        { to: "/model-chat", label: "模型对话测试", icon: <FaComments /> },
-        { to: "/logs", label: "请求日志", icon: <FaFileAlt /> },
-      ],
-    },
-    {
-      title: "03 Auth订阅",
-      items: [
-        { to: "/codex-official", label: "Codex 官方", icon: <FaCrown /> },
-        { to: "/iflow-auth", label: "iFlow 认证", icon: <FaUserShield /> },
-      ],
-    },
-    {
-      title: "04 系统",
-      items: [
-        { to: "/auth-keys", label: "API Key 管理", icon: <FaKey /> },
-        { to: "/config", label: "系统配置", icon: <FaCog /> },
-      ],
-    },
-  ];
+  const handleToggleSidebar = () => {
+    if (window.innerWidth >= 768) {
+      setSidebarCollapsed((value) => !value);
+      return;
+    }
+    setMobileSidebarOpen((value) => !value);
+  };
 
-  const renderSidebarNav = (onItemClick?: () => void) => (
-    <nav className="min-h-0 flex-1 space-y-6 overflow-y-auto">
-      {navSections.map((section) => (
-        <div key={section.title} className="space-y-2">
-          <div className="text-[11px] font-semibold tracking-[0.2em] text-muted-foreground">
-            {section.title}
-          </div>
-          <ul className="space-y-1">
-            {section.items.map((item) => {
-              const isActive = location.pathname === item.to;
-              return (
-                <li key={item.to}>
-                  <Link
-                    to={item.to}
-                    onClick={onItemClick}
-                    className={`group flex items-center gap-3 rounded-xl px-3 py-2 text-sm transition-colors ${
-                      isActive
-                        ? "bg-primary/10 text-primary ring-1 ring-primary/20"
-                        : "text-muted-foreground hover:bg-sidebar-accent/70 hover:text-foreground"
-                    }`}
-                  >
-                    <span className="text-base">{item.icon}</span>
-                    <span className="font-medium">{item.label}</span>
-                  </Link>
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-      ))}
-    </nav>
+  const getIsActive = (to: string) => (
+    to === "/" ? location.pathname === "/" : location.pathname === to || location.pathname.startsWith(`${to}/`)
   );
 
-  return (
-    <div className="flex flex-col h-screen w-full dark:bg-gray-900 transition-colors duration-300">
-      
-      {/* 1. 顶部栏 Header */}
-      <header className="bg-background/80 backdrop-blur flex items-center flex-shrink-0 z-20 border-b border-border/70">
-        <div className="flex w-full items-center justify-between px-4 py-3">
-          <div className="flex items-center gap-3">
-            {!isAuthKeyToken && (
+  const startNavigationProgress = () => {
+    progressTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+    progressTimersRef.current = [];
+    progressStartedRef.current = true;
+    setNavigationProgressVisible(true);
+    setNavigationProgressValue(12);
+
+    const timers = [
+      window.setTimeout(() => setNavigationProgressValue(46), 40),
+      window.setTimeout(() => setNavigationProgressValue(72), 180),
+      window.setTimeout(() => setNavigationProgressValue(86), 420),
+    ];
+    progressTimersRef.current = timers;
+  };
+
+  const renderNavGroups = (mobile = false) => {
+    const collapsed = !mobile && sidebarCollapsed;
+
+    return navSections.map((section) => (
+      <div key={section.title} className={SIDEBAR_GROUP_PADDING}>
+        <div
+          className={cn(
+            "flex h-7 items-center px-2 text-[11px] font-medium text-sidebar-foreground/70 transition-all duration-200",
+            collapsed && "-mt-8 opacity-0 pointer-events-none"
+          )}
+        >
+          {section.title}
+        </div>
+        <ul className="flex w-full min-w-0 flex-col gap-0.5">
+          {section.items.map((item) => {
+            const Icon = item.icon;
+            const isActive = getIsActive(item.to);
+            return (
+              <li key={item.to} className="group/menu-item relative">
+                <Link
+                  to={item.to}
+                  onClick={() => {
+                    if (!isActive) {
+                      startNavigationProgress();
+                    }
+                    if (mobile) {
+                      setMobileSidebarOpen(false);
+                    }
+                  }}
+                  title={collapsed ? item.label : undefined}
+                  className={cn(
+                    SIDEBAR_BUTTON_BASE,
+                    isActive && "bg-primary font-medium text-primary-foreground",
+                    collapsed && "mx-auto h-9 w-9 justify-center rounded-full p-0"
+                  )}
+                >
+                  <Icon className="h-4 w-4 shrink-0" />
+                  <span className={cn("truncate", collapsed && "hidden")}>{item.label}</span>
+                </Link>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    ));
+  };
+
+  const renderUserMenu = (mobile = false) => {
+    const collapsed = !mobile && sidebarCollapsed;
+
+    return (
+      <Popover>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            className={cn(
+              "flex h-10 w-full items-center gap-2 rounded-[18px] px-2.5 py-2 text-left text-[13px] outline-none transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring",
+              collapsed && "mx-auto h-9 w-9 justify-center rounded-full p-0"
+            )}
+            title={collapsed ? "控制台用户" : undefined}
+          >
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/12 text-primary">
+              <UserCircle2 className="h-4 w-4" />
+            </div>
+            <div className={cn("grid flex-1 text-left text-[13px] leading-tight", collapsed && "hidden")}>
+              <span className="truncate font-semibold">控制台用户</span>
+              <span className="truncate text-[11px] text-sidebar-foreground/70">当前会话</span>
+            </div>
+            <ChevronsUpDown className={cn("ml-auto h-4 w-4 shrink-0", collapsed && "hidden")} />
+          </button>
+        </PopoverTrigger>
+        <PopoverContent
+          side={mobile ? "bottom" : "right"}
+          align="end"
+          sideOffset={8}
+          className="w-56 rounded-lg border-border/70 bg-popover/98 p-1"
+        >
+          <div className="flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/12 text-primary">
+              <UserCircle2 className="h-5 w-5" />
+            </div>
+            <div className="grid flex-1 leading-tight">
+              <span className="truncate font-semibold">控制台用户</span>
+              <span className="truncate text-xs text-muted-foreground">当前会话</span>
+            </div>
+          </div>
+          <div className="my-1 h-px bg-border/70" />
+          <Link
+            to="/config"
+            className="flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors hover:bg-accent hover:text-accent-foreground"
+          >
+            <Settings2 className="h-4 w-4" />
+            系统配置
+          </Link>
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors hover:bg-accent hover:text-accent-foreground"
+          >
+            <LogOut className="h-4 w-4" />
+            退出登录
+          </button>
+        </PopoverContent>
+      </Popover>
+    );
+  };
+
+  const renderDesktopSidebar = () => {
+    if (isAuthKeyToken) {
+      return null;
+    }
+
+    return (
+      <aside
+        className={cn(
+          "fixed top-14 bottom-0 left-0 z-40 hidden overflow-hidden transition-[width] duration-200 ease-linear md:block",
+          sidebarCollapsed ? "w-16" : "w-56"
+        )}
+      >
+        <div className="h-full pr-2 pb-0 pl-0">
+          <div className="flex h-full w-full flex-col rounded-tr-[24px] rounded-br-none rounded-l-none border border-l-0 border-sidebar-border/70 bg-sidebar text-sidebar-foreground shadow-sm">
+            <div className="relative flex min-h-0 flex-1 flex-col pt-2">
+              <div className={cn("flex min-h-0 flex-1 flex-col gap-1 overflow-auto", sidebarCollapsed && "pt-3")}>
+                {renderNavGroups()}
+              </div>
+              <div className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-sidebar to-transparent" />
+            </div>
+            <div className="flex flex-col gap-1 p-1.5">{renderUserMenu()}</div>
+          </div>
+        </div>
+      </aside>
+    );
+  };
+
+  const renderMobileSidebar = () => {
+    if (isAuthKeyToken) {
+      return null;
+    }
+
+    return (
+      <div
+        className={cn(
+          "fixed inset-0 z-50 md:hidden",
+          mobileSidebarOpen ? "pointer-events-auto" : "pointer-events-none"
+        )}
+      >
+        <button
+          type="button"
+          aria-label="关闭侧边导航"
+          className={cn(
+            "absolute inset-0 bg-black/35 transition-opacity",
+            mobileSidebarOpen ? "opacity-100" : "opacity-0"
+          )}
+          onClick={() => setMobileSidebarOpen(false)}
+        />
+        <aside
+          className={cn(
+            "relative h-full w-64 max-w-[88vw] transition-transform duration-200",
+            mobileSidebarOpen ? "translate-x-0" : "-translate-x-full"
+          )}
+        >
+          <div className="flex h-full w-full flex-col bg-sidebar text-sidebar-foreground shadow-xl">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-sidebar-border/70">
+              <div className="flex items-center gap-2">
+                <div className="flex size-8 items-center justify-center overflow-hidden rounded bg-primary/10">
+                  <img src={iconSvg} alt="Orvion" className="size-8 object-cover" />
+                </div>
+                <span className="text-sm font-semibold">Orvion</span>
+              </div>
               <Button
                 variant="ghost"
                 size="icon"
-                className="lg:hidden"
-                onClick={() => setMobileSidebarOpen(true)}
-                aria-label="打开侧边导航"
+                className="size-8 rounded-md"
+                onClick={() => setMobileSidebarOpen(false)}
+                aria-label="关闭侧边导航"
               >
-                <FaBars />
+                <X className="h-4 w-4" />
               </Button>
-            )}
+            </div>
+            <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-auto">{renderNavGroups(true)}</div>
+            <div className="flex flex-col gap-1 border-t border-sidebar-border/70 p-1.5">{renderUserMenu(true)}</div>
+          </div>
+        </aside>
+      </div>
+    );
+  };
+
+  const sidebarOffsetStyle = {
+    "--sidebar-offset": isAuthKeyToken
+      ? "0rem"
+      : sidebarCollapsed
+        ? DESKTOP_SIDEBAR_COLLAPSED_WIDTH
+        : DESKTOP_SIDEBAR_WIDTH,
+  } as CSSProperties;
+
+  return (
+    <div className="min-h-screen bg-background text-foreground">
+      <div className="pointer-events-none fixed inset-x-0 top-0 z-[80] h-[3px] overflow-hidden">
+        <div
+          className={cn(
+            "h-full rounded-r-full bg-primary shadow-[0_0_14px_rgba(180,104,56,0.45)] transition-[width,opacity] duration-300 ease-out",
+            navigationProgressVisible ? "opacity-100" : "opacity-0"
+          )}
+          style={{ width: `${navigationProgressValue}%` }}
+        />
+      </div>
+      <header className="bg-background/95 supports-[backdrop-filter]:bg-background/60 fixed top-0 z-50 w-full border-b border-border/60 backdrop-blur">
+        <div className="flex h-14 items-center justify-between px-4 md:px-6">
+          <div className="flex items-center gap-2 pl-0 md:pl-2">
+            {!isAuthKeyToken ? (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-8 md:-ml-4"
+                onClick={handleToggleSidebar}
+                aria-label="切换侧边栏"
+              >
+                <PanelLeft className="h-4 w-4" />
+              </Button>
+            ) : null}
+
             <Link to="/" className="flex items-center gap-2">
-              <img src={iconSvg} alt="Orvion" className="h-8 w-8" />
-              <div className="text-lg font-semibold text-foreground">Orvion</div>
+              <div className="flex size-8 shrink-0 items-center justify-center overflow-hidden rounded bg-primary/10">
+                <img src={iconSvg} alt="Orvion" className="size-8 object-cover" />
+              </div>
+              <span className="text-sm leading-none font-semibold text-foreground">Orvion</span>
             </Link>
           </div>
 
-          <div className="flex items-center gap-2">
-            <Badge
-              variant="outline"
-              className="text-muted-foreground cursor-pointer hover:bg-accent transition-colors"
-              onClick={() => latestRelease && setShowUpdateDialog(true)}
-              title={latestRelease ? `有新版本 ${latestRelease.tag_name} 可用` : '当前版本'}
-            >
+          <div className="flex items-center gap-2 pr-0 md:pr-2">
+            <Badge variant="outline" className="hidden rounded-full border-border/70 bg-background/80 px-3 py-1 text-xs text-muted-foreground md:inline-flex">
               {version}
-              {latestRelease && (
-                <span className="ml-1 text-xs text-red-500">●</span>
-              )}
+              {latestRelease ? <span className="ml-2 h-1.5 w-1.5 rounded-full bg-primary" /> : null}
             </Badge>
-          
-          <Button 
-            variant="ghost" 
-            onClick={handleLogout}
-            className="gap-2"
-          >
-            <FaSignOutAlt />
-          </Button>
-        </div>
-        </div>
-      </header>
 
-      {/* 2. 下方主体区域 */}
-      <div className="flex-1 min-w-0">
-        <div className="flex h-full w-full">
-          <div className="flex h-full w-full min-w-0">
-        
-        {/* 左侧侧边栏 Sidebar */}
-        {!isAuthKeyToken && (
-          <aside className="hidden h-full w-64 shrink-0 border-r border-sidebar-border bg-sidebar lg:flex lg:flex-col">
-            <div className="flex h-full flex-col px-4 py-5">
-              {renderSidebarNav()}
-            </div>
-          </aside>
-        )}
+            <Button variant="ghost" size="icon" className="size-8" asChild>
+              <Link to="/config" aria-label="系统配置">
+                <Settings2 className="h-4 w-4" />
+              </Link>
+            </Button>
 
-        {/* 右侧主内容区域 */}
-        <main className="min-w-0 flex-1 p-3 md:p-4">
-          <div className="h-full rounded-3xl border border-border/60 bg-card/60 p-3 md:p-5">
-          <div className="mx-auto max-w-full h-full min-w-0 overflow-x-hidden">
-            <Outlet />
-          </div>
-          </div>
-        </main>
-          </div>
-        </div>
-      </div>
-
-      {!isAuthKeyToken && (
-        <div
-          className={`fixed inset-0 z-40 lg:hidden ${
-            mobileSidebarOpen ? "pointer-events-auto" : "pointer-events-none"
-          }`}
-        >
-          <button
-            type="button"
-            aria-label="关闭侧边导航"
-            className={`absolute inset-0 bg-black/35 transition-opacity ${
-              mobileSidebarOpen ? "opacity-100" : "opacity-0"
-            }`}
-            onClick={() => setMobileSidebarOpen(false)}
-          />
-          <aside
-            className={`relative flex h-full w-72 max-w-[86vw] flex-col border-r border-sidebar-border bg-sidebar px-4 py-5 transition-transform duration-200 ${
-              mobileSidebarOpen ? "translate-x-0" : "-translate-x-full"
-            }`}
-          >
-            <div className="mb-4 flex items-center justify-between">
-              <span className="text-base font-semibold text-foreground">菜单</span>
+            {isAuthKeyToken ? (
               <Button
                 variant="ghost"
                 size="icon"
-                aria-label="关闭侧边导航"
-                onClick={() => setMobileSidebarOpen(false)}
+                className="size-8"
+                onClick={handleLogout}
+                aria-label="退出登录"
               >
-                <FaTimes />
+                <LogOut className="h-4 w-4" />
               </Button>
-            </div>
-            {renderSidebarNav(() => setMobileSidebarOpen(false))}
-          </aside>
+            ) : null}
+          </div>
         </div>
-      )}
+      </header>
 
-      {/* Update Dialog */}
+      {renderDesktopSidebar()}
+      {renderMobileSidebar()}
+
+      <main className="pt-14">
+        <div className="h-[calc(100vh-3.5rem)] transition-[padding-left] duration-200 ease-linear md:pl-[var(--sidebar-offset)]" style={sidebarOffsetStyle}>
+          <div className="h-full p-3 md:p-4">
+            <div className="mx-auto h-full max-w-[1680px] min-w-0 overflow-hidden">
+              <Outlet />
+            </div>
+          </div>
+        </div>
+      </main>
+
       <Dialog open={showUpdateDialog} onOpenChange={setShowUpdateDialog}>
-        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+        <DialogContent className="max-h-[80vh] max-w-2xl overflow-y-auto rounded-[28px] border-border/70 bg-card/95">
           <DialogHeader>
             <DialogTitle>发现新版本 {latestRelease?.tag_name}</DialogTitle>
             <DialogDescription>
-              当前版本: {version} → 最新版本: {latestRelease?.tag_name}
+              当前版本：{version}，最新版本：{latestRelease?.tag_name}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <div>
-              <h4 className="font-semibold mb-2">更新内容：</h4>
-              <div className="bg-muted p-4 rounded-md text-sm whitespace-pre-wrap max-h-96 overflow-y-auto">
-                {latestRelease?.body || '暂无更新说明'}
+              <h4 className="mb-2 font-semibold">更新内容</h4>
+              <div className="max-h-96 rounded-2xl border border-border/70 bg-muted/40 p-4 text-sm whitespace-pre-wrap">
+                {latestRelease?.body || "暂无更新说明"}
               </div>
             </div>
             <div className="flex justify-end gap-2">
-              <Button
-                variant="outline"
-                onClick={() => setShowUpdateDialog(false)}
-              >
+              <Button variant="outline" onClick={() => setShowUpdateDialog(false)}>
                 稍后提醒
               </Button>
               <Button
                 onClick={() => {
-                  window.open(latestRelease?.html_url, '_blank');
+                  window.open(latestRelease?.html_url, "_blank");
                   setShowUpdateDialog(false);
                 }}
               >

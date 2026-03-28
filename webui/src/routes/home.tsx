@@ -7,9 +7,6 @@ import { Button } from "@/components/ui/button";
 import Loading from "@/components/loading";
 import {
   getMetricsSummary,
-  getModelOptions,
-  getModelProviders,
-  getProviders,
   getAuthKeySummary,
   getRequestAmountTrend,
   getDailyModelCostTrend
@@ -46,34 +43,6 @@ const summaryTitleIconClass =
 
 const summaryMetricIconClass =
   "size-6 rounded-lg bg-emerald-50 text-emerald-700 flex items-center justify-center shrink-0 ring-1 ring-emerald-100/80 dark:bg-emerald-400/10 dark:text-emerald-200 dark:ring-emerald-400/20";
-
-const providerTypeOrder = ["anthropic", "openai", "openai_res"] as const;
-type ProviderTypeKey = typeof providerTypeOrder[number];
-
-const providerTypeLabels: Record<ProviderTypeKey, string> = {
-  anthropic: "Anthropic",
-  openai: "OpenAI",
-  openai_res: "Codex",
-};
-
-const createEmptyAvailableModels = (): Record<ProviderTypeKey, string[]> => ({
-  anthropic: [],
-  openai: [],
-  openai_res: [],
-});
-
-const isModelEnabled = (value?: number | null): boolean =>
-  value == null ? true : Number(value) === 1;
-
-const normalizeProviderType = (raw: string): ProviderTypeKey | null => {
-  const lower = (raw || "").trim().toLowerCase();
-  if (!lower) return null;
-  if (lower === "codex" || lower === "codex-auths") return "openai_res";
-  if (providerTypeOrder.includes(lower as ProviderTypeKey)) {
-    return lower as ProviderTypeKey;
-  }
-  return null;
-};
 
 const AUTH_KEY_PREFIXES = ["sk-github.com/racio/orvion-", "sk-github.com/racio/llmio-"];
 
@@ -881,10 +850,6 @@ const HomeHeader = memo(({ title, onRefresh }: HomeHeaderProps) => {
 
 export default function Home() {
   const [loading, setLoading] = useState(true);
-  const [availableModelsLoading, setAvailableModelsLoading] = useState(false);
-  const [availableModels, setAvailableModels] = useState<Record<ProviderTypeKey, string[]>>(() =>
-    createEmptyAvailableModels()
-  );
   const [requestAmount, setRequestAmount] = useState<RequestAmountSummary>(defaultRequestAmount);
   const [dailyModelCost, setDailyModelCost] = useState<DailyModelCostSummary>(defaultDailyModelCost);
   const [authKeySummary, setAuthKeySummary] = useState<AuthKeySummary | null>(null);
@@ -933,65 +898,6 @@ export default function Home() {
     }
   }, []);
 
-  const fetchAvailableModels = useCallback(async () => {
-    setAvailableModelsLoading(true);
-    try {
-      const [providers, modelOptions] = await Promise.all([getProviders(), getModelOptions()]);
-      const providerTypeById = new Map<number, ProviderTypeKey>();
-
-      providers.forEach((provider) => {
-        const type = normalizeProviderType(provider.Type || "");
-        if (!type) return;
-        providerTypeById.set(provider.ID, type);
-      });
-
-      const activeModels = modelOptions.filter((model) => isModelEnabled(model.Status));
-      const modelProvidersList = await Promise.all(
-        activeModels.map(async (model) => {
-          try {
-            const data = await getModelProviders(model.ID);
-            const enabled = data.filter((item) => item.Status == null || item.Status);
-            return { model, providers: enabled };
-          } catch (err) {
-            console.error("获取模型关联提供商失败", err);
-            return { model, providers: [] };
-          }
-        })
-      );
-
-      const grouped: Record<ProviderTypeKey, Set<string>> = {
-        anthropic: new Set(),
-        openai: new Set(),
-        openai_res: new Set(),
-      };
-
-      modelProvidersList.forEach(({ model, providers }) => {
-        const name = (model.Name || "").trim();
-        if (!name) return;
-        const typeSet = new Set<ProviderTypeKey>();
-        providers.forEach((provider) => {
-          const type = providerTypeById.get(provider.ProviderID);
-          if (type) typeSet.add(type);
-        });
-        typeSet.forEach((type) => grouped[type].add(name));
-      });
-
-      const next = createEmptyAvailableModels();
-      providerTypeOrder.forEach((type) => {
-        next[type] = Array.from(grouped[type]).sort((a, b) => a.localeCompare(b));
-      });
-
-      setAvailableModels(next);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      toast.error(`获取可用模型失败: ${message}`);
-      console.error(err);
-      setAvailableModels(createEmptyAvailableModels());
-    } finally {
-      setAvailableModelsLoading(false);
-    }
-  }, []);
-
   const fetchRequestAmount = useCallback(async () => {
     try {
       const data = await getRequestAmountTrend();
@@ -1033,8 +939,7 @@ export default function Home() {
     setAuthKeyError(null);
     await Promise.all([fetchSummary(), fetchRequestAmount(), fetchDailyModelCost()]);
     setLoading(false);
-    void fetchAvailableModels();
-  }, [fetchAuthKeySummary, fetchAvailableModels, fetchDailyModelCost, fetchRequestAmount, fetchSummary]);
+  }, [fetchAuthKeySummary, fetchDailyModelCost, fetchRequestAmount, fetchSummary]);
 
   useEffect(() => {
     void load();
@@ -1151,50 +1056,6 @@ export default function Home() {
                 curvePoints={requestCurvePoints}
               />
             </div>
-
-            <Card className={`${cardHoverClass} gap-3`}>
-              <CardHeader className="pb-2">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="text-xs text-muted-foreground">当前可用模型</div>
-                </div>
-              </CardHeader>
-              <CardContent className="pt-0">
-                {availableModelsLoading ? (
-                  <div className="py-6 text-center text-xs text-muted-foreground">加载中...</div>
-                ) : (
-                  <div className="grid gap-3">
-                    {providerTypeOrder.map((type) => {
-                      const models = availableModels[type];
-                      return (
-                        <div key={type} className="space-y-2">
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs font-semibold text-muted-foreground">
-                              {providerTypeLabels[type]}
-                            </span>
-                            <span className="text-xs text-muted-foreground">{models.length} 个</span>
-                          </div>
-                          {models.length > 0 ? (
-                            <div className="flex flex-wrap gap-1.5">
-                              {models.map((model) => (
-                                <Badge
-                                  key={`${type}-${model}`}
-                                  variant="secondary"
-                                  className="bg-muted/60 text-foreground"
-                                >
-                                  {model}
-                                </Badge>
-                              ))}
-                            </div>
-                          ) : (
-                            <div className="text-xs text-muted-foreground">暂无可用模型</div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
           </div>
         )}
       </div>

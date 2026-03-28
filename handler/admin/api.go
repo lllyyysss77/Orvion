@@ -19,7 +19,6 @@ import (
 	"github.com/racio/orvion/models"
 	"github.com/racio/orvion/providers"
 	"github.com/racio/orvion/service"
-	"github.com/racio/orvion/service/subscription"
 	"github.com/samber/lo"
 	"gorm.io/gorm"
 )
@@ -27,7 +26,6 @@ import (
 // ProviderRequest represents the request body for creating/updating a provider
 type ProviderRequest struct {
 	Name            string `json:"name"`
-	Type            string `json:"type"`
 	Config          string `json:"config"`
 	Console         string `json:"console"`
 	ModelsFetchMode string `json:"models_fetch_mode"`
@@ -92,21 +90,14 @@ type ConfigValueRequest struct {
 	Value string `json:"value" binding:"required"`
 }
 
-// GetProviders 获取所有提供商列表（支持名称搜索和类型筛选）
+// GetProviders 获取所有提供商列表（支持名称搜索）
 func GetProviders(c *gin.Context) {
-	// 筛选参数
 	name := c.Query("name")
-	providerType := c.Query("type")
 
-	// 构建查询条件
 	query := models.DB.Model(&models.Provider{}).WithContext(c.Request.Context())
 
 	if name != "" {
 		query = query.Where("name LIKE ?", "%"+name+"%")
-	}
-
-	if providerType != "" {
-		query = query.Where("type = ?", providerType)
 	}
 
 	// 默认按创建时间升序排列（新创建的在后），保证“提供商管理”列表的排行稳定且可预期
@@ -128,31 +119,12 @@ func GetProviderModels(c *gin.Context) {
 		return
 	}
 
-	switch provider.Type {
-	case consts.StyleIFlow, consts.StyleIFlowAuths:
-		modelList, modelErr := listIFlowProviderModels(c.Request.Context())
-		if modelErr != nil {
-			common.NotFound(c, "Failed to get models: "+modelErr.Error())
-			return
-		}
-		common.Success(c, modelList)
+	modelList, modelErr := listProviderModelsWithMode(c.Request.Context(), provider)
+	if modelErr != nil {
+		common.NotFound(c, "Failed to get models: "+modelErr.Error())
 		return
-	case consts.StyleCodexAuths:
-		modelList, modelErr := listCodexProviderModels(c.Request.Context())
-		if modelErr != nil {
-			common.NotFound(c, "Failed to get models: "+modelErr.Error())
-			return
-		}
-		common.Success(c, modelList)
-		return
-	default:
-		modelList, modelErr := listProviderModelsWithMode(c.Request.Context(), provider)
-		if modelErr != nil {
-			common.NotFound(c, "Failed to get models: "+modelErr.Error())
-			return
-		}
-		common.Success(c, modelList)
 	}
+	common.Success(c, modelList)
 }
 
 func normalizeModelsFetchMode(raw string) string {
@@ -172,7 +144,7 @@ func listProviderModelsWithMode(ctx context.Context, provider models.Provider) (
 	if mode == modelsFetchModePricing {
 		return listProviderModelsFromPricing(ctx, provider.Config)
 	}
-	chatModel, err := providers.New(provider.Type, provider.Config)
+	chatModel, err := providers.New(provider.Config)
 	if err != nil {
 		return nil, err
 	}
@@ -266,54 +238,6 @@ func collectPricingModelIDs(node any, out map[string]struct{}) {
 	}
 }
 
-func listIFlowProviderModels(ctx context.Context) ([]providers.Model, error) {
-	subscriptions, err := subscription.GetIFlowSubscriptionManager().ListSubscriptions()
-	if err != nil {
-		return nil, err
-	}
-	if len(subscriptions) == 0 {
-		return nil, subscription.ErrIFlowSubscriptionNotFound
-	}
-	modelList, err := subscription.GetIFlowSubscriptionManager().ListAvailableModels(ctx, subscriptions[0].ID)
-	if err != nil {
-		return nil, err
-	}
-	result := make([]providers.Model, 0, len(modelList))
-	for _, model := range modelList {
-		result = append(result, providers.Model{
-			ID:      model.ID,
-			Object:  "model",
-			Created: model.Created,
-			OwnedBy: model.OwnedBy,
-		})
-	}
-	return result, nil
-}
-
-func listCodexProviderModels(ctx context.Context) ([]providers.Model, error) {
-	subscriptions, err := subscription.GetCodexSubscriptionManager().ListSubscriptions()
-	if err != nil {
-		return nil, err
-	}
-	if len(subscriptions) == 0 {
-		return nil, subscription.ErrCodexSubscriptionNotFound
-	}
-	modelList, err := subscription.GetCodexSubscriptionManager().ListAvailableModels(ctx, subscriptions[0].ID)
-	if err != nil {
-		return nil, err
-	}
-	result := make([]providers.Model, 0, len(modelList))
-	for _, model := range modelList {
-		result = append(result, providers.Model{
-			ID:      model.ID,
-			Object:  model.Object,
-			Created: model.Created,
-			OwnedBy: model.OwnedBy,
-		})
-	}
-	return result, nil
-}
-
 // CreateProvider 创建提供商
 func CreateProvider(c *gin.Context) {
 	var req ProviderRequest
@@ -336,7 +260,6 @@ func CreateProvider(c *gin.Context) {
 
 	provider := models.Provider{
 		Name:            req.Name,
-		Type:            req.Type,
 		Config:          req.Config,
 		Console:         req.Console,
 		ModelsFetchMode: normalizeModelsFetchMode(req.ModelsFetchMode),
@@ -378,7 +301,6 @@ func UpdateProvider(c *gin.Context) {
 	// Update fields
 	updates := models.Provider{
 		Name:            req.Name,
-		Type:            req.Type,
 		Config:          req.Config,
 		Console:         req.Console,
 		ModelsFetchMode: normalizeModelsFetchMode(req.ModelsFetchMode),
@@ -741,7 +663,6 @@ func DeleteModel(c *gin.Context) {
 }
 
 type ProviderTemplate struct {
-	Type        string `json:"type"`
 	DisplayName string `json:"display_name,omitempty"`
 	Category    string `json:"category,omitempty"` // apikey | auth
 	AuthMode    bool   `json:"auth_mode,omitempty"`
@@ -751,60 +672,11 @@ type ProviderTemplate struct {
 
 var template = []ProviderTemplate{
 	{
-		Type:        "openai",
-		DisplayName: "openai",
+		DisplayName: "通用",
 		Category:    "apikey",
 		Template: `{
 			"base_url": "https://api.openai.com/v1",
 			"api_key": "YOUR_API_KEY"
-		}`,
-	},
-	{
-		Type:        "anthropic",
-		DisplayName: "anthropic",
-		Category:    "apikey",
-		Template: `{
-			"base_url": "https://api.anthropic.com/v1",
-			"api_key": "YOUR_API_KEY",
-			"version": "2023-06-01"
-		}`,
-	},
-	{
-		Type:        "codex",
-		DisplayName: "codex",
-		Category:    "apikey",
-		Template: `{
-			"base_url": "https://api.openai.com/v1",
-			"api_key": "YOUR_API_KEY"
-		}`,
-	},
-	{
-		Type:        "gemini",
-		DisplayName: "gemini",
-		Category:    "apikey",
-		Template: `{
-			"base_url": "https://generativelanguage.googleapis.com/v1beta",
-			"api_key": "YOUR_GEMINI_API_KEY"
-		}`,
-	},
-	{
-		Type:        "iflow",
-		DisplayName: "iflow",
-		Category:    "auth",
-		AuthMode:    true,
-		HideConfig:  true,
-		Template: `{
-			"auth_mode": "iflow"
-		}`,
-	},
-	{
-		Type:        "codex-auths",
-		DisplayName: "codex",
-		Category:    "auth",
-		AuthMode:    true,
-		HideConfig:  true,
-		Template: `{
-			"auth_mode": "codex"
 		}`,
 	},
 }
@@ -1025,13 +897,19 @@ func UpdateModelProviderStatus(c *gin.Context) {
 	} else {
 		status = 0
 	}
-	// 使用 struct 更新会忽略 0 值，导致“禁用（0）”无法落库，这里改为单列 Update。
-	if _, err := gorm.G[models.ModelWithProvider](models.DB).Where("id = ?", id).Update(c.Request.Context(), "status", status); err != nil {
+	if err := models.DB.WithContext(c.Request.Context()).
+		Model(&models.ModelWithProvider{}).
+		Where("id = ?", id).
+		Updates(map[string]any{
+			"status":              status,
+			"auto_disabled_until": nil,
+		}).Error; err != nil {
 		common.InternalServerError(c, "Failed to update status: "+err.Error())
 		return
 	}
 
 	existing.Status = status
+	existing.AutoDisabledUntil = nil
 	common.Success(c, existing)
 }
 

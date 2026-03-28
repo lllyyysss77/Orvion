@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useFieldArray, useForm } from "react-hook-form";
 import { z } from "zod";
@@ -75,6 +75,11 @@ type ModelProvidersPanelProps = {
   fixedModel?: Model | null;
 };
 
+type ProviderTestResult = {
+  error?: string;
+  message?: string;
+} | null;
+
 export function ModelProvidersPanel({ embedded = false, fixedModel = null }: ModelProvidersPanelProps) {
   const [modelProviders, setModelProviders] = useState<ModelWithProvider[]>([]);
   const [providers, setProviders] = useState<Provider[]>([]);
@@ -85,7 +90,7 @@ export function ModelProvidersPanel({ embedded = false, fixedModel = null }: Mod
   const [open, setOpen] = useState(false);
   const [editingAssociation, setEditingAssociation] = useState<ModelWithProvider | null>(null);
   const [deleteId, setDeleteId] = useState<number | null>(null);
-  const [testResults, setTestResults] = useState<Record<number, { loading: boolean; result: any }>>({});
+  const [testResults, setTestResults] = useState<Record<number, { loading: boolean; result: ProviderTestResult }>>({});
   const [testDialogOpen, setTestDialogOpen] = useState(false);
   const [selectedTestId, setSelectedTestId] = useState<number | null>(null);
   const [testType, setTestType] = useState<"connectivity" | "react">("connectivity");
@@ -107,14 +112,14 @@ export function ModelProvidersPanel({ embedded = false, fixedModel = null }: Mod
   const modelName = fixedModel?.Name ?? "模型提供商关联";
 
   const headerCardClass = embedded
-    ? "rounded-2xl border border-border/60 bg-card/80 px-3 py-2 shadow-sm"
-    : "rounded-3xl border border-border/60 bg-card/80 px-4 py-3 shadow-sm";
+    ? "px-1 py-1"
+    : "px-1 py-1";
   const listWrapClass = embedded
-    ? "flex-1 min-h-0 rounded-2xl border border-border/60 bg-background/80 p-2 shadow-sm"
-    : "flex-1 min-h-0 rounded-3xl border border-border/60 bg-background/80 p-3 shadow-sm";
+    ? "flex-1 min-h-0"
+    : "flex-1 min-h-0";
   const rowCardClass = embedded
     ? "group flex items-center justify-between gap-3 rounded-xl border border-border/60 bg-muted/40 px-2.5 py-2"
-    : "group flex items-center justify-between gap-3 rounded-2xl border border-border/60 bg-muted/40 px-3 py-2";
+    : "group flex items-center justify-between gap-3 rounded-[24px] border border-border/65 bg-card/86 px-4 py-3 shadow-[0_16px_42px_rgba(98,71,47,0.06)]";
   const metaTextClass = embedded ? "text-[10px]" : "text-[11px]";
   const actionIconSize = embedded ? "h-7 w-7" : "h-8 w-8";
   const indexBadgeClass = embedded
@@ -191,7 +196,7 @@ export function ModelProvidersPanel({ embedded = false, fixedModel = null }: Mod
     };
   };
 
-  const fetchModelProviders = async () => {
+  const fetchModelProviders = useCallback(async () => {
     if (!modelId) return;
     try {
       setLoading(true);
@@ -209,7 +214,7 @@ export function ModelProvidersPanel({ embedded = false, fixedModel = null }: Mod
     } finally {
       setLoading(false);
     }
-  };
+  }, [modelId]);
 
   const handleCreate = async (values: FormValues) => {
     try {
@@ -468,7 +473,7 @@ export function ModelProvidersPanel({ embedded = false, fixedModel = null }: Mod
     setDeleteId(id);
   };
 
-  const loadProviderModels = async (providerId: number, force = false) => {
+  const loadProviderModels = useCallback(async (providerId: number, force = false) => {
     if (!providerId) return;
     if (!force && providerModelsMap[providerId]) return;
 
@@ -486,16 +491,16 @@ export function ModelProvidersPanel({ embedded = false, fixedModel = null }: Mod
         return next;
       });
     }
-  };
+  }, [providerModelsMap]);
 
   const selectedProviderId = form.watch("provider_id");
 
   useEffect(() => {
     if (selectedProviderId && selectedProviderId > 0) {
-      loadProviderModels(selectedProviderId);
+      void loadProviderModels(selectedProviderId);
     }
     setShowProviderModels(false);
-  }, [selectedProviderId]);
+  }, [loadProviderModels, selectedProviderId]);
 
   const sortProviderModels = (providerId: number, query: string): ProviderModel[] => {
     const models = providerModelsMap[providerId] || [];
@@ -524,7 +529,7 @@ export function ModelProvidersPanel({ embedded = false, fixedModel = null }: Mod
   }
 
   return (
-    <div className={`h-full min-h-0 flex flex-col ${embedded ? "p-0" : "p-1"}`}>
+    <div className="h-full min-h-0 flex flex-col">
       <div className="flex flex-col gap-3">
         <div className={headerCardClass}>
           <div className="flex items-center justify-between gap-3">
@@ -586,9 +591,6 @@ export function ModelProvidersPanel({ embedded = false, fixedModel = null }: Mod
                           </span>
                         </div>
                         <div className={`mt-1 flex items-center gap-2 text-muted-foreground ${metaTextClass}`}>
-                          <span className="rounded-full bg-background/70 px-2 py-0.5">
-                            {provider?.Type ?? "未知类型"}
-                          </span>
                           <span className="rounded-full bg-background/70 px-2 py-0.5">
                             权重 {association.Weight}
                           </span>

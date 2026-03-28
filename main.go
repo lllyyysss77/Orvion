@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -19,8 +20,8 @@ import (
 	"github.com/racio/orvion/consts"
 	"github.com/racio/orvion/limiter"
 	"github.com/racio/orvion/models"
+	"github.com/racio/orvion/pkg/logutil"
 	"github.com/racio/orvion/service"
-	"github.com/racio/orvion/service/subscription"
 	_ "golang.org/x/crypto/x509roots/fallback"
 )
 
@@ -91,13 +92,21 @@ func initLogging() {
 		level = slog.LevelError
 	}
 
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+	logWriter := resolveLogWriter()
+	gin.DefaultWriter = logWriter
+	gin.DefaultErrorWriter = logWriter
+
+	slog.SetDefault(slog.New(slog.NewTextHandler(logWriter, &slog.HandlerOptions{
 		Level: level,
 	})))
 
 	if level > slog.LevelDebug {
 		gin.SetMode(gin.ReleaseMode)
 	}
+}
+
+func resolveLogWriter() io.Writer {
+	return logutil.NewSystemLogWriter(os.Stdout)
 }
 
 func main() {
@@ -175,6 +184,6 @@ func resolveShutdownTimeout() time.Duration {
 
 func startBackgroundWorkers(ctx context.Context) {
 	service.StartPriceSync(ctx)
-	subscription.StartCodexOAuthWorker(ctx)
-	subscription.StartCodexOAuthCallbackForwarder(ctx)
+	service.StartSystemLogCleanup(ctx)
+	service.StartModelProviderAutoRecovery(ctx)
 }

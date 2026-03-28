@@ -1,11 +1,8 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-} from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -55,14 +52,13 @@ import {
 } from "@/components/ui/select";
 import { toast } from "sonner";
 import {
+  Boxes,
   ChevronLeft,
   ChevronRight,
   Search,
   Plus,
   Pencil,
   Trash2,
-  RefreshCw,
-  Timer,
   Coins,
   Eye,
   Video,
@@ -154,25 +150,27 @@ const ModelIcon = ({ name }: { name: string }) => {
 
   if (!config) {
     return (
-      <div className="size-12 rounded-full bg-primary/10 text-primary flex items-center justify-center font-semibold text-sm">
+      <div className="size-10 rounded-2xl bg-primary/10 text-primary flex items-center justify-center font-semibold text-sm">
         {fallback}
       </div>
     );
   }
 
   return (
-    <div className="size-12 rounded-full bg-muted/60 flex items-center justify-center">
-      <img src={config.src} alt={config.alt} className="size-6" />
+    <div className="size-10 rounded-2xl bg-muted/60 flex items-center justify-center">
+      <img src={config.src} alt={config.alt} className="size-5" />
     </div>
   );
 };
 
 const formatPrice = (value?: number | null) => {
   if (value == null || !Number.isFinite(value)) {
-    return "--";
+    return "--.--";
   }
-  return `$${value.toFixed(4)}/M`;
+  return value.toFixed(2);
 };
+
+const isModelEnabled = (model: Model) => (model.Status == null ? true : Number(model.Status) === 1);
 
 // 定义表单验证模式
 const formSchema = z.object({
@@ -203,6 +201,7 @@ export default function ModelsPage() {
   const [capabilityFilter, setCapabilityFilter] = useState<string>("all");
   const [providerPanelOpen, setProviderPanelOpen] = useState(false);
   const [providerPanelModel, setProviderPanelModel] = useState<Model | null>(null);
+  const [statusUpdatingIds, setStatusUpdatingIds] = useState<number[]>([]);
 
   // 初始化表单
   const form = useForm<z.infer<typeof formSchema>>({
@@ -230,7 +229,7 @@ export default function ModelsPage() {
     return () => clearTimeout(timer);
   }, [searchInput]);
 
-  const fetchModels = async () => {
+  const fetchModels = useCallback(async () => {
     try {
       setLoading(true);
       const response = await getModels({
@@ -239,7 +238,14 @@ export default function ModelsPage() {
         search: searchTerm || undefined,
         capability: capabilityFilter !== "all" ? capabilityFilter : undefined,
       });
-      setModels(response.data);
+      setModels(
+        [...response.data].sort((left, right) =>
+          left.Name.localeCompare(right.Name, "zh-Hans-CN", {
+            numeric: true,
+            sensitivity: "base",
+          })
+        )
+      );
       setPages(response.pages);
       const totalPages = response.pages || 0;
       if (totalPages > 0 && page > totalPages) {
@@ -254,11 +260,11 @@ export default function ModelsPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [capabilityFilter, page, pageSize, searchTerm]);
 
   useEffect(() => {
-    fetchModels();
-  }, [page, pageSize, searchTerm, capabilityFilter]);
+    void fetchModels();
+  }, [fetchModels]);
 
   const handleCreate = async (values: z.infer<typeof formSchema>) => {
     try {
@@ -355,7 +361,7 @@ export default function ModelsPage() {
 
   const openEditDialog = (model: Model) => {
     setEditingModel(model);
-    const statusEnabled = model.Status == null ? true : Number(model.Status) === 1;
+    const statusEnabled = isModelEnabled(model);
     const rawCapabilities = Array.isArray(model.Capabilities) ? model.Capabilities : [];
     const normalizedCapabilities = rawCapabilities
       .map((item) => item.trim().toLowerCase())
@@ -407,6 +413,24 @@ export default function ModelsPage() {
     const maxPage = Math.max(pages, 1);
     if (nextPage < 1 || nextPage > maxPage) return;
     setPage(nextPage);
+  };
+
+  const handleToggleStatus = async (model: Model, nextStatus: boolean) => {
+    if (statusUpdatingIds.includes(model.ID)) return;
+
+    setStatusUpdatingIds((prev) => [...prev, model.ID]);
+    try {
+      await updateModelStatus(model.ID, nextStatus);
+      setModels((prev) => prev.map((item) => (
+        item.ID === model.ID ? { ...item, Status: nextStatus ? 1 : 0 } : item
+      )));
+      toast.success(`模型 ${model.Name} 已${nextStatus ? "启用" : "停用"}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error(`更新模型状态失败: ${message}`);
+    } finally {
+      setStatusUpdatingIds((prev) => prev.filter((id) => id !== model.ID));
+    }
   };
 
   return (
@@ -483,113 +507,153 @@ export default function ModelsPage() {
           </div>
         </div>
       </div>
-      <div className="flex-1 min-h-0 border rounded-md bg-background shadow-sm">
+      <div className="flex-1 min-h-0 overflow-hidden">
         {loading ? (
           <div className="flex h-full items-center justify-center">
             <Loading message="加载模型列表" />
           </div>
         ) : models.length === 0 ? (
-          <div className="flex h-full items-center justify-center text-muted-foreground">
+          <div className="flex h-full items-center justify-center px-6 text-center text-sm text-muted-foreground">
             暂无模型数据
           </div>
         ) : (
           <div className="h-full flex flex-col">
-            <div className="flex-1 min-h-0 overflow-y-auto p-3">
-              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            <div className="flex-1 min-h-0 overflow-hidden rounded-[28px] border border-border/70 bg-card/88 shadow-[0_18px_50px_rgba(98,71,47,0.08)]">
+              <div className="hidden xl:grid xl:grid-cols-[minmax(0,2.1fr)_9rem_9rem_minmax(11rem,1fr)_9rem_19rem] items-center gap-4 border-b border-border/60 px-5 py-3 text-xs font-medium text-muted-foreground">
+                <div>模型</div>
+                <div className="text-center">输入</div>
+                <div className="text-center">输出</div>
+                <div className="text-center">能力</div>
+                <div className="text-center">状态</div>
+                <div className="text-right">操作</div>
+              </div>
+              <div className="flex-1 min-h-0 overflow-y-auto">
                 {models.map((model) => {
+                  const enabled = isModelEnabled(model);
+                  const statusUpdating = statusUpdatingIds.includes(model.ID);
                   return (
-                    <Card
+                    <div
                       key={model.ID}
-                      role="button"
-                      tabIndex={0}
-                      onClick={() => openProviderPanel(model)}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter" || event.key === " ") {
-                          event.preventDefault();
-                          openProviderPanel(model);
-                        }
-                      }}
-                      className="flex-row items-center gap-3 py-3 px-3 rounded-2xl border border-border/60 bg-card/80 shadow-sm cursor-pointer transition hover:-translate-y-0.5 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+                      className="relative grid gap-4 border-b border-border/50 px-4 py-3 transform-gpu transition-[background-color,transform,box-shadow] duration-200 hover:-translate-y-0.5 hover:scale-[1.004] hover:bg-background hover:shadow-[0_14px_30px_rgba(98,71,47,0.12)] last:border-b-0 xl:grid-cols-[minmax(0,2.1fr)_9rem_9rem_minmax(11rem,1fr)_9rem_19rem] xl:items-center xl:px-5"
                     >
-                      <div className="flex items-center gap-3 flex-1 min-w-0">
-                        <ModelIcon name={model.Name} />
-                        <div className="min-w-0">
-                          <div className="font-semibold truncate">{model.Name}</div>
-                          {model.Remark ? (
-                            <div className="text-[11px] text-muted-foreground truncate" title={model.Remark}>
-                              {model.Remark}
-                            </div>
-                          ) : null}
-                          <div className="mt-2 flex flex-wrap gap-1.5">
-                            {(model.Capabilities && model.Capabilities.length > 0 ? model.Capabilities : ["chat"]).map((capability) => {
-                              const option = capabilityOptions.find((item) => item.value === capability);
-                              if (!option) {
-                                return (
-                                  <span key={capability} className="rounded-full border border-border/60 bg-muted/40 px-2 py-0.5 text-[10px] text-muted-foreground">
-                                    {capability}
-                                  </span>
-                                );
-                              }
-                              const Icon = option.icon;
-                              return (
-                                <span
-                                  key={capability}
-                                  className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium", option.activeClass)}
-                                >
-                                  <Icon className={cn("size-3", option.iconClass)} />
-                                  <span>{option.label}</span>
-                                </span>
-                              );
-                            })}
-                          </div>
-                          <div className="mt-2 flex items-start justify-between gap-4 text-xs text-muted-foreground">
-                            <div className="space-y-1">
-                              <div className="flex items-center gap-2">
-                                <RefreshCw className="size-3 text-blue-500" />
-                                <span>重试次数 {model.MaxRetry}</span>
+                      <div className="min-w-0">
+                        <div className="mb-1 text-[11px] font-medium text-muted-foreground xl:hidden">模型</div>
+                        <div className="flex min-w-0 items-center gap-3">
+                          <ModelIcon name={model.Name} />
+                          <div className="min-w-0">
+                            <div className="truncate text-base font-semibold">{model.Name}</div>
+                            {model.Remark ? (
+                              <div className="mt-1 text-[11px] text-muted-foreground truncate" title={model.Remark}>
+                                {model.Remark}
                               </div>
-                              <div className="flex items-center gap-2">
-                                <Timer className="size-3 text-amber-500" />
-                                <span>超时 {model.TimeOut}s</span>
-                              </div>
-                            </div>
-                            <div className="flex flex-col items-end gap-1 text-[11px] text-muted-foreground">
-                              <div className="flex items-center gap-1">
-                                <Coins className="size-3 text-emerald-500" />
-                                <span className="tabular-nums">输入 {formatPrice(model.InputPrice)}</span>
-                              </div>
-                              <div className="flex items-center gap-1">
-                                <Coins className="size-3 text-emerald-500" />
-                                <span className="tabular-nums">输出 {formatPrice(model.OutputPrice)}</span>
-                              </div>
-                            </div>
+                            ) : null}
                           </div>
                         </div>
                       </div>
-                      <div className="flex flex-col gap-2">
+
+                      <div className="min-w-0 xl:justify-self-center">
+                        <div className="mb-1 text-[11px] font-medium text-muted-foreground xl:hidden">输入</div>
+                        <div className="flex items-center gap-1 text-sm font-medium text-foreground/80 xl:justify-center">
+                          <Coins className="size-3.5 text-emerald-500" />
+                          <span className="tabular-nums">
+                            {formatPrice(model.InputPrice)}$
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="min-w-0 xl:justify-self-center">
+                        <div className="mb-1 text-[11px] font-medium text-muted-foreground xl:hidden">输出</div>
+                        <div className="flex items-center gap-1 text-sm font-medium text-foreground/80 xl:justify-center">
+                          <Coins className="size-3.5 text-emerald-500" />
+                          <span className="tabular-nums">
+                            {formatPrice(model.OutputPrice)}$
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="min-w-0 xl:justify-self-center xl:w-full">
+                        <div className="mb-1 text-[11px] font-medium text-muted-foreground xl:hidden">能力</div>
+                        <div className="flex flex-wrap items-center gap-1.5 xl:justify-center">
+                          {(model.Capabilities && model.Capabilities.length > 0 ? model.Capabilities : ["chat"]).map((capability) => {
+                            const option = capabilityOptions.find((item) => item.value === capability);
+                            if (!option) {
+                              return (
+                                <span key={capability} className="rounded-full border border-border/60 bg-muted/40 px-2 py-0.5 text-[10px] text-muted-foreground">
+                                  {capability}
+                                </span>
+                              );
+                            }
+                            const Icon = option.icon;
+                            return (
+                              <span
+                                key={capability}
+                                className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium", option.activeClass)}
+                              >
+                                <Icon className={cn("size-3", option.iconClass)} />
+                                <span>{option.label}</span>
+                              </span>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      <div className="min-w-0 xl:justify-self-center xl:w-full">
+                        <div className="mb-1 text-[11px] font-medium text-muted-foreground xl:hidden">状态</div>
+                        <div className="flex items-center gap-3 xl:justify-center">
+                          <span
+                            className={cn(
+                              "inline-flex min-w-[52px] items-center justify-center rounded-full border px-2 py-0.5 text-[11px] font-medium",
+                              enabled
+                                ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                                : "border-slate-200 bg-slate-100 text-slate-600"
+                            )}
+                          >
+                            {enabled ? "启用" : "关闭"}
+                          </span>
+                          <Switch
+                            checked={enabled}
+                            disabled={statusUpdating}
+                            onCheckedChange={(checked) => void handleToggleStatus(model, checked)}
+                            aria-label={`${model.Name} 状态切换`}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap items-center justify-start gap-2 xl:justify-self-end xl:justify-end">
                         <Button
                           variant="outline"
-                          size="icon"
-                          className="h-8 w-8"
+                          className="h-9 rounded-full px-4"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            openProviderPanel(model);
+                          }}
+                        >
+                          <Boxes className="h-4 w-4" />
+                          <span>提供商</span>
+                        </Button>
+                        <Button
+                          variant="outline"
+                          className="h-9 rounded-full px-4"
                           onClick={(event) => {
                             event.stopPropagation();
                             openEditDialog(model);
                           }}
                         >
                           <Pencil className="h-4 w-4" />
+                          <span>编辑</span>
                         </Button>
                         <AlertDialog>
                           <AlertDialogTrigger asChild>
                             <Button
                               variant="destructive"
-                              size="icon"
-                              className="h-8 w-8"
+                              className="h-9 rounded-full px-4"
                               onClick={(event) => {
                                 event.stopPropagation();
                                 openDeleteDialog(model.ID);
                               }}
                             >
                               <Trash2 className="h-4 w-4" />
+                              <span>删除</span>
                             </Button>
                           </AlertDialogTrigger>
                           <AlertDialogContent>
@@ -604,7 +668,7 @@ export default function ModelsPage() {
                           </AlertDialogContent>
                         </AlertDialog>
                       </div>
-                    </Card>
+                    </div>
                   );
                 })}
               </div>

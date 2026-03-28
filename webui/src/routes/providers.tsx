@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
@@ -18,8 +18,6 @@ import {
 } from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Checkbox } from "@/components/ui/checkbox";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import {
   Form,
   FormControl,
@@ -42,7 +40,6 @@ import {
 import { Label } from "@/components/ui/label";
 import Loading from "@/components/loading";
 import ProviderConfigEditor, { type ProviderConfigEditorRef } from "@/components/provider-config-editor";
-import iconSvg from "@/assets/icon.svg";
 import {
   getProviders,
   createProvider,
@@ -53,7 +50,7 @@ import {
 } from "@/lib/api";
 import type { Provider, ProviderTemplate, ProviderModel } from "@/lib/api";
 import { toast } from "sonner";
-import { ExternalLink, Pencil, Trash2, Boxes, Plus } from "lucide-react";
+import { ExternalLink, Pencil, Trash2, Boxes, Plus, Copy } from "lucide-react";
 
 const parseConfigJson = (raw?: string | null): Record<string, unknown> | null => {
   if (!raw) return null;
@@ -66,29 +63,10 @@ const parseConfigJson = (raw?: string | null): Record<string, unknown> | null =>
   }
 };
 
-const AUTH_PROVIDER_TYPE_SET = new Set(["iflow", "codex-auths"]);
-
-const isAuthProviderTemplate = (template?: ProviderTemplate, fallbackType?: string): boolean => {
-  if (template?.auth_mode === true) return true;
-  if ((template?.category || "").toLowerCase() === "auth") return true;
-  if (fallbackType) return AUTH_PROVIDER_TYPE_SET.has(fallbackType);
-  return false;
-};
-
-const ensureAuthTemplateConfig = (template?: ProviderTemplate, providerType?: string): string => {
-  if (template?.template) {
-    const parsed = parseConfigJson(template.template);
-    if (parsed) return JSON.stringify(parsed, null, 2);
-  }
-  const fallbackType = providerType || "auth";
-  return JSON.stringify({ auth_mode: fallbackType }, null, 2);
-};
-
 // 定义表单验证模式
 const formSchema = z.object({
   name: z.string().min(1, { message: "提供商名称不能为空" }),
   models_fetch_mode: z.enum(["v1_models", "api_pricing"]),
-  type: z.string().min(1, { message: "提供商类型不能为空" }),
   config: z.string().min(1, { message: "配置不能为空" }),
   console: z.string().optional(),
 });
@@ -111,33 +89,15 @@ export default function ProvidersPage() {
 
   // 筛选条件
   const [nameFilter, setNameFilter] = useState<string>("");
-  const [typeFilter, setTypeFilter] = useState<string>("all");
-  const [availableTypes, setAvailableTypes] = useState<string[]>([]);
-  const providerTypeDisplayMap = new Map(
-    providerTemplates.map((item) => [item.type, item.display_name || item.type])
-  );
 
   // 初始化表单
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
-    defaultValues: { name: "", models_fetch_mode: "v1_models", type: "", config: "", console: "" },
+    defaultValues: { name: "", models_fetch_mode: "v1_models", config: "", console: "" },
   });
-  const selectedProviderType = form.watch("type");
-  const selectedTemplate = providerTemplates.find((item) => item.type === selectedProviderType);
-  const selectedIsAuthType = isAuthProviderTemplate(selectedTemplate, selectedProviderType);
   const getFetchModeBadgeLabel = (mode?: string) => (
     mode === "api_pricing" ? "newapi" : "通用"
   );
-
-  useEffect(() => {
-    fetchProviders();
-    fetchProviderTemplates();
-  }, []);
-
-  // 监听筛选条件变化
-  useEffect(() => {
-    fetchProviders();
-  }, [nameFilter, typeFilter]);
 
   useEffect(() => {
     if (!open) {
@@ -152,57 +112,34 @@ export default function ProvidersPage() {
       2
     );
 
-    const type = selectedProviderType || editingProvider?.Type || "";
-    const cached = type ? configCacheRef.current[type] : undefined;
-
-    let nextConfig = cached;
-
-    if (!nextConfig && editingProvider && editingProvider.Type === type) {
+    let nextConfig = configCacheRef.current.default;
+    if (!nextConfig && editingProvider) {
       nextConfig = editingProvider.Config;
     }
-
-    if (!nextConfig && type) {
-      const template = providerTemplates.find((item) => item.type === type);
-      if (template) {
-        if (isAuthProviderTemplate(template, type)) {
-          nextConfig = ensureAuthTemplateConfig(template, type);
-        } else {
-          const parsedTemplate = parseConfigJson(template.template);
-          nextConfig = parsedTemplate ? JSON.stringify(parsedTemplate, null, 2) : template.template;
-        }
-      }
-    }
-
-    const selectedTemplateMeta = providerTemplates.find((item) => item.type === type);
-    const isAuthType = isAuthProviderTemplate(selectedTemplateMeta, type);
     if (!nextConfig) {
-      nextConfig = isAuthType ? ensureAuthTemplateConfig(selectedTemplateMeta, type) : defaultConfig;
+      const template = providerTemplates[0];
+      const parsedTemplate = parseConfigJson(template?.template);
+      nextConfig = parsedTemplate
+        ? JSON.stringify(parsedTemplate, null, 2)
+        : (template?.template || defaultConfig);
     }
 
-    setStructuredConfigEnabled(!isAuthType);
-    if (type) {
-      configCacheRef.current[type] = nextConfig;
-    }
+    setStructuredConfigEnabled(true);
+    configCacheRef.current.default = nextConfig;
     form.setValue("config", nextConfig);
-    if (isAuthType) {
-      form.setValue("console", "");
-    }
   }, [
     open,
-    selectedProviderType,
     providerTemplates,
     editingProvider,
     form,
   ]);
 
-  const fetchProviders = async () => {
+  const fetchProviders = useCallback(async () => {
     try {
       setLoading(true);
-      // 处理筛选条件，"all"表示不过滤，空字符串表示不过滤
       const name = nameFilter.trim() || undefined;
-      const type = typeFilter === "all" ? undefined : typeFilter;
 
-      const data = await getProviders({ name, type });
+      const data = await getProviders({ name });
       setProviders(data);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -211,28 +148,28 @@ export default function ProvidersPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [nameFilter]);
 
-  const fetchProviderTemplates = async () => {
+  const fetchProviderTemplates = useCallback(async () => {
     try {
       const data = await getProviderTemplates();
       setProviderTemplates(data);
-      const types = data.map((template) => template.type);
-      setAvailableTypes(types);
-
-      if (!form.getValues("type") && types.length > 0) {
-        const firstType = types[0];
-        form.setValue("type", firstType);
-        const firstTemplate = data.find((item) => item.type === firstType);
-        if (firstTemplate) {
-          const parsed = parseConfigJson(firstTemplate.template);
-          form.setValue("config", parsed ? JSON.stringify(parsed, null, 2) : firstTemplate.template);
-        }
+      if (!form.getValues("config") && data.length > 0) {
+        const parsed = parseConfigJson(data[0]?.template);
+        form.setValue("config", parsed ? JSON.stringify(parsed, null, 2) : data[0].template);
       }
     } catch (err) {
       console.error("获取提供商模板失败", err);
     }
-  };
+  }, [form]);
+
+  useEffect(() => {
+    void fetchProviderTemplates();
+  }, [fetchProviderTemplates]);
+
+  useEffect(() => {
+    void fetchProviders();
+  }, [fetchProviders]);
 
   const fetchProviderModels = async (providerId: number) => {
     try {
@@ -261,26 +198,21 @@ export default function ProvidersPage() {
   };
 
   const handleStructuredConfigChange = (nextJson: string) => {
-    if (selectedProviderType) {
-      configCacheRef.current[selectedProviderType] = nextJson;
-    }
+    configCacheRef.current.default = nextJson;
     form.setValue("config", nextJson, { shouldDirty: true, shouldValidate: true });
   };
 
   const handleCreate = async (values: z.infer<typeof formSchema>) => {
     try {
-      const templateMeta = providerTemplates.find((item) => item.type === values.type);
-      const isAuthType = isAuthProviderTemplate(templateMeta, values.type);
       await createProvider({
         name: values.name,
-        type: values.type,
-        config: isAuthType ? ensureAuthTemplateConfig(templateMeta, values.type) : values.config,
-        console: isAuthType ? "" : (values.console || ""),
+        config: values.config,
+        console: values.console || "",
         models_fetch_mode: values.models_fetch_mode,
       });
       setOpen(false);
       toast.success(`提供商 ${values.name} 创建成功`);
-      form.reset({ name: "", models_fetch_mode: "v1_models", type: "", config: "", console: "" });
+      form.reset({ name: "", models_fetch_mode: "v1_models", config: "", console: "" });
       fetchProviders();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -292,19 +224,16 @@ export default function ProvidersPage() {
   const handleUpdate = async (values: z.infer<typeof formSchema>) => {
     if (!editingProvider) return;
     try {
-      const templateMeta = providerTemplates.find((item) => item.type === values.type);
-      const isAuthType = isAuthProviderTemplate(templateMeta, values.type);
       await updateProvider(editingProvider.ID, {
         name: values.name,
-        type: values.type,
-        config: isAuthType ? ensureAuthTemplateConfig(templateMeta, values.type) : values.config,
-        console: isAuthType ? "" : (values.console || ""),
+        config: values.config,
+        console: values.console || "",
         models_fetch_mode: values.models_fetch_mode,
       });
       setOpen(false);
       toast.success(`提供商 ${values.name} 更新成功`);
       setEditingProvider(null);
-      form.reset({ name: "", models_fetch_mode: "v1_models", type: "", config: "", console: "" });
+      form.reset({ name: "", models_fetch_mode: "v1_models", config: "", console: "" });
       fetchProviders();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -334,7 +263,6 @@ export default function ProvidersPage() {
     form.reset({
       name: provider.Name,
       models_fetch_mode: provider.ModelsFetchMode === "api_pricing" ? "api_pricing" : "v1_models",
-      type: provider.Type,
       config: provider.Config,
       console: provider.Console || "",
     });
@@ -349,7 +277,6 @@ export default function ProvidersPage() {
     }
     setEditingProvider(null);
     const firstTemplate = providerTemplates[0];
-    const defaultType = firstTemplate?.type ?? "";
     const defaultConfig = firstTemplate
       ? (() => {
         const parsed = parseConfigJson(firstTemplate.template);
@@ -361,7 +288,6 @@ export default function ProvidersPage() {
     form.reset({
       name: "",
       models_fetch_mode: "v1_models",
-      type: defaultType,
       config: defaultConfig,
       console: "",
     });
@@ -372,13 +298,13 @@ export default function ProvidersPage() {
     setDeleteId(id);
   };
 
-  const hasFilter = nameFilter.trim() !== "" || typeFilter !== "all";
+  const hasFilter = nameFilter.trim() !== "";
   return (
-    <div className="h-full min-h-0 flex flex-col gap-2 p-1">
-      <div className="flex flex-col gap-2 flex-shrink-0">
-        <div className="flex flex-wrap items-start justify-between gap-2">
+    <div className="flex h-full min-h-0 flex-col gap-5">
+      <div className="flex flex-col gap-4 flex-shrink-0">
+        <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
-            <h2 className="text-2xl font-bold tracking-tight">提供商管理</h2>
+            <h2 className="text-3xl font-semibold tracking-tight">提供商管理</h2>
           </div>
           <div className="flex w-full sm:w-auto items-center justify-end gap-2">
             <Label className="sr-only">提供商名称</Label>
@@ -388,20 +314,6 @@ export default function ProvidersPage() {
               onChange={(e) => setNameFilter(e.target.value)}
               className="h-8 w-[160px] text-xs px-2"
             />
-            <Label className="sr-only">类型</Label>
-            <Select value={typeFilter} onValueChange={setTypeFilter}>
-              <SelectTrigger className="h-8 w-[120px] text-xs px-2">
-                <SelectValue placeholder="全部" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">全部</SelectItem>
-                {availableTypes.map((type) => (
-                  <SelectItem key={type} value={type}>
-                    {providerTypeDisplayMap.get(type) || type}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
             <Button
               onClick={openCreateDialog}
               className="h-8 w-full text-xs sm:w-auto"
@@ -412,32 +324,29 @@ export default function ProvidersPage() {
           </div>
         </div>
       </div>
-      <div className="relative flex-1 min-h-0 overflow-hidden rounded-2xl border border-border/70 bg-background shadow-sm">
+      <div className="flex-1 min-h-0 overflow-hidden">
         {loading ? (
-          <div className="relative z-10 flex h-full items-center justify-center">
+          <div className="flex h-full items-center justify-center">
             <Loading message="加载提供商列表" />
           </div>
         ) : providers.length === 0 ? (
-          <div className="relative z-10 flex h-full items-center justify-center text-muted-foreground text-sm text-center px-6">
+          <div className="flex h-full items-center justify-center px-6 text-center text-sm text-muted-foreground">
             {hasFilter ? '未找到匹配的提供商' : '暂无提供商数据'}
           </div>
         ) : (
-          <div className="relative z-10 h-full flex flex-col">
-            <div className="flex-1 min-h-0 overflow-y-auto p-3">
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          <div className="h-full flex flex-col">
+            <div className="flex-1 min-h-0 overflow-y-auto py-1">
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                 {providers.map((provider) => (
                   <div
                     key={provider.ID}
-                    className="group rounded-2xl border border-border/70 bg-card p-4 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md"
+                    className="group rounded-[26px] border border-border/70 bg-card/88 p-5 shadow-[0_18px_50px_rgba(98,71,47,0.08)] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_24px_60px_rgba(98,71,47,0.12)]"
                   >
                     <div className="mb-3 flex items-start justify-between gap-3">
                       <div className="min-w-0">
                         <h3 className="truncate text-sm font-semibold text-foreground" title={provider.Name}>
                           {provider.Name}
                         </h3>
-                        <p className="mt-1 text-xs text-muted-foreground">
-                          {providerTypeDisplayMap.get(provider.Type) || provider.Type || "未知"}
-                        </p>
                       </div>
                       <div className="flex items-center gap-1">
                         <div className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">
@@ -548,189 +457,52 @@ export default function ProvidersPage() {
 
               <FormField
                 control={form.control}
-                name="type"
-                render={({ field }) => {
-                  const currentValue = field.value ?? "";
-                  const hasCurrentValue = providerTemplates.some(
-                    (template) => template.type === currentValue
-                  );
-                  const templateOptions =
-                    !hasCurrentValue && currentValue
-                      ? [
-                        ...providerTemplates,
-                        {
-                          type: currentValue,
-                          template: "",
-                        } as ProviderTemplate,
-                      ]
-                      : providerTemplates;
-                  const apiKeyTemplates = templateOptions.filter(
-                    (item) => !isAuthProviderTemplate(item, item.type)
-                  );
-                  const authTemplates = templateOptions.filter(
-                    (item) => isAuthProviderTemplate(item, item.type)
-                  );
-
-                  return (
-                    <FormItem>
-                      <FormLabel>类型</FormLabel>
-                      <FormControl>
-                        {providerTemplates.length === 0 ? (
-                          <p className="text-sm text-muted-foreground">
-                            暂无可用类型，请先配置模板。
-                          </p>
-                        ) : (
-                          <RadioGroup
-                            value={currentValue}
-                            onValueChange={(value) => field.onChange(value)}
-                            className="space-y-3"
-                          >
-                            {apiKeyTemplates.length > 0 && (
-                              <div className="space-y-2">
-                                <p className="text-xs font-semibold text-muted-foreground">APIKey 类型</p>
-                                <div className="flex flex-wrap gap-2">
-                                  {apiKeyTemplates.map((template) => {
-                                    const radioId = `provider-type-${template.type}`;
-                                    const selected = currentValue === template.type;
-                                    const displayName = template.display_name || template.type;
-                                    return (
-                                      <label
-                                        key={template.type}
-                                        htmlFor={radioId}
-                                        className={`flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm ${selected
-                                          ? "border-primary bg-primary/10"
-                                          : "border-border"
-                                          }`}
-                                      >
-                                        <RadioGroupItem
-                                          id={radioId}
-                                          value={template.type}
-                                          className="sr-only"
-                                        />
-                                        <Checkbox
-                                          checked={selected}
-                                          aria-hidden="true"
-                                          tabIndex={-1}
-                                          className="pointer-events-none"
-                                        />
-                                        <span className="select-none">{displayName}</span>
-                                      </label>
-                                    );
-                                  })}
-                                </div>
-                              </div>
-                            )}
-                            {authTemplates.length > 0 && (
-                              <div className="space-y-2">
-                                <p className="text-xs font-semibold text-muted-foreground">Auth 类型</p>
-                                <div className="flex flex-wrap gap-2">
-                                  {authTemplates.map((template) => {
-                                    const radioId = `provider-type-${template.type}`;
-                                    const selected = currentValue === template.type;
-                                    const displayName = template.display_name || template.type;
-                                    return (
-                                      <label
-                                        key={template.type}
-                                        htmlFor={radioId}
-                                        className={`flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm ${selected
-                                          ? "border-primary bg-primary/10"
-                                          : "border-border"
-                                          }`}
-                                      >
-                                        <RadioGroupItem
-                                          id={radioId}
-                                          value={template.type}
-                                          className="sr-only"
-                                        />
-                                        <Checkbox
-                                          checked={selected}
-                                          aria-hidden="true"
-                                          tabIndex={-1}
-                                          className="pointer-events-none"
-                                        />
-                                        <span className="select-none">{displayName}</span>
-                                      </label>
-                                    );
-                                  })}
-                                </div>
-                              </div>
-                            )}
-                          </RadioGroup>
-                        )}
-                      </FormControl>
-                      {!hasCurrentValue && currentValue && (
-                        <p className="text-xs text-muted-foreground">
-                          当前提供商类型{" "}
-                          <span className="font-mono">{currentValue}</span>{" "}
-                          不在模板列表中，可继续使用或选择其他类型。
-                        </p>
+                name="config"
+                render={({ field }) => (
+                  <FormItem>
+                    <div className="flex items-center justify-between gap-2">
+                      <FormLabel>配置</FormLabel>
+                      {structuredConfigEnabled && (
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => providerConfigEditorRef.current?.addItem()}
+                        >
+                          <Plus className="size-4" />
+                          添加字段
+                        </Button>
                       )}
-                      <FormMessage />
-                    </FormItem>
-                  );
-                }}
+                    </div>
+                    {structuredConfigEnabled ? (
+                      <ProviderConfigEditor
+                        ref={providerConfigEditorRef}
+                        value={field.value}
+                        onChange={handleStructuredConfigChange}
+                      />
+                    ) : (
+                      <FormControl>
+                        <Textarea {...field} className="resize-none w-full max-w-full min-w-0 whitespace-pre-wrap break-all overflow-x-auto [field-sizing:fixed]" />
+                      </FormControl>
+                    )}
+                    <FormMessage />
+                  </FormItem>
+                )}
               />
 
-              {!selectedIsAuthType && (
-                <>
-                  <FormField
-                    control={form.control}
-                    name="config"
-                    render={({ field }) => (
-                      <FormItem>
-                        <div className="flex items-center justify-between gap-2">
-                          <FormLabel>配置</FormLabel>
-                          {structuredConfigEnabled && (
-                            <Button
-                              type="button"
-                              variant="secondary"
-                              size="sm"
-                              onClick={() => providerConfigEditorRef.current?.addItem()}
-                            >
-                              <Plus className="size-4" />
-                              添加字段
-                            </Button>
-                          )}
-                        </div>
-                        {structuredConfigEnabled ? (
-                          <ProviderConfigEditor
-                            ref={providerConfigEditorRef}
-                            value={field.value}
-                            onChange={handleStructuredConfigChange}
-                            providerType={selectedProviderType}
-                          />
-                        ) : (
-                          <FormControl>
-                            {/* 避免 api_key 等超长字段撑破弹窗宽度 */}
-                            <Textarea {...field} className="resize-none w-full max-w-full min-w-0 whitespace-pre-wrap break-all overflow-x-auto [field-sizing:fixed]" />
-                          </FormControl>
-                        )}
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-
-                  <FormField
-                    control={form.control}
-                    name="console"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>控制台地址</FormLabel>
-                        <FormControl>
-                          <Input {...field} placeholder="https://example.com/console" />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-
-                </>
-              )}
-              {selectedIsAuthType && (
-                <div className="rounded-md border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
-                  Auth 类型将自动使用订阅凭据，不需要手动填写 APIKey、URL 和 Console。
-                </div>
-              )}
+              <FormField
+                control={form.control}
+                name="console"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>控制台地址</FormLabel>
+                    <FormControl>
+                      <Input {...field} placeholder="https://example.com/console" />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
 
               <DialogFooter>
                 <Button type="button" variant="outline" onClick={() => setOpen(false)}>
@@ -818,11 +590,7 @@ export default function ProvidersPage() {
                               onClick={() => copyModelName(model.id)}
                               className="min-w-12 gap-2 px-2"
                             >
-                              <img
-                                src={iconSvg}
-                                alt="复制"
-                                className="h-4 w-4 opacity-80"
-                              />
+                              <Copy className="h-4 w-4" />
                             </Button>
                           </TooltipTrigger>
                         </Tooltip>

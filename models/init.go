@@ -4,14 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"github.com/racio/orvion/consts"
+	"github.com/racio/orvion/pkg/logutil"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 )
 
 var DB *gorm.DB
@@ -34,7 +38,9 @@ func Init(ctx context.Context, dsn string) {
 	if err != nil {
 		panic(err)
 	}
-	db, err := gorm.Open(dialector, &gorm.Config{})
+	db, err := gorm.Open(dialector, &gorm.Config{
+		Logger: newGormLogger(),
+	})
 	if err != nil {
 		panic(err)
 	}
@@ -88,6 +94,12 @@ func Init(ctx context.Context, dsn string) {
 		if !DB.Migrator().HasColumn(&ChatLog{}, "cached_tokens") {
 			_ = DB.Migrator().AddColumn(&ChatLog{}, "CachedTokens")
 		}
+		if !DB.Migrator().HasColumn(&ChatLog{}, "model_with_provider_id") {
+			_ = DB.Migrator().AddColumn(&ChatLog{}, "ModelWithProviderID")
+		}
+		if !DB.Migrator().HasIndex(&ChatLog{}, "ModelWithProviderID") {
+			_ = DB.Migrator().CreateIndex(&ChatLog{}, "ModelWithProviderID")
+		}
 	}
 	if DB.Migrator().HasTable(&Model{}) {
 		if !DB.Migrator().HasColumn(&Model{}, "capabilities") {
@@ -100,6 +112,17 @@ func Init(ctx context.Context, dsn string) {
 		}
 		if _, err := gorm.G[Provider](DB).Where("models_fetch_mode IS NULL OR models_fetch_mode = ''").Update(ctx, "models_fetch_mode", "v1_models"); err != nil {
 			// 忽略错误
+		}
+		if DB.Migrator().HasColumn(&Provider{}, "type") {
+			_ = DB.Migrator().DropColumn(&Provider{}, "type")
+		}
+	}
+	if DB.Migrator().HasTable(&ModelWithProvider{}) {
+		if !DB.Migrator().HasColumn(&ModelWithProvider{}, "auto_disabled_until") {
+			_ = DB.Migrator().AddColumn(&ModelWithProvider{}, "AutoDisabledUntil")
+		}
+		if !DB.Migrator().HasIndex(&ModelWithProvider{}, "AutoDisabledUntil") {
+			_ = DB.Migrator().CreateIndex(&ModelWithProvider{}, "AutoDisabledUntil")
 		}
 	}
 
@@ -143,6 +166,19 @@ func Init(ctx context.Context, dsn string) {
 			  )
 		`).Error
 	}
+}
+
+func newGormLogger() gormlogger.Interface {
+	writer := logutil.NewSystemLogWriter(os.Stdout)
+	return gormlogger.New(
+		log.New(writer, "", log.LstdFlags),
+		gormlogger.Config{
+			SlowThreshold:             200 * time.Millisecond,
+			LogLevel:                  gormlogger.Warn,
+			IgnoreRecordNotFoundError: false,
+			Colorful:                  false,
+		},
+	)
 }
 
 const sqliteScheme = "sqlite://"

@@ -6,7 +6,6 @@ const API_BASE = '/api';
 export interface Provider {
   ID: number;
   Name: string;
-  Type: string;
   Config: string;
   Console: string;
   ModelsFetchMode?: "v1_models" | "api_pricing" | string;
@@ -85,106 +84,6 @@ export interface AuthKey {
   LastUsedAt: string | null;
 }
 
-export interface CodexSubscription {
-  id: string;
-  file_name: string;
-  email?: string;
-  plan_type?: string;
-  account_id?: string;
-  subscription_active_start?: string;
-  subscription_active_until?: string;
-  last_refresh?: string;
-  expired?: string;
-  created_at?: string;
-  updated_at?: string;
-}
-
-export interface IFlowSubscription {
-  id: string;
-  file_name: string;
-  email?: string;
-  expired?: string;
-  last_refresh?: string;
-  type?: string;
-  created_at?: string;
-  updated_at?: string;
-}
-
-export interface IFlowModel {
-  id: string;
-  object?: string;
-  created?: number;
-  owned_by?: string;
-  type?: string;
-  display_name?: string;
-}
-
-export interface IFlowOAuthStartResult {
-  state: string;
-  auth_url: string;
-  expires_at: string;
-}
-
-export interface IFlowOAuthStatusResult {
-  state: string;
-  status: "wait" | "ok" | "error";
-  message?: string;
-  credential?: IFlowSubscription;
-}
-
-export interface CodexOAuthStartResult {
-  state: string;
-  auth_url: string;
-  expires_at: string;
-}
-
-export interface CodexOAuthStatusResult {
-  state: string;
-  status: "wait" | "ok" | "error";
-  message?: string;
-  credential?: CodexSubscription;
-}
-
-export interface CodexModel {
-  id: string;
-  object: string;
-  created: number;
-  owned_by: string;
-}
-
-export interface CodexQuotaWindow {
-  id: string;
-  label: string;
-  used_percent?: number;
-  remaining_percent?: number;
-  limit_window_seconds?: number;
-  reset_after_seconds?: number;
-  reset_at?: string;
-  reset_label?: string;
-}
-
-export interface CodexSubscriptionQuota {
-  subscription_id: string;
-  model: string;
-  probe_url: string;
-  http_status: number;
-  plan_type?: string;
-  windows?: CodexQuotaWindow[];
-  request_limit?: number;
-  request_remaining?: number;
-  request_reset?: string;
-  request_reset_at?: string;
-  token_limit?: number;
-  token_remaining?: number;
-  token_reset?: string;
-  token_reset_at?: string;
-  reset_time?: string;
-  reset_at?: string;
-  message?: string;
-  source?: string;
-  raw_rate_limit_hints?: unknown[];
-}
-
 const toBoolean = (value: unknown): boolean => value === true || value === 1 || value === "1";
 
 const parseRecordStringString = (value: unknown): Record<string, string> => {
@@ -217,23 +116,31 @@ const parseStringArray = (value: unknown): string[] => {
   }
 };
 
-const normalizeAuthKey = (raw: any): AuthKey => {
-  const allowAll = toBoolean(raw?.AllowAll);
+const asRecord = (value: unknown): Record<string, unknown> => (
+  value && typeof value === "object" ? value as Record<string, unknown> : {}
+);
+
+const normalizeAuthKey = (raw: unknown): AuthKey => {
+  const record = asRecord(raw);
+  const allowAll = toBoolean(record.AllowAll);
   return {
-    ...raw,
-    Status: toBoolean(raw?.Status),
+    ...record,
+    Status: toBoolean(record.Status),
     AllowAll: allowAll,
-    Models: allowAll ? [] : parseStringArray(raw?.Models),
-    RpmLimit: typeof raw?.RpmLimit === "number" ? raw.RpmLimit : 0,
+    Models: allowAll ? [] : parseStringArray(record.Models),
+    RpmLimit: typeof record.RpmLimit === "number" ? record.RpmLimit : 0,
   } as AuthKey;
 };
 
-const normalizeModelWithProvider = (raw: any): ModelWithProvider => ({
-  ...raw,
-  WithHeader: toBoolean(raw?.WithHeader),
-  Status: raw?.Status == null ? null : toBoolean(raw?.Status),
-  CustomerHeaders: parseRecordStringString(raw?.CustomerHeaders),
-});
+const normalizeModelWithProvider = (raw: unknown): ModelWithProvider => {
+  const record = asRecord(raw);
+  return {
+    ...record,
+    WithHeader: toBoolean(record.WithHeader),
+    Status: record.Status == null ? null : toBoolean(record.Status),
+    CustomerHeaders: parseRecordStringString(record.CustomerHeaders),
+  } as ModelWithProvider;
+};
 
 export interface SystemConfig {
   enable_smart_routing: boolean;
@@ -358,72 +265,13 @@ export async function getAuthKeySummary(): Promise<AuthKeySummary> {
   return authKeyRequest<AuthKeySummary>('/auth-key/summary');
 }
 
-export async function getCodexSubscriptions(): Promise<CodexSubscription[]> {
-  return apiRequest<CodexSubscription[]>('/codex/subscriptions');
-}
-
-export async function getIFlowSubscriptions(): Promise<IFlowSubscription[]> {
-  return apiRequest<IFlowSubscription[]>('/iflow/subscriptions');
-}
-
-export async function getIFlowSubscriptionModels(id: string): Promise<IFlowModel[]> {
-  return apiRequest<IFlowModel[]>(`/iflow/subscriptions/${encodeURIComponent(id)}/models`);
-}
-
-export async function startIFlowOAuth(): Promise<IFlowOAuthStartResult> {
-  return apiRequest<IFlowOAuthStartResult>('/iflow/oauth/start');
-}
-
-export async function getIFlowOAuthStatus(state: string): Promise<IFlowOAuthStatusResult> {
-  const params = new URLSearchParams({ state });
-  return apiRequest<IFlowOAuthStatusResult>(`/iflow/oauth/status?${params.toString()}`);
-}
-
-export async function addIFlowSubscriptionByCookie(cookie: string): Promise<IFlowSubscription> {
-  return apiRequest<IFlowSubscription>('/iflow/subscriptions/cookie', {
-    method: 'POST',
-    body: JSON.stringify({ cookie }),
-  });
-}
-
-export async function deleteIFlowSubscription(id: string): Promise<{ id: string }> {
-  return apiRequest<{ id: string }>(`/iflow/subscriptions/${encodeURIComponent(id)}`, {
-    method: 'DELETE',
-  });
-}
-
-export async function startCodexOAuth(): Promise<CodexOAuthStartResult> {
-  return apiRequest<CodexOAuthStartResult>('/codex/oauth/start');
-}
-
-export async function getCodexOAuthStatus(state: string): Promise<CodexOAuthStatusResult> {
-  const params = new URLSearchParams({ state });
-  return apiRequest<CodexOAuthStatusResult>(`/codex/oauth/status?${params.toString()}`);
-}
-
-export async function deleteCodexSubscription(id: string): Promise<{ id: string }> {
-  return apiRequest<{ id: string }>(`/codex/subscriptions/${encodeURIComponent(id)}`, {
-    method: 'DELETE',
-  });
-}
-
-export async function getCodexSubscriptionModels(id: string): Promise<CodexModel[]> {
-  return apiRequest<CodexModel[]>(`/codex/subscriptions/${encodeURIComponent(id)}/models`);
-}
-
-export async function getCodexSubscriptionQuota(id: string): Promise<CodexSubscriptionQuota> {
-  return apiRequest<CodexSubscriptionQuota>(`/codex/subscriptions/${encodeURIComponent(id)}/quota`);
-}
-
 // Provider API functions
 export async function getProviders(filters: {
   name?: string;
-  type?: string;
 } = {}): Promise<Provider[]> {
   const params = new URLSearchParams();
 
   if (filters.name) params.append("name", filters.name);
-  if (filters.type) params.append("type", filters.type);
 
   const queryString = params.toString();
   const endpoint = queryString ? `/providers?${queryString}` : '/providers';
@@ -433,7 +281,6 @@ export async function getProviders(filters: {
 
 export async function createProvider(provider: {
   name: string;
-  type: string;
   config: string;
   console: string;
   models_fetch_mode?: "v1_models" | "api_pricing";
@@ -446,7 +293,6 @@ export async function createProvider(provider: {
 
 export async function updateProvider(id: number, provider: {
   name?: string;
-  type?: string;
   config?: string;
   console?: string;
   models_fetch_mode?: "v1_models" | "api_pricing";
@@ -565,7 +411,7 @@ export async function getAuthKeys(params: {
   if (params.search) searchParams.append("search", params.search);
 
   const queryString = searchParams.toString();
-  const res = await apiRequest<PaginatedResponse<any>>(queryString ? `/auth-keys?${queryString}` : "/auth-keys");
+  const res = await apiRequest<PaginatedResponse<Record<string, unknown>>>(queryString ? `/auth-keys?${queryString}` : "/auth-keys");
   return {
     ...res,
     data: (res.data ?? []).map(normalizeAuthKey),
@@ -582,7 +428,7 @@ export async function getAuthKeysList(): Promise<AuthKeyItem[]> {
 }
 
 export async function createAuthKey(payload: AuthKeyPayload): Promise<AuthKey> {
-  const res = await apiRequest<any>("/auth-keys", {
+  const res = await apiRequest<Record<string, unknown>>("/auth-keys", {
     method: "POST",
     body: JSON.stringify(payload),
   });
@@ -590,7 +436,7 @@ export async function createAuthKey(payload: AuthKeyPayload): Promise<AuthKey> {
 }
 
 export async function updateAuthKey(id: number, payload: AuthKeyPayload): Promise<AuthKey> {
-  const res = await apiRequest<any>(`/auth-keys/${id}`, {
+  const res = await apiRequest<Record<string, unknown>>(`/auth-keys/${id}`, {
     method: "PUT",
     body: JSON.stringify(payload),
   });
@@ -604,7 +450,7 @@ export async function deleteAuthKey(id: number): Promise<void> {
 }
 
 export async function toggleAuthKeyStatus(id: number): Promise<AuthKey> {
-  const res = await apiRequest<any>(`/auth-keys/${id}/status`, {
+  const res = await apiRequest<Record<string, unknown>>(`/auth-keys/${id}/status`, {
     method: "PATCH",
   });
   return normalizeAuthKey(res);
@@ -612,7 +458,7 @@ export async function toggleAuthKeyStatus(id: number): Promise<AuthKey> {
 
 // Model-Provider API functions
 export async function getModelProviders(modelId: number): Promise<ModelWithProvider[]> {
-  const res = await apiRequest<any[]>(`/model-providers?model_id=${modelId}`);
+  const res = await apiRequest<Record<string, unknown>[]>(`/model-providers?model_id=${modelId}`);
   return (res ?? []).map(normalizeModelWithProvider);
 }
 
@@ -660,7 +506,7 @@ export async function createModelProvider(association: {
   customer_headers: Record<string, string>;
   weight: number;
 }): Promise<ModelWithProvider> {
-  const res = await apiRequest<any>('/model-providers', {
+  const res = await apiRequest<Record<string, unknown>>('/model-providers', {
     method: 'POST',
     body: JSON.stringify(association),
   });
@@ -675,7 +521,7 @@ export async function updateModelProvider(id: number, association: {
   customer_headers?: Record<string, string>;
   weight?: number;
 }): Promise<ModelWithProvider> {
-  const res = await apiRequest<any>(`/model-providers/${id}`, {
+  const res = await apiRequest<Record<string, unknown>>(`/model-providers/${id}`, {
     method: 'PUT',
     body: JSON.stringify(association),
   });
@@ -683,7 +529,7 @@ export async function updateModelProvider(id: number, association: {
 }
 
 export async function updateModelProviderStatus(id: number, status: boolean): Promise<ModelWithProvider> {
-  const res = await apiRequest<any>(`/model-providers/${id}/status`, {
+  const res = await apiRequest<Record<string, unknown>>(`/model-providers/${id}/status`, {
     method: 'PATCH',
     body: JSON.stringify({ status }),
   });
@@ -755,13 +601,25 @@ export async function getProjectCounts(): Promise<ProjectCount[]> {
 }
 
 // Test API functions
-export async function testModelProvider(id: number): Promise<any> {
-  return apiRequest<any>(`/test/${id}`);
+export type ProviderConnectivityTestResult = {
+  error?: string;
+  message?: string;
+} | null;
+
+export async function testModelProvider(id: number): Promise<ProviderConnectivityTestResult> {
+  const result = await apiRequest<unknown>(`/test/${id}`);
+  const record = asRecord(result);
+  if (typeof record.error === "string" || typeof record.message === "string") {
+    return {
+      error: typeof record.error === "string" ? record.error : undefined,
+      message: typeof record.message === "string" ? record.message : undefined,
+    };
+  }
+  return null;
 }
 
 // Provider Templates API functions
 export interface ProviderTemplate {
-  type: string;
   display_name?: string;
   category?: "apikey" | "auth" | string;
   auth_mode?: boolean;
@@ -841,11 +699,16 @@ export interface ModelPriceSyncConfig {
   source_url: string;
 }
 
+export interface SystemLogCleanupConfig {
+  enabled: boolean;
+  interval_minutes: number;
+}
+
 export const configAPI = {
   getConfig: (key: string) =>
     apiRequest<ConfigResponse>(`/config/${key}`),
 
-  updateConfig: (key: string, data: any) =>
+  updateConfig: (key: string, data: unknown) =>
     apiRequest<ConfigResponse>(`/config/${key}`, {
       method: 'PUT',
       body: JSON.stringify({ value: JSON.stringify(data) }),
@@ -922,6 +785,15 @@ export interface LogsResponse {
   pages: number;
 }
 
+export interface SystemLogSnapshot {
+  path: string;
+  exists: boolean;
+  size: number;
+  updated_at?: string;
+  content: string;
+  lines: number;
+}
+
 export interface RequestAmountPoint {
   hour: number;
   requests: number;
@@ -977,6 +849,18 @@ export async function getLogs(
   if (filters.authKeyId) params.append("auth_key_id", filters.authKeyId);
 
   return apiRequest<LogsResponse>(`/logs?${params.toString()}`);
+}
+
+export async function getSystemLogs(limit: number = 200): Promise<SystemLogSnapshot> {
+  const params = new URLSearchParams();
+  params.append("limit", String(limit));
+  return apiRequest<SystemLogSnapshot>(`/system-logs?${params.toString()}`);
+}
+
+export async function clearSystemLogs(): Promise<{ path: string }> {
+  return apiRequest<{ path: string }>('/system-logs/clear', {
+    method: 'POST',
+  });
 }
 
 export async function getRequestAmountTrend(): Promise<RequestAmountSummary> {
@@ -1092,21 +976,19 @@ export interface ModelHealth {
   successRate: number; // 0-100 之间
   avgResponseTimeMs: number;
   lastCheck: string;
-  lastError?: string;
+  autoDisabledUntil?: string;
   requestBlocks: ModelHealthRequestBlock[]; // 最近100次请求，从旧到新
 }
 
 export interface ProviderHealth {
   id: number;
   name: string;
-  type: string;
   status: "healthy" | "degraded" | "unhealthy" | "unknown";
   lastCheck: string;
   responseTimeMs: number;
   errorRate: number;
   totalRequests: number;
   failedRequests: number;
-  lastError?: string;
   models: ModelHealth[]; // 该提供商下的模型列表
 }
 

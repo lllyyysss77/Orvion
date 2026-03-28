@@ -12,13 +12,17 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/racio/orvion/handler"
 	adminhandler "github.com/racio/orvion/handler/admin"
-	codexhandler "github.com/racio/orvion/handler/codex"
-	iflowhandler "github.com/racio/orvion/handler/iflow"
 	"github.com/racio/orvion/middleware"
 )
 
 func buildRouter(token string) *gin.Engine {
-	router := gin.Default()
+	router := gin.New()
+	router.Use(
+		gin.LoggerWithConfig(gin.LoggerConfig{
+			Skip: shouldSkipAccessLog,
+		}),
+		gin.Recovery(),
+	)
 	router.Use(gzip.Gzip(gzip.DefaultCompression, gzip.WithExcludedPaths([]string{"/v1"})))
 
 	configureTrustedProxies(router)
@@ -27,13 +31,35 @@ func buildRouter(token string) *gin.Engine {
 	authOpenAI := middleware.AuthOpenAI(token)
 	authAnthropic := middleware.AuthAnthropic(token)
 
-	registerCodexAndIFlowRoutes(router, authOpenAI)
 	registerUnifiedRoutes(router, authOpenAI, authAnthropic)
 	registerAuthKeySummaryRoutes(router, authOpenAI)
 	registerAdminAPIRoutes(router, token)
 	setWebUIRoutes(router)
 
 	return router
+}
+
+func shouldSkipAccessLog(c *gin.Context) bool {
+	path := c.Request.URL.Path
+
+	if path == "" {
+		return false
+	}
+
+	if path == "/api/system-logs" {
+		return true
+	}
+
+	if strings.HasPrefix(path, "/assets/") {
+		return true
+	}
+
+	switch c.Request.Method {
+	case http.MethodGet, http.MethodHead:
+		return shouldServeSPA(path)
+	default:
+		return false
+	}
 }
 
 func configureTrustedProxies(router *gin.Engine) {
@@ -78,20 +104,6 @@ func registerPublicRoutes(router *gin.Engine) {
 	// API 健康检查接口（无需认证，为了兼容前端）
 	router.GET("/api/health/detail", handler.GetSystemHealthDetail)
 
-	// OAuth 回调（无需认证）
-	router.GET("/codex/callback", codexhandler.CodexOAuthCallback)
-	router.GET("/iflow/callback", iflowhandler.IFlowOAuthCallback)
-}
-
-func registerCodexAndIFlowRoutes(router *gin.Engine, authOpenAI gin.HandlerFunc) {
-	// codex 官方直连接口
-	codexAPI := router.Group("/codex/v1", authOpenAI)
-	codexAPI.POST("/responses", codexhandler.CodexAPIResponsesHandler)
-	codexAPI.POST("/responses/compact", codexhandler.CodexAPIResponsesCompactHandler)
-
-	// iflow 官方直连接口
-	iflowV1 := router.Group("/iflow/v1", authOpenAI)
-	iflowV1.POST("/chat/completions", iflowhandler.IFlowAPIChatCompletionsHandler)
 }
 
 func registerUnifiedRoutes(router *gin.Engine, authOpenAI gin.HandlerFunc, authAnthropic gin.HandlerFunc) {
@@ -124,8 +136,6 @@ func registerAdminAPIRoutes(router *gin.Engine, token string) {
 	registerModelProviderRoutes(api)
 	registerSystemRoutes(api)
 	registerAuthKeyRoutes(api)
-	registerCodexRoutes(api)
-	registerIFlowRoutes(api)
 	registerConfigRoutes(api)
 	registerLimiterRoutes(api)
 	registerTestRoutes(api)
@@ -171,6 +181,8 @@ func registerSystemRoutes(api *gin.RouterGroup) {
 	api.GET("/version", handler.GetVersion)
 	api.GET("/logs", adminhandler.GetRequestLogs)
 	api.GET("/logs/:id/chat-io", adminhandler.GetChatIO)
+	api.GET("/system-logs", adminhandler.GetSystemLogs)
+	api.POST("/system-logs/clear", adminhandler.ClearSystemLogs)
 	api.GET("/user-agents", adminhandler.GetUserAgents)
 	api.POST("/logs/cleanup", adminhandler.CleanLogs)
 }
@@ -182,24 +194,6 @@ func registerAuthKeyRoutes(api *gin.RouterGroup) {
 	api.PUT("/auth-keys/:id", handler.UpdateAuthKey)
 	api.PATCH("/auth-keys/:id/status", handler.ToggleAuthKeyStatus)
 	api.DELETE("/auth-keys/:id", handler.DeleteAuthKey)
-}
-
-func registerCodexRoutes(api *gin.RouterGroup) {
-	api.GET("/codex/oauth/start", codexhandler.StartCodexSubscriptionOAuth)
-	api.GET("/codex/oauth/status", codexhandler.GetCodexSubscriptionOAuthStatus)
-	api.GET("/codex/subscriptions", codexhandler.ListCodexSubscriptions)
-	api.DELETE("/codex/subscriptions/:id", codexhandler.DeleteCodexSubscription)
-	api.GET("/codex/subscriptions/:id/models", codexhandler.GetCodexSubscriptionModels)
-	api.GET("/codex/subscriptions/:id/quota", codexhandler.GetCodexSubscriptionQuota)
-}
-
-func registerIFlowRoutes(api *gin.RouterGroup) {
-	api.GET("/iflow/oauth/start", iflowhandler.StartIFlowOAuth)
-	api.GET("/iflow/oauth/status", iflowhandler.GetIFlowOAuthStatus)
-	api.GET("/iflow/subscriptions", iflowhandler.ListIFlowSubscriptions)
-	api.GET("/iflow/subscriptions/:id/models", iflowhandler.GetIFlowSubscriptionModels)
-	api.POST("/iflow/subscriptions/cookie", iflowhandler.AddIFlowSubscriptionByCookie)
-	api.DELETE("/iflow/subscriptions/:id", iflowhandler.DeleteIFlowSubscription)
 }
 
 func registerConfigRoutes(api *gin.RouterGroup) {
@@ -247,10 +241,6 @@ func shouldServeSPA(path string) bool {
 	case path == "/api", strings.HasPrefix(path, "/api/"):
 		return false
 	case path == "/v1", strings.HasPrefix(path, "/v1/"):
-		return false
-	case path == "/codex", strings.HasPrefix(path, "/codex/"):
-		return false
-	case path == "/iflow", strings.HasPrefix(path, "/iflow/"):
 		return false
 	case path == "/auth-key", strings.HasPrefix(path, "/auth-key/"):
 		return false

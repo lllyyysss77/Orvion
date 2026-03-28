@@ -33,7 +33,7 @@ const highlightCodeHtml = (value: string, lang: Exclude<CodeLang, "bash">): stri
   }
 
   if (lang === "toml" || lang === "env") {
-    html = html.replace(/^([\w.\-\[\]]+)(\s*=)/gm, `<span class="text-[#d26f4b]">$1</span>$2`);
+    html = html.replace(/^([^=\s]+)(\s*=)/gm, `<span class="text-[#d26f4b]">$1</span>$2`);
     if (lang === "toml") {
       html = html.replace(/^\[([^\]\n]+)\]/gm, `<span class="text-[#d26f4b]">[$1]</span>`);
     }

@@ -36,7 +36,7 @@ type ModelHealth struct {
 	SuccessRate       float64                   `json:"successRate"`
 	AvgResponseTimeMs float64                   `json:"avgResponseTimeMs"`
 	LastCheck         string                    `json:"lastCheck"`
-	LastError         *string                   `json:"lastError,omitempty"`
+	AutoDisabledUntil *string                   `json:"autoDisabledUntil,omitempty"`
 	RequestBlocks     []ModelHealthRequestBlock `json:"requestBlocks"`
 }
 
@@ -44,14 +44,12 @@ type ModelHealth struct {
 type ProviderHealth struct {
 	ID             int           `json:"id"`
 	Name           string        `json:"name"`
-	Type           string        `json:"type"`
 	Status         string        `json:"status"`
 	LastCheck      string        `json:"lastCheck"`
 	ResponseTimeMs int           `json:"responseTimeMs"`
 	ErrorRate      float64       `json:"errorRate"`
 	TotalRequests  int           `json:"totalRequests"`
 	FailedRequests int           `json:"failedRequests"`
-	LastError      *string       `json:"lastError,omitempty"`
 	Models         []ModelHealth `json:"models"`
 }
 
@@ -442,7 +440,6 @@ WHERE rn <= 100
 		healthByProviderID[p.ID] = &ProviderHealth{
 			ID:        int(p.ID),
 			Name:      p.Name,
-			Type:      p.Type,
 			Status:    "unknown",
 			LastCheck: now.UTC().Format(time.RFC3339),
 			Models:    []ModelHealth{},
@@ -471,11 +468,13 @@ WHERE rn <= 100
 			LastCheck:     now.UTC().Format(time.RFC3339),
 			RequestBlocks: []ModelHealthRequestBlock{},
 		}
+		if mp.AutoDisabledUntil != nil && mp.AutoDisabledUntil.After(now) {
+			autoDisabledUntil := mp.AutoDisabledUntil.UTC().Format(time.RFC3339)
+			modelHealth.AutoDisabledUntil = &autoDisabledUntil
+		}
 
 		modelHealth.TotalRequests = len(rows)
 		totalResponseTime := 0.0
-		var latestErrAt time.Time
-		var latestErr string
 
 		// blocks 需要从旧到新
 		if len(rows) > 0 {
@@ -494,10 +493,6 @@ WHERE rn <= 100
 			isSuccess := r.Status == "success"
 			if !isSuccess {
 				modelHealth.FailedRequests++
-				if latestErrAt.IsZero() || r.CreatedAt.After(latestErrAt) {
-					latestErrAt = r.CreatedAt
-					latestErr = r.Error
-				}
 			}
 			modelHealth.RequestBlocks = append(modelHealth.RequestBlocks, ModelHealthRequestBlock{
 				Success:   isSuccess,
@@ -519,9 +514,6 @@ WHERE rn <= 100
 			} else {
 				modelHealth.Status = "healthy"
 			}
-		}
-		if latestErrAt.IsZero() == false && latestErr != "" {
-			modelHealth.LastError = stringPtr(latestErr)
 		}
 
 		ph := healthByProviderID[mp.ProviderID]

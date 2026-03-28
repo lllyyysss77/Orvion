@@ -64,7 +64,7 @@ func VideosHandler(c *gin.Context) {
 	chatHandler(c, service.BeforerOpenAIMedia, service.ProcesserOpenAI, consts.StyleOpenAI, consts.StyleOpenAI, "videos")
 }
 
-func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor service.Processer, providerType string, logStyle string, endpoint string) {
+func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor service.Processer, _ string, logStyle string, endpoint string) {
 	// 读取原始请求体
 	reqBody, err := io.ReadAll(c.Request.Body)
 	if err != nil {
@@ -97,7 +97,7 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 		return
 	}
 	// 按模型获取可用 provider
-	providersWithMeta, err := service.ProvidersWithMetaBymodelsName(ctx, providerType, logStyle, *before)
+	providersWithMeta, err := service.ProvidersWithMetaBymodelsName(ctx, logStyle, *before)
 	if err != nil {
 		common.InternalServerError(c, err.Error())
 		return

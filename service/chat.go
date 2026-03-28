@@ -17,7 +17,6 @@ import (
 	"github.com/racio/orvion/pkg"
 	"github.com/racio/orvion/providers"
 	runtimesvc "github.com/racio/orvion/service/runtime"
-	"github.com/racio/orvion/service/subscription"
 	"github.com/samber/lo"
 	"gorm.io/gorm"
 )
@@ -136,29 +135,21 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, before B
 				}
 
 				log := models.ChatLog{
-					Name:          before.Model,
-					ProviderModel: modelWithProvider.ProviderModel,
-					ProviderName:  provider.Name,
-					Status:        "success",
-					Style:         style,
-					UserAgent:     reqMeta.UserAgent,
-					RemoteIP:      reqMeta.RemoteIP,
-					AuthKeyID:     authKeyID,
-					ChatIO:        ioLog,
-					Retry:         retry,
-					ProxyTimeMs:   int(time.Since(start).Milliseconds()),
+					Name:                before.Model,
+					ProviderModel:       modelWithProvider.ProviderModel,
+					ProviderName:        provider.Name,
+					ModelWithProviderID: modelWithProvider.ID,
+					Status:              "success",
+					Style:               style,
+					UserAgent:           reqMeta.UserAgent,
+					RemoteIP:            reqMeta.RemoteIP,
+					AuthKeyID:           authKeyID,
+					ChatIO:              ioLog,
+					Retry:               retry,
+					ProxyTimeMs:         int(time.Since(start).Milliseconds()),
 				}
 
-				resolvedConfig, err := subscription.ResolveProviderConfigForRequest(provider.ID, provider.Type, provider.Config)
-				if err != nil {
-					retryLog <- log.WithError(fmt.Errorf("resolve provider config error: %w", err))
-					// 凭据不可用时切换 provider，避免在同一 provider 无意义重试。
-					lastStatus = 0
-					lastWas429 = false
-					break
-				}
-
-				chatModel, err := providers.New(provider.Type, resolvedConfig)
+				chatModel, err := providers.NewForStyle(style, provider.Config)
 				if err != nil {
 					retryLog <- log.WithError(err)
 					lastStatus = 0
@@ -346,6 +337,16 @@ func SaveChatLog(ctx context.Context, log models.ChatLog) (uint, error) {
 			}
 			return 0, err
 		}
+		if log.Status == "error" && log.ModelWithProviderID > 0 {
+			modelWithProviderID := log.ModelWithProviderID
+			go func() {
+				autoCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err := TriggerModelProviderAutoDisableIfNeeded(autoCtx, modelWithProviderID); err != nil {
+					slog.Error("检查模型关联提供商自动关闭失败", "error", err, "model_with_provider_id", modelWithProviderID)
+				}
+			}()
+		}
 		return log.ID, nil
 	}
 
@@ -367,7 +368,25 @@ type ProvidersWithMeta struct {
 	Breaker              bool   // 是否开启熔断
 }
 
-func ProvidersWithMetaBymodelsName(ctx context.Context, providerType string, logStyle string, before Before) (*ProvidersWithMeta, error) {
+func providerSupportsLogStyle(provider models.Provider, logStyle string) bool {
+	nativeStyle := providers.ResolveStyle("", provider.Config)
+	switch logStyle {
+	case consts.StyleAnthropic:
+		return nativeStyle == consts.StyleAnthropic
+	case consts.StyleGemini, consts.StyleGeminiEmbeddings:
+		return nativeStyle == consts.StyleGemini
+	case consts.StyleOpenAI, consts.StyleOpenAIEmbeddings, consts.StyleOpenAIRes:
+		return nativeStyle == consts.StyleOpenAI
+	default:
+		return nativeStyle == consts.StyleOpenAI
+	}
+}
+
+func ProvidersWithMetaBymodelsName(ctx context.Context, logStyle string, before Before) (*ProvidersWithMeta, error) {
+	if err := RestoreExpiredAutoDisabledModelProviders(ctx); err != nil {
+		slog.Warn("恢复已到期的模型关联提供商失败", "error", err)
+	}
+
 	model, err := gorm.G[models.Model](models.DB).Where("name = ?", before.Model).First(ctx)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -411,19 +430,15 @@ func ProvidersWithMetaBymodelsName(ctx context.Context, providerType string, log
 
 	providerQuery := gorm.G[models.Provider](models.DB).
 		Where("id IN ?", lo.Map(modelWithProviders, func(mp models.ModelWithProvider, _ int) uint { return mp.ProviderID }))
-	if providerType == consts.StyleOpenAIRes {
-		// Codex 请求允许命中 codex 与 codex-auths 两类 provider。
-		providerQuery = providerQuery.Where("type IN ?", []string{consts.StyleOpenAIRes, consts.StyleCodexAuths})
-	} else if providerType == consts.StyleOpenAI {
-		// OpenAI 请求允许命中 openai 与 iflow/iflow-auths 三类 provider。
-		providerQuery = providerQuery.Where("type IN ?", []string{consts.StyleOpenAI, consts.StyleIFlow, consts.StyleIFlowAuths})
-	} else {
-		providerQuery = providerQuery.Where("type = ?", providerType)
-	}
-
 	providers, err := providerQuery.Find(ctx)
 	if err != nil {
 		return nil, err
+	}
+	providers = lo.Filter(providers, func(provider models.Provider, _ int) bool {
+		return providerSupportsLogStyle(provider, logStyle)
+	})
+	if len(providers) == 0 {
+		return nil, errors.New("not compatible provider for model " + before.Model)
 	}
 
 	providerMap := lo.KeyBy(providers, func(p models.Provider) uint { return p.ID })

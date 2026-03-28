@@ -4,22 +4,13 @@ import './index.css'
 import App from './App.tsx'
 import { hasStoredAuthToken } from './lib/auth'
 
-// Check if user is authenticated
-const isAuthenticated = () => {
-  return hasStoredAuthToken();
-};
-
-// Redirect to login if not authenticated (except for login page)
-const ProtectedApp = () => {
+const renderApp = () => {
   const path = window.location.pathname;
-
-  // Allow access to login page without authentication
   if (path === '/login' || path.startsWith('/login/')) {
     return <App />;
   }
 
-  // Redirect to login if not authenticated
-  if (!isAuthenticated()) {
+  if (!hasStoredAuthToken()) {
     window.location.href = '/login';
     return null;
   }
@@ -29,6 +20,6 @@ const ProtectedApp = () => {
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <ProtectedApp />
+    {renderApp()}
   </StrictMode>,
 )

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime/multipart"
 	"net/http"
 	"path"
@@ -23,8 +24,8 @@ import (
 	"github.com/racio/orvion/models"
 	"github.com/racio/orvion/providers"
 	"github.com/racio/orvion/service"
-	"github.com/racio/orvion/service/subscription"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"gorm.io/gorm"
 )
 
@@ -123,7 +124,8 @@ func ProviderTestHandler(c *gin.Context) {
 	}
 
 	// Create the provider instance
-	providerInstance, err := providers.New(chatModel.Type, chatModel.Config)
+	resolvedStyle := providers.ResolveStyle("", chatModel.Config)
+	providerInstance, err := providers.New(chatModel.Config)
 	if err != nil {
 		common.BadRequest(c, "Failed to create provider: "+err.Error())
 		return
@@ -132,15 +134,13 @@ func ProviderTestHandler(c *gin.Context) {
 	// Test connectivity by fetching models
 	responseHeaderTimeout := time.Second * time.Duration(30)
 	var testBody []byte
-	switch chatModel.Type {
+	switch resolvedStyle {
 	case consts.StyleOpenAI:
 		testBody = []byte(testOpenAI)
 	case consts.StyleAnthropic:
 		testBody = []byte(testAnthropic)
-	case consts.StyleOpenAIRes, consts.StyleCodexAuths:
+	case consts.StyleOpenAIRes:
 		testBody = []byte(testOpenAIRes)
-	case consts.StyleIFlowAuths:
-		testBody = []byte(testOpenAI)
 	case consts.StyleGemini:
 		testBody = []byte(testGemini)
 	default:
@@ -201,6 +201,26 @@ type ChatTestRequest struct {
 	ImageURL string `json:"image_url"`
 	MaskURL  string `json:"mask_url"`
 	Size     string `json:"size"`
+}
+
+func resolveProviderStyleForEndpoint(chatModel *ChatModel, endpoint string) string {
+	baseStyle := providers.ResolveStyle("", chatModel.Config)
+
+	switch endpoint {
+	case "messages":
+		return consts.StyleAnthropic
+	case "responses":
+		return consts.StyleOpenAIRes
+	case "images/generations", "images/edits", "videos":
+		return consts.StyleOpenAI
+	case "chat/completions":
+		if baseStyle == consts.StyleGemini {
+			return consts.StyleGemini
+		}
+		return consts.StyleOpenAI
+	default:
+		return baseStyle
+	}
 }
 
 func ModelChatTestHandler(c *gin.Context) {
@@ -281,16 +301,11 @@ func ModelChatTestHandler(c *gin.Context) {
 		return
 	}
 
-	providerInstance, err := providers.New(chatModel.Type, chatModel.Config)
-	if err != nil {
-		common.BadRequest(c, "Failed to create provider: "+err.Error())
-		return
-	}
-
 	withHeader := false
 	if chatModel.WithHeader != nil {
 		withHeader = *chatModel.WithHeader
 	}
+	startReq := time.Now()
 	header := service.BuildHeaders(c.Request.Header, withHeader, chatModel.CustomerHeaders, false)
 	extraHeaders := loadDefaultHeaders()
 	if header == nil {
@@ -306,14 +321,29 @@ func ModelChatTestHandler(c *gin.Context) {
 	header.Del("Accept-Encoding")
 	header.Set("Accept-Encoding", "identity")
 
+	requestStyle := resolveProviderStyleForEndpoint(chatModel, endpoint)
+	providerInstance, err := providers.NewForStyle(requestStyle, chatModel.Config)
+	if err != nil {
+		common.BadRequest(c, "Failed to create provider: "+err.Error())
+		return
+	}
+
 	var request *http.Request
+	var requestBodyForLog []byte
 	if endpoint == "images/edits" {
-		if chatModel.Type != consts.StyleOpenAI && chatModel.Type != consts.StyleIFlowAuths && chatModel.Type != consts.StyleIFlow {
+		if requestStyle != consts.StyleOpenAI {
+			recordTestChatFailure(ctx, c, chatModel, requestStyle, startReq, nil, "images/edits 仅支持 OpenAI 兼容提供商")
 			common.BadRequest(c, "images/edits 仅支持 OpenAI 兼容提供商")
+			return
+		}
+		requestBodyForLog, err = buildImageEditLogBody(chatModel, req, imageFileName, maskFileName, len(imageBytes) > 0, len(maskBytes) > 0)
+		if err != nil {
+			common.InternalServerError(c, "构建测试日志请求体失败")
 			return
 		}
 		if isMultipart {
 			if len(imageBytes) == 0 {
+				recordTestChatFailure(ctx, c, chatModel, requestStyle, startReq, requestBodyForLog, "images/edits 需要上传 image 文件")
 				common.BadRequest(c, "images/edits 需要上传 image 文件")
 				return
 			}
@@ -322,15 +352,22 @@ func ModelChatTestHandler(c *gin.Context) {
 			request, err = buildOpenAIImageEditRequest(ctx, chatModel, header, req)
 		}
 	} else {
-		body, err := buildChatTestBody(chatModel.Type, endpoint, req)
+		body, err := buildChatTestBody(requestStyle, endpoint, req)
 		if err != nil {
+			recordTestChatFailure(ctx, c, chatModel, requestStyle, startReq, nil, err.Error())
 			common.BadRequest(c, err.Error())
+			return
+		}
+		requestBodyForLog, err = enrichTestRequestBodyForLog(body, chatModel.Model)
+		if err != nil {
+			common.InternalServerError(c, "构建测试日志请求体失败")
 			return
 		}
 		ctx = context.WithValue(ctx, consts.ContextKeyOpenAIEndpoint, endpoint)
 		request, err = providerInstance.BuildReq(ctx, header, chatModel.Model, body)
 	}
 	if err != nil {
+		recordTestChatFailure(ctx, c, chatModel, requestStyle, startReq, requestBodyForLog, "Failed to build request: "+err.Error())
 		common.ErrorWithHttpStatus(c, http.StatusOK, 502, "Failed to build request: "+err.Error())
 		return
 	}
@@ -338,6 +375,7 @@ func ModelChatTestHandler(c *gin.Context) {
 	client := &http.Client{Timeout: time.Second * 60}
 	res, err := client.Do(request)
 	if err != nil {
+		recordTestChatFailure(ctx, c, chatModel, requestStyle, startReq, requestBodyForLog, "Failed to send request: "+err.Error())
 		common.ErrorWithHttpStatus(c, http.StatusOK, 502, "Failed to send request: "+err.Error())
 		return
 	}
@@ -345,19 +383,26 @@ func ModelChatTestHandler(c *gin.Context) {
 
 	content, err := io.ReadAll(res.Body)
 	if err != nil {
+		recordTestChatFailure(ctx, c, chatModel, requestStyle, startReq, requestBodyForLog, "Failed to read response: "+err.Error())
 		common.ErrorWithHttpStatus(c, http.StatusOK, res.StatusCode, "Failed to read response: "+err.Error())
 		return
 	}
 	content = decodeHTTPResponseBody(res.Header, content)
 
 	if res.StatusCode != http.StatusOK {
-		common.ErrorWithHttpStatus(c, http.StatusOK, res.StatusCode, fmt.Sprintf("code: %d body: %s", res.StatusCode, string(content)))
+		errMsg := fmt.Sprintf("code: %d body: %s", res.StatusCode, string(content))
+		recordTestChatFailure(ctx, c, chatModel, requestStyle, startReq, requestBodyForLog, errMsg)
+		common.ErrorWithHttpStatus(c, http.StatusOK, res.StatusCode, errMsg)
 		return
 	}
 
-	text := extractChatContent(chatModel.Type, endpoint, content)
+	if err := recordTestChatSuccess(ctx, c, chatModel, requestStyle, endpoint, startReq, requestBodyForLog, content); err != nil {
+		slog.Error("记录测试场请求日志失败", "error", err, "model", chatModel.ModelName, "provider", chatModel.ProviderName)
+	}
+
+	text := extractChatContent(requestStyle, endpoint, content)
 	if strings.TrimSpace(text) == "" {
-		text = extractChatContentFromSSE(chatModel.Type, endpoint, content)
+		text = extractChatContentFromSSE(requestStyle, endpoint, content)
 	}
 	if strings.TrimSpace(text) == "" {
 		text = string(content)
@@ -371,7 +416,7 @@ func ModelChatTestHandler(c *gin.Context) {
 func buildChatTestBody(style string, endpoint string, req ChatTestRequest) ([]byte, error) {
 	prompt := strings.TrimSpace(req.Prompt)
 	switch style {
-	case consts.StyleOpenAI, consts.StyleIFlowAuths:
+	case consts.StyleOpenAI:
 		switch endpoint {
 		case "chat/completions":
 			return json.Marshal(map[string]any{
@@ -412,7 +457,7 @@ func buildChatTestBody(style string, endpoint string, req ChatTestRequest) ([]by
 		default:
 			return nil, fmt.Errorf("unsupported endpoint")
 		}
-	case consts.StyleOpenAIRes, consts.StyleCodexAuths:
+	case consts.StyleOpenAIRes:
 		if endpoint != "responses" {
 			return nil, fmt.Errorf("该提供商仅支持 responses 端点")
 		}
@@ -461,6 +506,130 @@ func buildChatTestBody(style string, endpoint string, req ChatTestRequest) ([]by
 	}
 }
 
+func enrichTestRequestBodyForLog(body []byte, model string) ([]byte, error) {
+	if gjson.GetBytes(body, "model").Exists() {
+		return body, nil
+	}
+	return sjson.SetBytes(body, "model", model)
+}
+
+func buildImageEditLogBody(chatModel *ChatModel, req ChatTestRequest, imageFileName string, maskFileName string, hasImageUpload bool, hasMaskUpload bool) ([]byte, error) {
+	payload := map[string]any{
+		"model":            chatModel.Model,
+		"prompt":           strings.TrimSpace(req.Prompt),
+		"endpoint":         "images/edits",
+		"size":             strings.TrimSpace(req.Size),
+		"image_url":        strings.TrimSpace(req.ImageURL),
+		"mask_url":         strings.TrimSpace(req.MaskURL),
+		"image_file_name":  strings.TrimSpace(imageFileName),
+		"mask_file_name":   strings.TrimSpace(maskFileName),
+		"has_image_upload": hasImageUpload,
+		"has_mask_upload":  hasMaskUpload,
+	}
+	return json.Marshal(payload)
+}
+
+func resolveTestLogBeforer(style string, endpoint string) service.Beforer {
+	switch style {
+	case consts.StyleOpenAI:
+		switch endpoint {
+		case "images/generations", "images/edits", "videos":
+			return service.BeforerOpenAIMedia
+		default:
+			return service.BeforerOpenAI
+		}
+	case consts.StyleOpenAIRes:
+		return service.BeforerOpenAIRes
+	case consts.StyleAnthropic:
+		return service.BeforerAnthropic
+	case consts.StyleGemini:
+		return service.BeforerOpenAI
+	default:
+		return nil
+	}
+}
+
+func resolveTestLogProcesser(style string) service.Processer {
+	switch style {
+	case consts.StyleOpenAI, consts.StyleGemini:
+		return service.ProcesserOpenAI
+	case consts.StyleOpenAIRes:
+		return service.ProcesserOpenAiRes
+	case consts.StyleAnthropic:
+		return service.ProcesserAnthropic
+	default:
+		return nil
+	}
+}
+
+func recordTestChatSuccess(ctx context.Context, c *gin.Context, chatModel *ChatModel, style string, endpoint string, startReq time.Time, requestBody []byte, responseBody []byte) error {
+	logID, err := service.SaveChatLog(ctx, models.ChatLog{
+		Name:                chatModel.LogicalModelName(),
+		ProviderModel:       chatModel.Model,
+		ProviderName:        chatModel.DisplayProviderName(),
+		ModelWithProviderID: chatModel.ModelWithProviderID,
+		Status:              "success",
+		Style:               style,
+		UserAgent:           c.Request.UserAgent(),
+		RemoteIP:            c.ClientIP(),
+		ChatIO:              1,
+		ProxyTimeMs:         int(time.Since(startReq).Milliseconds()),
+	})
+	if err != nil {
+		return err
+	}
+
+	beforer := resolveTestLogBeforer(style, endpoint)
+	processer := resolveTestLogProcesser(style)
+	if beforer == nil || processer == nil {
+		return saveTestChatIO(ctx, logID, requestBody, string(responseBody))
+	}
+
+	before, err := beforer(requestBody)
+	if err != nil {
+		return saveTestChatIO(ctx, logID, requestBody, string(responseBody))
+	}
+
+	service.RecordLog(ctx, startReq, io.NopCloser(bytes.NewReader(responseBody)), processer, logID, 0, *before, true, style)
+	return nil
+}
+
+func recordTestChatFailure(ctx context.Context, c *gin.Context, chatModel *ChatModel, style string, startReq time.Time, requestBody []byte, errText string) {
+	if chatModel == nil {
+		return
+	}
+
+	logID, err := service.SaveChatLog(ctx, models.ChatLog{
+		Name:                chatModel.LogicalModelName(),
+		ProviderModel:       chatModel.Model,
+		ProviderName:        chatModel.DisplayProviderName(),
+		ModelWithProviderID: chatModel.ModelWithProviderID,
+		Status:              "error",
+		Style:               style,
+		UserAgent:           c.Request.UserAgent(),
+		RemoteIP:            c.ClientIP(),
+		ChatIO:              1,
+		Error:               errText,
+		ProxyTimeMs:         int(time.Since(startReq).Milliseconds()),
+	})
+	if err != nil {
+		slog.Error("保存测试场失败日志失败", "error", err, "model", chatModel.ModelName, "provider", chatModel.ProviderName)
+		return
+	}
+
+	if err := saveTestChatIO(ctx, logID, requestBody, errText); err != nil {
+		slog.Error("保存测试场失败日志 IO 失败", "error", err, "log_id", logID)
+	}
+}
+
+func saveTestChatIO(ctx context.Context, logID uint, requestBody []byte, output string) error {
+	return gorm.G[models.ChatIO](models.DB).Create(ctx, &models.ChatIO{
+		LogId:        logID,
+		Input:        string(requestBody),
+		OutputString: output,
+	})
+}
+
 // decodeHTTPResponseBody 根据响应头自动解压响应体，目前支持 gzip。
 func decodeHTTPResponseBody(header http.Header, body []byte) []byte {
 	if len(body) == 0 {
@@ -488,7 +657,7 @@ func decodeHTTPResponseBody(header http.Header, body []byte) []byte {
 
 func extractChatContent(style string, endpoint string, raw []byte) string {
 	switch style {
-	case consts.StyleOpenAI, consts.StyleIFlowAuths:
+	case consts.StyleOpenAI:
 		if endpoint == "images/generations" || endpoint == "images/edits" {
 			if url := gjson.GetBytes(raw, "data.0.url"); url.Exists() && url.String() != "" {
 				return url.String()
@@ -519,7 +688,7 @@ func extractChatContent(style string, endpoint string, raw []byte) string {
 			return joinTextParts(parts)
 		}
 		return ""
-	case consts.StyleOpenAIRes, consts.StyleCodexAuths:
+	case consts.StyleOpenAIRes:
 		if out := gjson.GetBytes(raw, "output_text"); out.Exists() && out.String() != "" {
 			return out.String()
 		}
@@ -745,7 +914,7 @@ func extractChatContentFromSSE(style string, endpoint string, raw []byte) string
 
 func appendSSEText(builder *strings.Builder, style string, endpoint string, raw []byte) {
 	switch style {
-	case consts.StyleOpenAI, consts.StyleIFlowAuths:
+	case consts.StyleOpenAI:
 		if endpoint == "responses" {
 			parts := gjson.GetBytes(raw, "output.#.content.#.text").Array()
 			appendTextParts(builder, parts)
@@ -755,7 +924,7 @@ func appendSSEText(builder *strings.Builder, style string, endpoint string, raw 
 		if part.Exists() && part.String() != "" {
 			appendText(builder, part.String())
 		}
-	case consts.StyleOpenAIRes, consts.StyleCodexAuths:
+	case consts.StyleOpenAIRes:
 		parts := gjson.GetBytes(raw, "output.#.content.#.text").Array()
 		appendTextParts(builder, parts)
 	case consts.StyleAnthropic:
@@ -827,7 +996,7 @@ func TestReactHandler(c *gin.Context) {
 		return
 	}
 
-	if chatModel.Type != consts.StyleOpenAI {
+	if providers.ResolveStyle("", chatModel.Config) != consts.StyleOpenAI {
 		c.SSEvent("error", "该测试仅支持 OpenAI 类型")
 		return
 	}
@@ -963,17 +1132,38 @@ func GetWeather(ctx context.Context, call openai.ChatCompletionChunkChoiceDeltaT
 }
 
 type ChatModel struct {
-	Name            string            `json:"name"`
-	Type            string            `json:"type"`
-	Model           string            `json:"model"`
-	Config          string            `json:"config"`
-	WithHeader      *bool             `json:"with_header,omitempty"`
-	CustomerHeaders map[string]string `json:"customer_headers,omitempty"`
+	Name                string            `json:"name"`
+	ModelWithProviderID uint              `json:"model_with_provider_id"`
+	ProviderName        string            `json:"provider_name"`
+	ModelName           string            `json:"model_name"`
+	Model               string            `json:"model"`
+	Config              string            `json:"config"`
+	WithHeader          *bool             `json:"with_header,omitempty"`
+	CustomerHeaders     map[string]string `json:"customer_headers,omitempty"`
+}
+
+func (c *ChatModel) LogicalModelName() string {
+	if strings.TrimSpace(c.ModelName) != "" {
+		return c.ModelName
+	}
+	return c.Model
+}
+
+func (c *ChatModel) DisplayProviderName() string {
+	if strings.TrimSpace(c.ProviderName) != "" {
+		return c.ProviderName
+	}
+	return c.Name
 }
 
 func FindChatModel(ctx context.Context, id string) (*ChatModel, error) {
 	// Get ModelWithProvider by ID
 	modelWithProvider, err := gorm.G[models.ModelWithProvider](models.DB).Where("id = ?", id).First(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	model, err := gorm.G[models.Model](models.DB).Where("id = ?", modelWithProvider.ModelID).First(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1003,17 +1193,14 @@ func FindChatModel(ctx context.Context, id string) (*ChatModel, error) {
 		customerHeaders = make(map[string]string)
 	}
 
-	resolvedConfig, err := subscription.ResolveProviderConfigForRequest(provider.ID, provider.Type, provider.Config)
-	if err != nil {
-		return nil, err
-	}
-
 	return &ChatModel{
-		Name:            provider.Name,
-		Type:            provider.Type,
-		Model:           modelWithProvider.ProviderModel,
-		Config:          resolvedConfig,
-		WithHeader:      withHeader,
-		CustomerHeaders: customerHeaders,
+		Name:                provider.Name,
+		ModelWithProviderID: modelWithProvider.ID,
+		ProviderName:        provider.Name,
+		ModelName:           model.Name,
+		Model:               modelWithProvider.ProviderModel,
+		Config:              provider.Config,
+		WithHeader:          withHeader,
+		CustomerHeaders:     customerHeaders,
 	}, nil
 }
