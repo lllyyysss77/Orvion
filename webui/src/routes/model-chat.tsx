@@ -86,6 +86,11 @@ type StreamPayload = {
   text?: string;
 };
 
+type AssistantResponsePayload = {
+  content: string;
+  imagePreviewUrl?: string;
+};
+
 const STREAMABLE_ENDPOINTS = ["chat/completions", "messages", "responses"];
 const BASE_ENDPOINTS = ["chat/completions", "images/generations", "images/edits"];
 const IMAGE_URL_PATTERN = /^https?:\/\/\S+\.(png|jpe?g|webp|gif|bmp|svg)(\?.*)?$/i;
@@ -342,21 +347,38 @@ export default function ModelChatTestPage() {
     return "";
   };
 
-  const extractContentFromResponse = (payload: unknown): string => {
+  const extractAssistantPayload = (payload: unknown): AssistantResponsePayload => {
     if (typeof payload === "string") {
-      return payload;
+      return { content: payload };
     }
     if (!payload || typeof payload !== "object") {
-      return "";
+      return { content: "" };
     }
-    const data = payload as { content?: string; data?: { content?: string } };
-    if (typeof data.content === "string") {
-      return data.content;
+    const root = payload as Record<string, unknown>;
+    const nested =
+      root.data && typeof root.data === "object"
+        ? (root.data as Record<string, unknown>)
+        : root;
+
+    let content = "";
+    if (typeof nested.content === "string") {
+      content = nested.content;
+    } else if (typeof root.content === "string") {
+      content = root.content;
     }
-    if (typeof data.data?.content === "string") {
-      return data.data.content;
+
+    let imagePreviewUrl: string | undefined;
+    if (typeof nested.image_url === "string") {
+      imagePreviewUrl = nested.image_url;
+    } else if (typeof nested.imageUrl === "string") {
+      imagePreviewUrl = nested.imageUrl;
+    } else if (typeof root.image_url === "string") {
+      imagePreviewUrl = root.image_url;
+    } else if (typeof root.imageUrl === "string") {
+      imagePreviewUrl = root.imageUrl;
     }
-    return "";
+
+    return { content, imagePreviewUrl };
   };
 
   const streamFromSse = async (
@@ -505,7 +527,19 @@ export default function ModelChatTestPage() {
         }));
       } else {
         const json = await response.json();
-        await typewriterRender(extractContentFromResponse(json), assistantMessageId);
+        const payload = extractAssistantPayload(json);
+        updateAssistantMessage(assistantMessageId, (message) => ({
+          ...message,
+          imagePreviewUrl: payload.imagePreviewUrl || message.imagePreviewUrl,
+        }));
+        if (payload.content.trim()) {
+          await typewriterRender(payload.content, assistantMessageId);
+        } else if (payload.imagePreviewUrl) {
+          updateAssistantMessage(assistantMessageId, (message) => ({
+            ...message,
+            content: message.content || "图片已生成，请查看预览",
+          }));
+        }
       }
       updateAssistantMessage(assistantMessageId, (message) => ({
         ...message,
@@ -543,7 +577,7 @@ export default function ModelChatTestPage() {
   const handleDeleteMessage = (id: string) => {
     setMessages((prev) => {
       const target = prev.find((message) => message.id === id);
-      if (target?.imagePreviewUrl) {
+      if (target?.imagePreviewUrl && target.imagePreviewUrl.startsWith("blob:")) {
         URL.revokeObjectURL(target.imagePreviewUrl);
         previewUrlsRef.current.delete(target.imagePreviewUrl);
       }
@@ -796,12 +830,12 @@ export default function ModelChatTestPage() {
                   key={message.id}
                   className={message.role === "user" ? "ml-auto max-w-[88%]" : "mr-auto max-w-[88%]"}
                 >
-                  {message.role === "user" && message.imagePreviewUrl ? (
-                    <div className="mb-2 flex justify-end pr-8">
+                  {message.imagePreviewUrl ? (
+                    <div className={message.role === "user" ? "mb-2 flex justify-end pr-8" : "mb-2 flex justify-start pl-8"}>
                       <img
                         src={message.imagePreviewUrl}
-                        alt="上传图片预览"
-                        className="h-20 w-auto max-w-[140px] rounded-xl border border-border/60 object-cover shadow-sm"
+                        alt={message.role === "user" ? "上传图片预览" : "生成图片预览"}
+                        className="max-h-72 w-auto max-w-[320px] rounded-xl border border-border/60 object-contain shadow-sm"
                         loading="lazy"
                       />
                     </div>

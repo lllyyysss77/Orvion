@@ -437,10 +437,14 @@ func ModelChatTestHandler(c *gin.Context) {
 	if strings.TrimSpace(text) == "" {
 		text = string(content)
 	}
-
-	common.Success(c, map[string]string{
+	responsePayload := map[string]any{
 		"content": text,
-	})
+	}
+	if imageURL := extractChatImagePreview(requestStyle, endpoint, content); imageURL != "" {
+		responsePayload["image_url"] = imageURL
+	}
+
+	common.Success(c, responsePayload)
 }
 
 func buildChatTestBody(style string, endpoint string, req ChatTestRequest, stream bool, imageFileName string, imageBytes []byte) ([]byte, error) {
@@ -763,10 +767,10 @@ func extractChatContent(style string, endpoint string, raw []byte) string {
 	case consts.StyleOpenAI:
 		if endpoint == "images/generations" || endpoint == "images/edits" {
 			if url := gjson.GetBytes(raw, "data.0.url"); url.Exists() && url.String() != "" {
-				return url.String()
+				return "已生成图片（URL）"
 			}
 			if b64 := gjson.GetBytes(raw, "data.0.b64_json"); b64.Exists() {
-				return fmt.Sprintf("已返回 base64 图像数据（长度 %d）", len(b64.String()))
+				return fmt.Sprintf("已生成图片（base64，长度 %d）", len(b64.String()))
 			}
 			return ""
 		}
@@ -806,6 +810,29 @@ func extractChatContent(style string, endpoint string, raw []byte) string {
 	default:
 		return ""
 	}
+}
+
+func extractChatImagePreview(style string, endpoint string, raw []byte) string {
+	if style != consts.StyleOpenAI {
+		return ""
+	}
+	if endpoint != "images/generations" && endpoint != "images/edits" {
+		return ""
+	}
+
+	if url := strings.TrimSpace(gjson.GetBytes(raw, "data.0.url").String()); url != "" {
+		return url
+	}
+
+	b64 := strings.TrimSpace(gjson.GetBytes(raw, "data.0.b64_json").String())
+	if b64 == "" {
+		return ""
+	}
+	mimeType := strings.TrimSpace(gjson.GetBytes(raw, "data.0.mime_type").String())
+	if mimeType == "" {
+		mimeType = "image/png"
+	}
+	return fmt.Sprintf("data:%s;base64,%s", mimeType, b64)
 }
 
 func normalizeTestEndpoint(raw string) string {
