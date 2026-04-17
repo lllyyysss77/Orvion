@@ -57,6 +57,11 @@ var modelEndpointRules = map[string]ModelEndpointRule{
 		Suffix:   "-embedding",
 		Label:    "嵌入",
 	},
+	"rerank": {
+		Required: []string{ModelCapabilityRerank},
+		Suffix:   "-rerank",
+		Label:    "重排",
+	},
 }
 
 func ValidateModelCapability(ctx context.Context, modelName string, endpoint string) error {

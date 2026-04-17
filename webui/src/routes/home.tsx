@@ -9,11 +9,24 @@ import {
   getMetricsSummary,
   getAuthKeySummary,
   getRequestAmountTrend,
+  getModelUsageSummary,
   getDailyModelCostTrend
 } from "@/lib/api";
-import type { AuthKeySummary, DailyModelCostSummary, MetricsSummary, RequestAmountSummary } from "@/lib/api";
+import type { AuthKeySummary, DailyModelCostSummary, MetricsSummary, ModelUsageSummaryItem, RequestAmountSummary } from "@/lib/api";
 import { getStoredAuthToken } from "@/lib/auth";
 import { toast } from "sonner";
+import hunyuanIcon from "@/assets/modelIcon/hunyuan.svg";
+import doubaoIcon from "@/assets/modelIcon/doubao.svg";
+import grokIcon from "@/assets/modelIcon/grok.svg";
+import qwenIcon from "@/assets/modelIcon/qwen.svg";
+import minimaxIcon from "@/assets/modelIcon/minimax.svg";
+import openaiIcon from "@/assets/modelIcon/openai.svg";
+import claudeIcon from "@/assets/modelIcon/claude.svg";
+import geminiIcon from "@/assets/modelIcon/gemini.svg";
+import gemmaIcon from "@/assets/modelIcon/gemma.svg";
+import deepseekIcon from "@/assets/modelIcon/deepseek.svg";
+import glmIcon from "@/assets/modelIcon/glm.svg";
+import kimiIcon from "@/assets/modelIcon/kimi.svg";
 import {
   RefreshCw,
   Activity,
@@ -53,6 +66,24 @@ const formatFixedNumber = (value: number | null | undefined, digits = 2) => {
   return value.toFixed(digits);
 };
 
+const formatTokenCompact = (value: number | null | undefined) => {
+  if (value == null || !Number.isFinite(value)) {
+    return "--";
+  }
+  const abs = Math.abs(value);
+  const compact = (divisor: number, suffix: string) => {
+    const normalized = value / divisor;
+    const normalizedAbs = Math.abs(normalized);
+    const digits = normalizedAbs >= 100 ? 0 : normalizedAbs >= 10 ? 1 : 2;
+    return `${normalized.toFixed(digits).replace(/\.?0+$/, "")}${suffix}`;
+  };
+  if (abs >= 1_000_000_000_000) return compact(1_000_000_000_000, "T");
+  if (abs >= 1_000_000_000) return compact(1_000_000_000, "B");
+  if (abs >= 1_000_000) return compact(1_000_000, "M");
+  if (abs >= 1_000) return compact(1_000, "K");
+  return Math.round(value).toLocaleString();
+};
+
 const formatMoney = (value: number | null | undefined, digits?: number) => {
   if (value == null || !Number.isFinite(value)) {
     return "--";
@@ -87,10 +118,12 @@ const AnimatedCounter = ({
   value,
   duration = 1000,
   className,
+  formatter,
 }: {
   value: number;
   duration?: number;
   className?: string;
+  formatter?: (value: number) => string;
 }) => {
   const [count, setCount] = useState(0);
 
@@ -114,7 +147,7 @@ const AnimatedCounter = ({
 
   return (
     <div className={["text-3xl font-bold", className].filter(Boolean).join(" ")}>
-      {count.toLocaleString()}
+      {formatter ? formatter(count) : count.toLocaleString()}
     </div>
   );
 };
@@ -235,16 +268,70 @@ type DailyModelCostCardProps = {
   trend: DailyModelCostSummary;
 };
 
-const modelCostPalette = [
-  "#5B8FF9",
-  "#F4664A",
-  "#5AD8A6",
-  "#F6BD16",
-  "#9270CA",
-  "#269A99",
-  "#FF9D4D",
-  "#6DC8EC",
+type ModelVisual = {
+  color: string;
+  iconSrc?: string;
+  iconAlt: string;
+  typeLabel: string;
+};
+
+type ModelVisualConfig = {
+  test: RegExp;
+  color: string;
+  iconSrc: string;
+  iconAlt: string;
+  typeLabel: string;
+};
+
+const modelTypeVisualConfigs: ModelVisualConfig[] = [
+  { test: /hunyuan/i, color: "#14B8A6", iconSrc: hunyuanIcon, iconAlt: "Hunyuan", typeLabel: "混元" },
+  { test: /doubao|ark/i, color: "#F97316", iconSrc: doubaoIcon, iconAlt: "Doubao", typeLabel: "豆包" },
+  { test: /grok|xai/i, color: "#10B981", iconSrc: grokIcon, iconAlt: "Grok", typeLabel: "Grok" },
+  { test: /qwen|tongyi/i, color: "#6366F1", iconSrc: qwenIcon, iconAlt: "Qwen", typeLabel: "通义千问" },
+  { test: /minimax|abab/i, color: "#EF4444", iconSrc: minimaxIcon, iconAlt: "MiniMax", typeLabel: "MiniMax" },
+  { test: /openai|gpt|o1|o3|o4/i, color: "#06B6D4", iconSrc: openaiIcon, iconAlt: "OpenAI", typeLabel: "OpenAI" },
+  { test: /claude|anthropic/i, color: "#A855F7", iconSrc: claudeIcon, iconAlt: "Claude", typeLabel: "Claude" },
+  { test: /gemma/i, color: "#2563EB", iconSrc: gemmaIcon, iconAlt: "Gemma", typeLabel: "Gemma" },
+  { test: /gemini|google/i, color: "#3B82F6", iconSrc: geminiIcon, iconAlt: "Gemini", typeLabel: "Gemini" },
+  { test: /glm|zhipu/i, color: "#22C55E", iconSrc: glmIcon, iconAlt: "GLM", typeLabel: "GLM" },
+  { test: /kimi|moonshot/i, color: "#EC4899", iconSrc: kimiIcon, iconAlt: "Kimi", typeLabel: "Kimi" },
+  { test: /deepseek/i, color: "#14B8A6", iconSrc: deepseekIcon, iconAlt: "DeepSeek", typeLabel: "DeepSeek" },
 ];
+
+const fallbackModelColors = ["#0EA5E9", "#F59E0B", "#8B5CF6", "#10B981", "#EF4444", "#6366F1"];
+
+const getModelVisual = (model: string): ModelVisual => {
+  const normalized = model.trim().toLowerCase();
+  if (!normalized) {
+    return {
+      color: "#94A3B8",
+      iconAlt: "Unknown",
+      typeLabel: "未知",
+    };
+  }
+  if (normalized === "others") {
+    return {
+      color: "#64748B",
+      iconAlt: "Others",
+      typeLabel: "其他模型",
+    };
+  }
+  const matched = modelTypeVisualConfigs.find((item) => item.test.test(normalized));
+  if (matched) {
+    return {
+      color: matched.color,
+      iconSrc: matched.iconSrc,
+      iconAlt: matched.iconAlt,
+      typeLabel: matched.typeLabel,
+    };
+  }
+  const hash = Array.from(normalized).reduce((acc, char) => acc + char.charCodeAt(0), 0);
+  return {
+    color: fallbackModelColors[hash % fallbackModelColors.length],
+    iconAlt: "Model",
+    typeLabel: "通用模型",
+  };
+};
 
 const formatModelDisplayName = (model: string) => {
   const name = (model || "").trim();
@@ -373,10 +460,10 @@ const DailyModelCostCard = memo(({ trend }: DailyModelCostCardProps) => {
   const plotWidth = chartWidth - margin.left - margin.right;
   const plotHeight = chartHeight - margin.top - margin.bottom;
 
-  const seriesWithColor = useMemo(
-    () => trend.series.map((item, index) => ({
+  const seriesWithVisual = useMemo(
+    () => trend.series.map((item) => ({
       ...item,
-      color: modelCostPalette[index % modelCostPalette.length],
+      visual: getModelVisual(item.model),
     })),
     [trend.series]
   );
@@ -392,11 +479,11 @@ const DailyModelCostCard = memo(({ trend }: DailyModelCostCardProps) => {
   const tooltip = useMemo(() => {
     if (hoveredIndex == null) return null;
     if (hoveredIndex < 0 || hoveredIndex >= trend.labels.length) return null;
-    const breakdown = seriesWithColor
+    const breakdown = seriesWithVisual
       .map((item) => ({
         model: formatModelDisplayName(item.model),
         amount: item.amounts[hoveredIndex] ?? 0,
-        color: item.color,
+        visual: item.visual,
       }))
       .filter((item) => item.amount > 0)
       .sort((a, b) => b.amount - a.amount);
@@ -407,7 +494,7 @@ const DailyModelCostCard = memo(({ trend }: DailyModelCostCardProps) => {
       breakdown,
       exceedAxisMax: (trend.totals[hoveredIndex] ?? 0) > axisMax,
     };
-  }, [axisMax, hoveredIndex, seriesWithColor, trend.labels, trend.totals]);
+  }, [axisMax, hoveredIndex, seriesWithVisual, trend.labels, trend.totals]);
 
   return (
     <Card className={`${cardHoverClass} gap-3 h-full min-h-[460px]`}>
@@ -422,7 +509,7 @@ const DailyModelCostCard = memo(({ trend }: DailyModelCostCardProps) => {
         </div>
       </CardHeader>
       <CardContent className="pt-0 flex-1">
-        {seriesWithColor.length === 0 ? (
+        {seriesWithVisual.length === 0 ? (
           <div className="flex h-full items-center justify-center rounded-2xl border border-dashed border-border/50 px-4 py-10 text-center text-xs text-muted-foreground">
             暂无模型成本数据
           </div>
@@ -487,7 +574,7 @@ const DailyModelCostCard = memo(({ trend }: DailyModelCostCardProps) => {
 
                   return (
                     <g key={`${label}-${index}`}>
-                      {seriesWithColor.map((item) => {
+                      {seriesWithVisual.map((item) => {
                         const amount = item.amounts[index] ?? 0;
                         if (amount <= 0) return null;
                         const remain = Math.max(0, axisMax - offset);
@@ -507,7 +594,7 @@ const DailyModelCostCard = memo(({ trend }: DailyModelCostCardProps) => {
                             width={barWidth}
                             height={height}
                             rx={4}
-                            fill={item.color}
+                            fill={item.visual.color}
                             fillOpacity={0.92}
                           />
                         );
@@ -539,11 +626,11 @@ const DailyModelCostCard = memo(({ trend }: DailyModelCostCardProps) => {
               </svg>
 
               <div className="mt-1 shrink-0 flex flex-wrap items-center justify-center gap-x-3 gap-y-1.5 text-[12px] font-medium text-foreground/85">
-                {seriesWithColor.map((item) => (
+                {seriesWithVisual.map((item) => (
                   <span key={item.model} className="inline-flex items-center gap-1.5">
                     <span
                       className="inline-block size-2.5 rounded-sm"
-                      style={{ backgroundColor: item.color }}
+                      style={{ backgroundColor: item.visual.color }}
                     />
                     {formatModelDisplayName(item.model)}
                   </span>
@@ -564,7 +651,7 @@ const DailyModelCostCard = memo(({ trend }: DailyModelCostCardProps) => {
                   {tooltip.breakdown.map((item) => (
                     <div key={item.model} className="flex items-center justify-between gap-2">
                       <span className="inline-flex items-center gap-1.5 min-w-0">
-                        <span className="size-2 rounded-sm shrink-0" style={{ backgroundColor: item.color }} />
+                        <span className="size-2 rounded-sm shrink-0" style={{ backgroundColor: item.visual.color }} />
                         <span className="truncate">{item.model}</span>
                       </span>
                       <span className="font-medium text-foreground">${formatAmountValue(item.amount)}</span>
@@ -573,6 +660,105 @@ const DailyModelCostCard = memo(({ trend }: DailyModelCostCardProps) => {
                 </div>
               </div>
             )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+});
+
+type ModelUsageCardProps = {
+  items: ModelUsageSummaryItem[];
+};
+
+const ModelUsageCard = memo(({ items }: ModelUsageCardProps) => {
+  const totalTokens = items.reduce((sum, item) => sum + item.total_tokens, 0);
+  const totalCost = items.reduce((sum, item) => sum + item.total_cost, 0);
+
+  return (
+    <Card className={`${cardHoverClass} gap-3`}>
+      <CardHeader className="pb-2">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="flex flex-col gap-1">
+            <span className="text-xs text-muted-foreground">模型用量概览</span>
+            <div className="flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
+              <span>模型数 <span className="text-foreground">{items.length}</span></span>
+              <span>总 Tokens <span className="text-foreground">{formatTokenCompact(totalTokens)}</span></span>
+              <span>总费用 <span className="text-foreground">{formatMoney(totalCost)}</span></span>
+            </div>
+          </div>
+          <span className="text-[11px] text-muted-foreground">按模型自动识别图标与颜色</span>
+        </div>
+      </CardHeader>
+      <CardContent className="pt-0">
+        {items.length === 0 ? (
+          <div className="flex items-center justify-center rounded-2xl border border-dashed border-border/50 px-4 py-10 text-center text-xs text-muted-foreground">
+            暂无模型用量数据
+          </div>
+        ) : (
+          <div className="rounded-2xl border border-border/40 bg-card/60 p-2">
+            <div className="max-h-[360px] space-y-2 overflow-y-auto pr-1">
+              {items.map((item, index) => {
+                const visual = getModelVisual(item.model);
+                return (
+                  <div
+                    key={item.model}
+                    className="rounded-2xl border border-border/50 bg-background/80 px-3 py-3 shadow-sm"
+                  >
+                    <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                      <div className="min-w-0 flex items-center gap-3">
+                        <div
+                          className="flex size-10 shrink-0 items-center justify-center rounded-xl border bg-muted/60 shadow-sm"
+                          style={{ borderColor: `${visual.color}55` }}
+                        >
+                          {visual.iconSrc ? (
+                            <img src={visual.iconSrc} alt={visual.iconAlt} className="size-5" />
+                          ) : (
+                            <span className="text-xs font-semibold text-muted-foreground">
+                              {formatModelDisplayName(item.model).slice(0, 2).toUpperCase()}
+                            </span>
+                          )}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span
+                              className="rounded-full border border-border/70 bg-background/80 px-2 py-0.5 text-[10px] font-semibold tracking-[0.14em] text-muted-foreground"
+                            >
+                              #{String(index + 1).padStart(2, "0")}
+                            </span>
+                            <span className="size-2 rounded-sm shrink-0" style={{ backgroundColor: visual.color }} />
+                            <div className="truncate text-sm font-semibold text-foreground">
+                              {formatModelDisplayName(item.model)}
+                            </div>
+                          </div>
+                          <div className="mt-1 text-[11px] text-muted-foreground">{visual.typeLabel}</div>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 sm:min-w-[260px]">
+                        <div className="rounded-xl border border-border/60 bg-background/80 px-3 py-2">
+                          <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                            <ArrowDownToLine className="size-3.5" style={{ color: visual.color }} />
+                            <span>Tokens</span>
+                          </div>
+                          <div className="mt-1 text-sm font-semibold text-foreground">
+                            {formatTokenCompact(item.total_tokens)}
+                          </div>
+                        </div>
+                        <div className="rounded-xl border border-border/60 bg-background/80 px-3 py-2">
+                          <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                            <Coins className="size-3.5" style={{ color: visual.color }} />
+                            <span>费用</span>
+                          </div>
+                          <div className="mt-1 text-sm font-semibold text-foreground">
+                            {formatMoney(item.total_cost)}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
       </CardContent>
@@ -851,6 +1037,7 @@ const HomeHeader = memo(({ title, onRefresh }: HomeHeaderProps) => {
 export default function Home() {
   const [loading, setLoading] = useState(true);
   const [requestAmount, setRequestAmount] = useState<RequestAmountSummary>(defaultRequestAmount);
+  const [modelUsage, setModelUsage] = useState<ModelUsageSummaryItem[]>([]);
   const [dailyModelCost, setDailyModelCost] = useState<DailyModelCostSummary>(defaultDailyModelCost);
   const [authKeySummary, setAuthKeySummary] = useState<AuthKeySummary | null>(null);
   const [authKeyError, setAuthKeyError] = useState<string | null>(null);
@@ -910,6 +1097,18 @@ export default function Home() {
     }
   }, []);
 
+  const fetchModelUsage = useCallback(async () => {
+    try {
+      const data = await getModelUsageSummary();
+      setModelUsage(data);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error(`获取模型用量失败: ${message}`);
+      console.error(err);
+      setModelUsage([]);
+    }
+  }, []);
+
   const fetchDailyModelCost = useCallback(async () => {
     try {
       const data = await getDailyModelCostTrend(7, 5);
@@ -937,9 +1136,9 @@ export default function Home() {
     setAuthKeyMode(false);
     setAuthKeySummary(null);
     setAuthKeyError(null);
-    await Promise.all([fetchSummary(), fetchRequestAmount(), fetchDailyModelCost()]);
+    await Promise.all([fetchSummary(), fetchRequestAmount(), fetchModelUsage(), fetchDailyModelCost()]);
     setLoading(false);
-  }, [fetchAuthKeySummary, fetchDailyModelCost, fetchRequestAmount, fetchSummary]);
+  }, [fetchAuthKeySummary, fetchDailyModelCost, fetchModelUsage, fetchRequestAmount, fetchSummary]);
 
   useEffect(() => {
     void load();
@@ -1015,12 +1214,12 @@ export default function Home() {
                 items={[
                   {
                     label: "今日消耗 Tokens",
-                    value: <AnimatedCounter value={summary.todayTokens} className="text-base" />,
+                    value: <AnimatedCounter value={summary.todayTokens} className="text-base" formatter={formatTokenCompact} />,
                     icon: CalendarDays,
                   },
                   {
                     label: "总消耗 Tokens",
-                    value: <AnimatedCounter value={summary.totalTokens} className="text-base" />,
+                    value: <AnimatedCounter value={summary.totalTokens} className="text-base" formatter={formatTokenCompact} />,
                     icon: ArrowUpToLine,
                   },
                 ]}
@@ -1056,6 +1255,9 @@ export default function Home() {
                 curvePoints={requestCurvePoints}
               />
             </div>
+
+            <ModelUsageCard items={modelUsage} />
+
           </div>
         )}
       </div>

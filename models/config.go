@@ -12,6 +12,8 @@ const (
 	KeyAnthropicCountTokens = "anthropic_count_tokens"
 	// KeyAnthropicProxyIP 全局代理 IP 配置（用于覆盖 X-Forwarded-For/X-Real-IP）
 	KeyAnthropicProxyIP = "anthropic_proxy_ip"
+	// KeyTelegramBreakerAlert 熔断 Telegram 告警配置
+	KeyTelegramBreakerAlert = "breaker_alert_tg"
 	// KeyModelPriceSync 模型价格同步配置
 	KeyModelPriceSync = "model_price_sync"
 	// KeySystemLogCleanup 系统日志自动清理配置
@@ -31,6 +33,14 @@ type AnthropicCountTokens struct {
 type AnthropicProxyIPConfig struct {
 	Enabled bool   `json:"enabled"`
 	ProxyIP string `json:"proxy_ip"`
+}
+
+type TelegramBreakerAlertConfig struct {
+	Enabled  bool   `json:"enabled"`
+	BotToken string `json:"bot_token"`
+	ChatID   string `json:"chat_id"`
+	APIBase  string `json:"api_base"`
+	ProxyURL string `json:"proxy_url"`
 }
 
 type ModelPriceSyncConfig struct {

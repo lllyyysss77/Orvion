@@ -2,6 +2,7 @@ package handler
 
 import (
 	"database/sql"
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -61,6 +62,12 @@ type DailyModelCostRes struct {
 	Labels []string               `json:"labels"`
 	Totals []float64              `json:"totals"`
 	Series []DailyModelCostSeries `json:"series"`
+}
+
+type ModelUsageItem struct {
+	Model       string  `json:"model"`
+	TotalTokens int64   `json:"total_tokens"`
+	TotalCost   float64 `json:"total_cost"`
 }
 
 func Metrics(c *gin.Context) {
@@ -228,7 +235,10 @@ func RequestAmountTrend(c *gin.Context) {
 	rows := make([]hourRow, 0)
 	hourExpr := "CAST(EXTRACT(HOUR FROM created_at) AS INTEGER)"
 	if models.DB.Dialector.Name() == "sqlite" {
-		hourExpr = "CAST(strftime('%H', created_at) AS INTEGER)"
+		hourExpr = "CAST(strftime('%H', created_at, 'localtime') AS INTEGER)"
+	} else if models.DB.Dialector.Name() == "postgres" {
+		offset := now.Format("-07:00")
+		hourExpr = fmt.Sprintf("CAST(EXTRACT(HOUR FROM created_at AT TIME ZONE '%s') AS INTEGER)", offset)
 	}
 	if err := models.DB.Raw(
 		`SELECT `+hourExpr+` AS hour_bucket,
@@ -274,6 +284,44 @@ func RequestAmountTrend(c *gin.Context) {
 		Range:         "today",
 		Points:        points,
 	})
+}
+
+// ModelUsageSummary 返回系统概览用的按模型累计 token 与费用统计
+func ModelUsageSummary(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	type modelUsageRow struct {
+		Model       string  `gorm:"column:model"`
+		TotalTokens int64   `gorm:"column:total_tokens"`
+		TotalCost   float64 `gorm:"column:total_cost"`
+	}
+
+	rows := make([]modelUsageRow, 0)
+	if err := models.DB.WithContext(ctx).Raw(
+		`SELECT COALESCE(NULLIF(TRIM(name), ''), 'unknown') AS model,
+		        COALESCE(SUM(total_tokens), 0) AS total_tokens,
+		        COALESCE(SUM(total_cost), 0) AS total_cost
+		   FROM chat_logs
+		  WHERE deleted_at IS NULL
+		  GROUP BY model
+		 HAVING COALESCE(SUM(total_tokens), 0) > 0
+		     OR COALESCE(SUM(total_cost), 0) > 0
+		  ORDER BY total_cost DESC, total_tokens DESC, model ASC`,
+	).Scan(&rows).Error; err != nil {
+		common.InternalServerError(c, "Failed to query model usage summary: "+err.Error())
+		return
+	}
+
+	items := make([]ModelUsageItem, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, ModelUsageItem{
+			Model:       row.Model,
+			TotalTokens: row.TotalTokens,
+			TotalCost:   row.TotalCost,
+		})
+	}
+
+	common.Success(c, items)
 }
 
 // DailyModelCostTrend 返回最近 N 天的模型成本分布（按模型堆叠）

@@ -3,17 +3,13 @@ package limiter
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"sync"
 	"time"
-
-	"github.com/go-redis/redis/v8"
 )
 
-// RPMLimiter RPM限流器
+// RPMLimiter RPM 限流器（内存实现）
 type RPMLimiter struct {
-	redis  *redis.Client
-	memory *sync.Map // 内存存储，当Redis不可用时使用
+	memory *sync.Map
 }
 
 // RequestRecord 请求记录
@@ -21,141 +17,44 @@ type RequestRecord struct {
 	Timestamps []int64 `json:"timestamps"`
 }
 
-// NewRPMLimiter 创建新的RPM限流器
-func NewRPMLimiter(redisClient *redis.Client) *RPMLimiter {
+// NewRPMLimiter 创建新的 RPM 限流器
+func NewRPMLimiter() *RPMLimiter {
 	return &RPMLimiter{
-		redis:  redisClient,
 		memory: &sync.Map{},
 	}
 }
 
 // CheckRPMLimit 检查是否达到 RPM 限制
-func (r *RPMLimiter) CheckRPMLimit(ctx context.Context, authKeyID uint, rpmLimit int) (bool, error) {
-	// 0表示无限制
+func (r *RPMLimiter) CheckRPMLimit(_ context.Context, authKeyID uint, rpmLimit int) (bool, error) {
+	// 0 表示无限制
 	if rpmLimit <= 0 {
 		return true, nil
 	}
 
 	now := time.Now().Unix()
-	windowStart := now - 60 // 1分钟前
-
-	if r.redis != nil {
-		ok, err := r.checkRPMLimitRedis(ctx, authKeyID, rpmLimit, now, windowStart)
-		if err == nil {
-			return ok, nil
-		}
-		return r.checkRPMLimitMemory(authKeyID, rpmLimit, now, windowStart), nil
-	}
-
-	return r.checkRPMLimitMemory(authKeyID, rpmLimit, now, windowStart), nil
+	windowStart := now - 60 // 1 分钟窗口
+	return r.checkRPMLimitMemory(authKeyID, rpmLimit, windowStart), nil
 }
 
 // RecordRequest 记录一次请求
-func (r *RPMLimiter) RecordRequest(ctx context.Context, authKeyID uint) error {
-	now := time.Now().Unix()
-
-	if r.redis != nil {
-		if err := r.recordRequestRedis(ctx, authKeyID, now); err == nil {
-			return nil
-		}
-		r.recordRequestMemory(authKeyID, now)
-		return nil
-	}
-
-	r.recordRequestMemory(authKeyID, now)
+func (r *RPMLimiter) RecordRequest(_ context.Context, authKeyID uint) error {
+	r.recordRequestMemory(authKeyID, time.Now().Unix())
 	return nil
 }
 
 // GetCurrentRPMCount 获取当前 RPM 计数
-func (r *RPMLimiter) GetCurrentRPMCount(ctx context.Context, authKeyID uint) (int, error) {
+func (r *RPMLimiter) GetCurrentRPMCount(_ context.Context, authKeyID uint) (int, error) {
 	now := time.Now().Unix()
 	windowStart := now - 60
-
-	if r.redis != nil {
-		count, err := r.getCurrentRPMCountRedis(ctx, authKeyID, windowStart, now)
-		if err == nil {
-			return count, nil
-		}
-		return r.getCurrentRPMCountMemory(authKeyID, windowStart), nil
-	}
-
 	return r.getCurrentRPMCountMemory(authKeyID, windowStart), nil
 }
 
-// getRPMKey 获取RPM存储键
+// getRPMKey 获取 RPM 存储键
 func (r *RPMLimiter) getRPMKey(authKeyID uint) string {
 	return fmt.Sprintf("rpm:auth_key:%d", authKeyID)
 }
 
-// ==================== Redis实现 ====================
-
-func (r *RPMLimiter) checkRPMLimitRedis(ctx context.Context, authKeyID uint, rpmLimit int, now, windowStart int64) (bool, error) {
-	key := r.getRPMKey(authKeyID)
-
-	// 使用Redis事务确保原子性
-	pipe := r.redis.TxPipeline()
-
-	// 移除过期的请求记录
-	pipe.ZRemRangeByScore(ctx, key, "0", strconv.FormatInt(windowStart, 10))
-
-	// 获取当前窗口内的请求数
-	countCmd := pipe.ZCard(ctx, key)
-
-	_, err := pipe.Exec(ctx)
-	if err != nil {
-		// Redis 出错：由上层决定 fail-open / fail-closed，这里统一标记为不可用
-		return false, fmt.Errorf("%w: redis rpm check failed: %v", ErrLimiterUnavailable, err)
-	}
-
-	count := countCmd.Val()
-	return count < int64(rpmLimit), nil
-}
-
-func (r *RPMLimiter) recordRequestRedis(ctx context.Context, authKeyID uint, now int64) error {
-	key := r.getRPMKey(authKeyID)
-
-	// 使用有序集合存储请求时间戳
-	// score和member都使用时间戳，确保唯一性
-	member := fmt.Sprintf("%d-%d", now, time.Now().UnixNano()%1000000)
-
-	pipe := r.redis.TxPipeline()
-	pipe.ZAdd(ctx, key, &redis.Z{
-		Score:  float64(now),
-		Member: member,
-	})
-
-	// 设置过期时间为2分钟
-	pipe.Expire(ctx, key, 2*time.Minute)
-
-	_, err := pipe.Exec(ctx)
-	if err != nil {
-		return fmt.Errorf("%w: redis rpm record failed: %v", ErrLimiterUnavailable, err)
-	}
-	return nil
-}
-
-func (r *RPMLimiter) getCurrentRPMCountRedis(ctx context.Context, authKeyID uint, windowStart, now int64) (int, error) {
-	key := r.getRPMKey(authKeyID)
-
-	pipe := r.redis.TxPipeline()
-
-	// 移除过期的请求记录
-	pipe.ZRemRangeByScore(ctx, key, "0", strconv.FormatInt(windowStart, 10))
-
-	// 获取当前窗口内的请求数
-	countCmd := pipe.ZCard(ctx, key)
-
-	_, err := pipe.Exec(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("%w: redis rpm count failed: %v", ErrLimiterUnavailable, err)
-	}
-
-	return int(countCmd.Val()), nil
-}
-
-// ==================== 内存实现 ====================
-
-func (r *RPMLimiter) checkRPMLimitMemory(authKeyID uint, rpmLimit int, now, windowStart int64) bool {
+func (r *RPMLimiter) checkRPMLimitMemory(authKeyID uint, rpmLimit int, windowStart int64) bool {
 	key := r.getRPMKey(authKeyID)
 
 	value, exists := r.memory.Load(key)
@@ -168,15 +67,13 @@ func (r *RPMLimiter) checkRPMLimitMemory(authKeyID uint, rpmLimit int, now, wind
 		return true
 	}
 
-	// 过滤出窗口内的请求
+	// 过滤窗口内请求并回写
 	validTimestamps := make([]int64, 0, len(record.Timestamps))
 	for _, ts := range record.Timestamps {
 		if ts > windowStart {
 			validTimestamps = append(validTimestamps, ts)
 		}
 	}
-
-	// 更新存储
 	record.Timestamps = validTimestamps
 	r.memory.Store(key, record)
 
@@ -188,7 +85,6 @@ func (r *RPMLimiter) recordRequestMemory(authKeyID uint, now int64) {
 
 	value, exists := r.memory.Load(key)
 	var record *RequestRecord
-
 	if exists {
 		record, _ = value.(*RequestRecord)
 	}
@@ -199,10 +95,9 @@ func (r *RPMLimiter) recordRequestMemory(authKeyID uint, now int64) {
 		}
 	}
 
-	// 添加新的时间戳
 	record.Timestamps = append(record.Timestamps, now)
 
-	// 清理过期数据（保留最近2分钟的）
+	// 仅保留最近 2 分钟数据
 	windowStart := now - 120
 	validTimestamps := make([]int64, 0, len(record.Timestamps))
 	for _, ts := range record.Timestamps {
@@ -228,14 +123,12 @@ func (r *RPMLimiter) getCurrentRPMCountMemory(authKeyID uint, windowStart int64)
 		return 0
 	}
 
-	// 过滤出窗口内的请求
 	count := 0
 	for _, ts := range record.Timestamps {
 		if ts > windowStart {
 			count++
 		}
 	}
-
 	return count
 }
 
@@ -245,53 +138,19 @@ func (r *RPMLimiter) ClearMemoryData() {
 }
 
 // GetStats 获取限流器统计信息
-func (r *RPMLimiter) GetStats(ctx context.Context) map[string]interface{} {
-	stats := map[string]interface{}{
-		"storage_type": "memory",
-		"auth_keys":    make(map[string]int),
-	}
-
-	if r.redis != nil {
-		stats["storage_type"] = "redis"
-
-		// 获取Redis中的RPM键
-		keys, err := r.redis.Keys(ctx, "rpm:auth_key:*").Result()
-		if err == nil {
-			authKeyStats := make(map[string]int)
-			for _, key := range keys {
-				count, err := r.redis.ZCard(ctx, key).Result()
-				if err == nil {
-					authKeyStats[key] = int(count)
-				}
-			}
-			stats["auth_keys"] = authKeyStats
-			return stats
-		}
-	} else {
-		// 内存统计
-		authKeyStats := make(map[string]int)
-		r.memory.Range(func(key, value interface{}) bool {
-			if keyStr, ok := key.(string); ok {
-				if record, ok := value.(*RequestRecord); ok {
-					authKeyStats[keyStr] = len(record.Timestamps)
-				}
-			}
-			return true
-		})
-		stats["auth_keys"] = authKeyStats
-	}
-
-	// Redis 不可用时回退内存统计
+func (r *RPMLimiter) GetStats(_ context.Context) map[string]interface{} {
 	authKeyStats := make(map[string]int)
 	r.memory.Range(func(key, value interface{}) bool {
-		if keyStr, ok := key.(string); ok {
-			if record, ok := value.(*RequestRecord); ok {
-				authKeyStats[keyStr] = len(record.Timestamps)
-			}
+		keyStr, keyOK := key.(string)
+		record, valOK := value.(*RequestRecord)
+		if keyOK && valOK {
+			authKeyStats[keyStr] = len(record.Timestamps)
 		}
 		return true
 	})
-	stats["storage_type"] = "memory"
-	stats["auth_keys"] = authKeyStats
-	return stats
+
+	return map[string]interface{}{
+		"storage_type": "memory",
+		"auth_keys":    authKeyStats,
+	}
 }

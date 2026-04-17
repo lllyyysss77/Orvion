@@ -64,6 +64,8 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, before B
 
 	authKeyID, _ := ctx.Value(consts.ContextKeyAuthKeyID).(uint)
 	authKeyRPMLimit, _ := ctx.Value(consts.ContextKeyAuthKeyRPMLimit).(int)
+	limiterChecked := false
+	rpmRecorded := false
 
 	timer := time.NewTimer(time.Second * time.Duration(providersWithMeta.TimeOut))
 	defer timer.Stop()
@@ -93,8 +95,8 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, before B
 
 			provider := providerMap[modelWithProvider.ProviderID]
 
-			if enableLimiter && authKeyID > 0 {
-				canProceed, reason, err := CheckAuthKeyLimits(ctx, authKeyID, authKeyRPMLimit, modelWithProvider.ID)
+			if enableLimiter && authKeyID > 0 && !limiterChecked {
+				canProceed, reason, err := CheckAuthKeyLimits(ctx, authKeyID, authKeyRPMLimit)
 				if err != nil {
 					return nil, nil, err
 				}
@@ -102,6 +104,14 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, before B
 					slog.Info("Auth key blocked by limiter", "auth_key_id", authKeyID, "reason", reason)
 					balancer.Reduce(id)
 					continue
+				}
+				limiterChecked = true
+				// RPM 在进入上游请求前即计数，避免“失败请求不计数”导致限流失效。
+				if !rpmRecorded {
+					if err := RecordAuthKeyAccess(ctx, authKeyID, authKeyRPMLimit); err != nil {
+						slog.Warn("Failed to record auth key access", "auth_key_id", authKeyID, "error", err)
+					}
+					rpmRecorded = true
 				}
 			}
 
@@ -197,12 +207,6 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, before B
 
 				// success
 				balancer.Success(id)
-
-				if enableLimiter && authKeyID > 0 && c != nil {
-					if err := RecordAuthKeyAccess(ctx, authKeyID, authKeyRPMLimit); err != nil {
-						slog.Warn("Failed to record auth key access", "auth_key_id", authKeyID, "error", err)
-					}
-				}
 
 				return res, &log, nil
 			}
@@ -368,20 +372,6 @@ type ProvidersWithMeta struct {
 	Breaker              bool   // 是否开启熔断
 }
 
-func providerSupportsLogStyle(provider models.Provider, logStyle string) bool {
-	nativeStyle := providers.ResolveStyle("", provider.Config)
-	switch logStyle {
-	case consts.StyleAnthropic:
-		return nativeStyle == consts.StyleAnthropic
-	case consts.StyleGemini, consts.StyleGeminiEmbeddings:
-		return nativeStyle == consts.StyleGemini
-	case consts.StyleOpenAI, consts.StyleOpenAIEmbeddings, consts.StyleOpenAIRes:
-		return nativeStyle == consts.StyleOpenAI
-	default:
-		return nativeStyle == consts.StyleOpenAI
-	}
-}
-
 func ProvidersWithMetaBymodelsName(ctx context.Context, logStyle string, before Before) (*ProvidersWithMeta, error) {
 	if err := RestoreExpiredAutoDisabledModelProviders(ctx); err != nil {
 		slog.Warn("恢复已到期的模型关联提供商失败", "error", err)
@@ -433,12 +423,6 @@ func ProvidersWithMetaBymodelsName(ctx context.Context, logStyle string, before 
 	providers, err := providerQuery.Find(ctx)
 	if err != nil {
 		return nil, err
-	}
-	providers = lo.Filter(providers, func(provider models.Provider, _ int) bool {
-		return providerSupportsLogStyle(provider, logStyle)
-	})
-	if len(providers) == 0 {
-		return nil, errors.New("not compatible provider for model " + before.Model)
 	}
 
 	providerMap := lo.KeyBy(providers, func(p models.Provider) uint { return p.ID })

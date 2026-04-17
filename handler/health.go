@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"context"
 	"log/slog"
 	"slices"
 	"strconv"
@@ -62,7 +61,6 @@ type SystemHealth struct {
 	FirstDeployTime string `json:"firstDeployTime"`
 	Components      struct {
 		Database  ComponentStatus `json:"database"`
-		Redis     ComponentStatus `json:"redis"`
 		Providers struct {
 			Status    string           `json:"status"`
 			Total     int              `json:"total"`
@@ -204,9 +202,6 @@ func GetSystemHealthDetail(c *gin.Context) {
 	// 检查数据库状态
 	health.Components.Database = checkDatabaseHealth()
 
-	// 检查Redis状态（如果使用）
-	health.Components.Redis = checkRedisHealth()
-
 	// 检查提供商状态
 	health.Components.Providers = checkProvidersHealth(windowMinutes)
 
@@ -246,40 +241,6 @@ func checkDatabaseHealth() ComponentStatus {
 		return ComponentStatus{
 			Status:  "unhealthy",
 			Message: stringPtr("Database ping failed: " + err.Error()),
-		}
-	}
-
-	responseTime := int(time.Since(start).Milliseconds())
-
-	status := "healthy"
-	if responseTime > 1000 {
-		status = "degraded"
-	}
-
-	return ComponentStatus{
-		Status:         status,
-		ResponseTimeMs: &responseTime,
-	}
-}
-
-// checkRedisHealth 检查Redis健康状态
-func checkRedisHealth() ComponentStatus {
-	redisClient := service.GetRedisClient()
-	if redisClient == nil {
-		return ComponentStatus{
-			Status:  "healthy",
-			Message: stringPtr("Redis not configured"),
-		}
-	}
-
-	start := time.Now()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if err := redisClient.Ping(ctx).Err(); err != nil {
-		return ComponentStatus{
-			Status:  "unhealthy",
-			Message: stringPtr("Redis ping failed: " + err.Error()),
 		}
 	}
 

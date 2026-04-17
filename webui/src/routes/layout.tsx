@@ -3,7 +3,7 @@ import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { cn } from "@/lib/utils";
+import { cn, openExternalUrl } from "@/lib/utils";
 import iconSvg from "@/assets/icon.svg";
 import {
   Activity,
@@ -21,7 +21,7 @@ import {
   UserCircle2,
   X,
 } from "lucide-react";
-import { getVersion, checkLatestRelease, type GitHubRelease } from "@/lib/api";
+import { configAPI, getVersion, checkLatestRelease, type GitHubRelease } from "@/lib/api";
 import { clearStoredAuthToken, getStoredAuthToken } from "@/lib/auth";
 import {
   Dialog,
@@ -33,6 +33,14 @@ import {
 
 const AUTH_KEY_PREFIXES = ["sk-github.com/racio/orvion-", "sk-github.com/racio/llmio-"];
 const SIDEBAR_STORAGE_KEY = "orvion_sidebar_collapsed";
+const UI_FONT_STORAGE_KEY = "orvion_ui_font";
+type UIFontOption = "default" | "kunming_seagull" | "fenyuan" | "lxgw_wenkai";
+const UI_FONT_CLASS_MAP: Record<UIFontOption, string> = {
+  default: "main-content-font-default",
+  kunming_seagull: "main-content-font-kunming",
+  fenyuan: "main-content-font-fenyuan",
+  lxgw_wenkai: "main-content-font-lxgw-wenkai",
+};
 const DESKTOP_SIDEBAR_WIDTH = "14rem";
 const DESKTOP_SIDEBAR_COLLAPSED_WIDTH = "4rem";
 const SIDEBAR_GROUP_PADDING = "p-1.5";
@@ -55,7 +63,7 @@ const navSections = [
       { to: "/auth-keys", label: "API 密钥", icon: KeyRound },
       { to: "/model-chat", label: "测试场", icon: MessageSquareText },
       { to: "/logs", label: "请求日志", icon: ScrollText },
-      { to: "/system-logs", label: "系统日志", icon: FileTerminal },
+      { to: "/system-logs", label: "系统状态", icon: FileTerminal },
     ],
   },
   {
@@ -71,16 +79,34 @@ function getInitialSidebarCollapsed() {
   return window.localStorage.getItem(SIDEBAR_STORAGE_KEY) === "1";
 }
 
+function isUIFontOption(value: string | null | undefined): value is UIFontOption {
+  return value === "default" || value === "kunming_seagull" || value === "fenyuan" || value === "lxgw_wenkai";
+}
+
+function getInitialUIFont(): UIFontOption {
+  if (typeof window === "undefined") {
+    return "default";
+  }
+  const value = window.localStorage.getItem(UI_FONT_STORAGE_KEY);
+  if (isUIFontOption(value)) {
+    return value;
+  }
+  return "default";
+}
+
 export default function Layout() {
   const [version, setVersion] = useState("dev");
   const [latestRelease, setLatestRelease] = useState<GitHubRelease | null>(null);
   const [showUpdateDialog, setShowUpdateDialog] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(getInitialSidebarCollapsed);
+  const [uiFont, setUIFont] = useState<UIFontOption>(getInitialUIFont);
   const [navigationProgressVisible, setNavigationProgressVisible] = useState(false);
   const [navigationProgressValue, setNavigationProgressValue] = useState(0);
   const navigate = useNavigate();
   const location = useLocation();
+  const effectiveUIFont: UIFontOption = uiFont;
+  const layoutFontClass = UI_FONT_CLASS_MAP[effectiveUIFont];
   const token = getStoredAuthToken();
   const isAuthKeyToken = AUTH_KEY_PREFIXES.some((prefix) => token.startsWith(prefix));
   const progressTimersRef = useRef<number[]>([]);
@@ -137,6 +163,60 @@ export default function Layout() {
     }
     window.localStorage.setItem(SIDEBAR_STORAGE_KEY, sidebarCollapsed ? "1" : "0");
   }, [isAuthKeyToken, sidebarCollapsed]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    window.localStorage.setItem(UI_FONT_STORAGE_KEY, uiFont);
+  }, [uiFont]);
+
+  useEffect(() => {
+    if (typeof document === "undefined") {
+      return;
+    }
+    document.documentElement.dataset.uiFont = effectiveUIFont;
+  }, [effectiveUIFont]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return undefined;
+    }
+    const handleFontChanged = (event: Event) => {
+      const customEvent = event as CustomEvent<{ font?: UIFontOption }>;
+      const next = customEvent.detail?.font;
+      if (isUIFontOption(next)) {
+        setUIFont(next);
+      }
+    };
+    window.addEventListener("ui-font-changed", handleFontChanged as EventListener);
+    return () => window.removeEventListener("ui-font-changed", handleFontChanged as EventListener);
+  }, []);
+
+  useEffect(() => {
+    if (isAuthKeyToken) {
+      return;
+    }
+    let active = true;
+    const fetchUIFont = async () => {
+      try {
+        const response = await configAPI.getConfig("ui_font");
+        if (!response.value || !active) {
+          return;
+        }
+        const parsed = JSON.parse(response.value) as { font?: string };
+        if (isUIFontOption(parsed.font)) {
+          setUIFont(parsed.font);
+        }
+      } catch {
+        // 保持本地配置兜底
+      }
+    };
+    void fetchUIFont();
+    return () => {
+      active = false;
+    };
+  }, [isAuthKeyToken]);
 
   useEffect(() => {
     if (isAuthKeyToken) {
@@ -440,7 +520,7 @@ export default function Layout() {
   } as CSSProperties;
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
+    <div className={cn("min-h-screen bg-background text-foreground", layoutFontClass)}>
       <div className="pointer-events-none fixed inset-x-0 top-0 z-[80] h-[3px] overflow-hidden">
         <div
           className={cn(
@@ -534,7 +614,7 @@ export default function Layout() {
               </Button>
               <Button
                 onClick={() => {
-                  window.open(latestRelease?.html_url, "_blank");
+                  void openExternalUrl(latestRelease?.html_url ?? "");
                   setShowUpdateDialog(false);
                 }}
               >

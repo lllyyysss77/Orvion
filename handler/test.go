@@ -4,14 +4,17 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"path"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -198,6 +201,7 @@ func ProviderTestHandler(c *gin.Context) {
 type ChatTestRequest struct {
 	Prompt   string `json:"prompt"`
 	Endpoint string `json:"endpoint"`
+	Stream   bool   `json:"stream"`
 	ImageURL string `json:"image_url"`
 	MaskURL  string `json:"mask_url"`
 	Size     string `json:"size"`
@@ -241,6 +245,8 @@ func ModelChatTestHandler(c *gin.Context) {
 		req.Prompt = c.PostForm("prompt")
 		req.Endpoint = c.PostForm("endpoint")
 		req.Size = c.PostForm("size")
+		streamRaw := strings.TrimSpace(strings.ToLower(c.PostForm("stream")))
+		req.Stream = streamRaw == "1" || streamRaw == "true" || streamRaw == "yes" || streamRaw == "on"
 
 		if fileHeader, err := c.FormFile("image"); err == nil && fileHeader != nil {
 			file, err := fileHeader.Open()
@@ -289,6 +295,7 @@ func ModelChatTestHandler(c *gin.Context) {
 		common.BadRequest(c, "Invalid endpoint")
 		return
 	}
+	streamRequested := req.Stream && isStreamableTestEndpoint(endpoint)
 
 	ctx := c.Request.Context()
 	chatModel, err := FindChatModel(ctx, id)
@@ -306,7 +313,7 @@ func ModelChatTestHandler(c *gin.Context) {
 		withHeader = *chatModel.WithHeader
 	}
 	startReq := time.Now()
-	header := service.BuildHeaders(c.Request.Header, withHeader, chatModel.CustomerHeaders, false)
+	header := service.BuildHeaders(c.Request.Header, withHeader, chatModel.CustomerHeaders, streamRequested)
 	extraHeaders := loadDefaultHeaders()
 	if header == nil {
 		header = http.Header{}
@@ -352,7 +359,7 @@ func ModelChatTestHandler(c *gin.Context) {
 			request, err = buildOpenAIImageEditRequest(ctx, chatModel, header, req)
 		}
 	} else {
-		body, err := buildChatTestBody(requestStyle, endpoint, req)
+		body, err := buildChatTestBody(requestStyle, endpoint, req, streamRequested, imageFileName, imageBytes)
 		if err != nil {
 			recordTestChatFailure(ctx, c, chatModel, requestStyle, startReq, nil, err.Error())
 			common.BadRequest(c, err.Error())
@@ -364,6 +371,9 @@ func ModelChatTestHandler(c *gin.Context) {
 			return
 		}
 		ctx = context.WithValue(ctx, consts.ContextKeyOpenAIEndpoint, endpoint)
+		if requestStyle == consts.StyleGemini && streamRequested {
+			ctx = context.WithValue(ctx, consts.ContextKeyGeminiStream, true)
+		}
 		request, err = providerInstance.BuildReq(ctx, header, chatModel.Model, body)
 	}
 	if err != nil {
@@ -380,6 +390,26 @@ func ModelChatTestHandler(c *gin.Context) {
 		return
 	}
 	defer res.Body.Close()
+
+	contentType := strings.ToLower(res.Header.Get("Content-Type"))
+	if streamRequested && strings.Contains(contentType, "text/event-stream") {
+		writeHeader(c, true, res.Header, requestStyle)
+		var responseBuffer bytes.Buffer
+		dst := io.MultiWriter(&streamFlushWriter{writer: c.Writer}, &responseBuffer)
+		if _, err := io.Copy(dst, res.Body); err != nil {
+			if isExpectedClientDisconnect(err) {
+				slog.Debug("测试场流式请求已断开", "error", err)
+				return
+			}
+			recordTestChatFailure(ctx, c, chatModel, requestStyle, startReq, requestBodyForLog, "Failed to stream response: "+err.Error())
+			logStreamCopyError("test stream copy", err)
+			return
+		}
+		if err := recordTestChatSuccess(ctx, c, chatModel, requestStyle, endpoint, startReq, requestBodyForLog, responseBuffer.Bytes()); err != nil {
+			slog.Error("记录测试场流式请求日志失败", "error", err, "model", chatModel.ModelName, "provider", chatModel.ProviderName)
+		}
+		return
+	}
 
 	content, err := io.ReadAll(res.Body)
 	if err != nil {
@@ -413,30 +443,59 @@ func ModelChatTestHandler(c *gin.Context) {
 	})
 }
 
-func buildChatTestBody(style string, endpoint string, req ChatTestRequest) ([]byte, error) {
+func buildChatTestBody(style string, endpoint string, req ChatTestRequest, stream bool, imageFileName string, imageBytes []byte) ([]byte, error) {
 	prompt := strings.TrimSpace(req.Prompt)
+	hasImageUpload := len(imageBytes) > 0
+	imageMimeType := ""
+	imageBase64 := ""
+	imageDataURL := ""
+	if hasImageUpload {
+		imageMimeType = detectImageMIMEType(imageFileName, imageBytes)
+		imageBase64 = base64.StdEncoding.EncodeToString(imageBytes)
+		imageDataURL = fmt.Sprintf("data:%s;base64,%s", imageMimeType, imageBase64)
+	}
 	switch style {
 	case consts.StyleOpenAI:
 		switch endpoint {
 		case "chat/completions":
+			content := []map[string]any{
+				{"type": "text", "text": prompt},
+			}
+			if hasImageUpload {
+				content = append(content, map[string]any{
+					"type": "image_url",
+					"image_url": map[string]any{
+						"url": imageDataURL,
+					},
+				})
+			}
 			return json.Marshal(map[string]any{
-				"messages": []map[string]string{
-					{"role": "user", "content": prompt},
+				"messages": []map[string]any{
+					{"role": "user", "content": content},
 				},
 				"temperature": 0.2,
+				"stream":      stream,
 			})
 		case "responses":
+			content := []map[string]any{
+				{"type": "input_text", "text": prompt},
+			}
+			if hasImageUpload {
+				content = append(content, map[string]any{
+					"type":      "input_image",
+					"image_url": imageDataURL,
+				})
+			}
 			return json.Marshal(map[string]any{
 				"instructions": "你是一个有帮助的助手。",
 				"input": []map[string]any{
 					{
-						"role": "user",
-						"content": []map[string]string{
-							{"type": "input_text", "text": prompt},
-						},
+						"role":    "user",
+						"content": content,
 					},
 				},
-				"store": false,
+				"store":  false,
+				"stream": stream,
 			})
 		case "images/generations":
 			payload := map[string]any{
@@ -461,49 +520,93 @@ func buildChatTestBody(style string, endpoint string, req ChatTestRequest) ([]by
 		if endpoint != "responses" {
 			return nil, fmt.Errorf("该提供商仅支持 responses 端点")
 		}
+		content := []map[string]any{
+			{"type": "input_text", "text": prompt},
+		}
+		if hasImageUpload {
+			content = append(content, map[string]any{
+				"type":      "input_image",
+				"image_url": imageDataURL,
+			})
+		}
 		return json.Marshal(map[string]any{
 			"instructions": "你是一个有帮助的助手。",
 			"input": []map[string]any{
 				{
-					"role": "user",
-					"content": []map[string]string{
-						{"type": "input_text", "text": prompt},
-					},
+					"role":    "user",
+					"content": content,
 				},
 			},
-			"store": false,
+			"store":  false,
+			"stream": stream,
 		})
 	case consts.StyleAnthropic:
 		if endpoint != "messages" {
 			return nil, fmt.Errorf("Anthropic 仅支持 messages 端点")
 		}
+		content := []map[string]any{
+			{"type": "text", "text": prompt},
+		}
+		if hasImageUpload {
+			content = append(content, map[string]any{
+				"type": "image",
+				"source": map[string]any{
+					"type":       "base64",
+					"media_type": imageMimeType,
+					"data":       imageBase64,
+				},
+			})
+		}
 		return json.Marshal(map[string]any{
 			"max_tokens": 1024,
 			"messages": []map[string]any{
 				{
-					"role": "user",
-					"content": []map[string]string{
-						{"type": "text", "text": prompt},
-					},
+					"role":    "user",
+					"content": content,
 				},
 			},
+			"stream": stream,
 		})
 	case consts.StyleGemini:
 		if endpoint != "chat/completions" {
 			return nil, fmt.Errorf("Gemini 仅支持 chat/completions 端点")
 		}
+		parts := []map[string]any{
+			{"text": prompt},
+		}
+		if hasImageUpload {
+			parts = append(parts, map[string]any{
+				"inlineData": map[string]any{
+					"mimeType": imageMimeType,
+					"data":     imageBase64,
+				},
+			})
+		}
 		return json.Marshal(map[string]any{
 			"contents": []map[string]any{
 				{
-					"parts": []map[string]string{
-						{"text": prompt},
-					},
+					"parts": parts,
 				},
 			},
 		})
 	default:
 		return nil, fmt.Errorf("unsupported provider type")
 	}
+}
+
+func detectImageMIMEType(fileName string, imageBytes []byte) string {
+	ext := strings.ToLower(strings.TrimSpace(filepath.Ext(fileName)))
+	if ext != "" {
+		if m := mime.TypeByExtension(ext); strings.HasPrefix(strings.ToLower(m), "image/") {
+			return m
+		}
+	}
+	if len(imageBytes) > 0 {
+		if m := strings.ToLower(http.DetectContentType(imageBytes)); strings.HasPrefix(m, "image/") {
+			return m
+		}
+	}
+	return "image/png"
 }
 
 func enrichTestRequestBodyForLog(body []byte, model string) ([]byte, error) {
@@ -722,6 +825,28 @@ func normalizeTestEndpoint(raw string) string {
 	default:
 		return ""
 	}
+}
+
+func isStreamableTestEndpoint(endpoint string) bool {
+	switch endpoint {
+	case "chat/completions", "messages", "responses":
+		return true
+	default:
+		return false
+	}
+}
+
+type streamFlushWriter struct {
+	writer gin.ResponseWriter
+}
+
+func (w *streamFlushWriter) Write(p []byte) (int, error) {
+	n, err := w.writer.Write(p)
+	if err != nil {
+		return n, err
+	}
+	w.writer.Flush()
+	return n, nil
 }
 
 func buildOpenAIImageEditRequest(ctx context.Context, chatModel *ChatModel, header http.Header, req ChatTestRequest) (*http.Request, error) {

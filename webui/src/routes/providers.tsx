@@ -49,6 +49,7 @@ import {
   getProviderModels
 } from "@/lib/api";
 import type { Provider, ProviderTemplate, ProviderModel } from "@/lib/api";
+import { openExternalUrl } from "@/lib/utils";
 import { toast } from "sonner";
 import { ExternalLink, Pencil, Trash2, Boxes, Plus, Copy } from "lucide-react";
 
@@ -89,6 +90,7 @@ export default function ProvidersPage() {
 
   // 筛选条件
   const [nameFilter, setNameFilter] = useState<string>("");
+  const [debouncedNameFilter, setDebouncedNameFilter] = useState<string>("");
 
   // 初始化表单
   const form = useForm<z.infer<typeof formSchema>>({
@@ -134,21 +136,33 @@ export default function ProvidersPage() {
     form,
   ]);
 
-  const fetchProviders = useCallback(async () => {
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedNameFilter(nameFilter.trim());
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [nameFilter]);
+
+  const fetchProviders = useCallback(async (signal?: AbortSignal) => {
     try {
       setLoading(true);
-      const name = nameFilter.trim() || undefined;
+      const name = debouncedNameFilter || undefined;
 
-      const data = await getProviders({ name });
+      const data = await getProviders({ name }, { signal });
       setProviders(data);
     } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") {
+        return;
+      }
       const message = err instanceof Error ? err.message : String(err);
       toast.error(`获取提供商列表失败: ${message}`);
       console.error(err);
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) {
+        setLoading(false);
+      }
     }
-  }, [nameFilter]);
+  }, [debouncedNameFilter]);
 
   const fetchProviderTemplates = useCallback(async () => {
     try {
@@ -168,7 +182,9 @@ export default function ProvidersPage() {
   }, [fetchProviderTemplates]);
 
   useEffect(() => {
-    void fetchProviders();
+    const controller = new AbortController();
+    void fetchProviders(controller.signal);
+    return () => controller.abort();
   }, [fetchProviders]);
 
   const fetchProviderModels = async (providerId: number) => {
@@ -365,7 +381,11 @@ export default function ProvidersPage() {
                         size="icon"
                         className="h-8 w-8 rounded-full"
                         disabled={!provider.Console}
-                        onClick={() => provider.Console && window.open(provider.Console, "_blank")}
+                        onClick={() => {
+                          if (!openExternalUrl(provider.Console)) {
+                            toast.error("控制台地址无效或浏览器阻止了弹窗（仅支持 http/https）");
+                          }
+                        }}
                       >
                         <ExternalLink className="h-4 w-4" />
                       </Button>

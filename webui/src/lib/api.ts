@@ -158,16 +158,6 @@ export interface SystemStatus {
   version: string;
 }
 
-export interface ProviderMetric {
-  provider_id: number;
-  provider_name: string;
-  success_rate: number;
-  avg_response_time: number;
-  total_requests: number;
-  success_count: number;
-  failure_count: number;
-}
-
 // Generic API request function
 async function apiRequest<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const url = `${API_BASE}${endpoint}`;
@@ -268,7 +258,7 @@ export async function getAuthKeySummary(): Promise<AuthKeySummary> {
 // Provider API functions
 export async function getProviders(filters: {
   name?: string;
-} = {}): Promise<Provider[]> {
+} = {}, options: { signal?: AbortSignal } = {}): Promise<Provider[]> {
   const params = new URLSearchParams();
 
   if (filters.name) params.append("name", filters.name);
@@ -276,7 +266,7 @@ export async function getProviders(filters: {
   const queryString = params.toString();
   const endpoint = queryString ? `/providers?${queryString}` : '/providers';
 
-  return apiRequest<Provider[]>(endpoint);
+  return apiRequest<Provider[]>(endpoint, { signal: options.signal });
 }
 
 export async function createProvider(provider: {
@@ -547,10 +537,6 @@ export async function getSystemStatus(): Promise<SystemStatus> {
   return apiRequest<SystemStatus>('/status');
 }
 
-export async function getProviderMetrics(): Promise<ProviderMetric[]> {
-  return apiRequest<ProviderMetric[]>('/metrics/providers');
-}
-
 // Metrics API functions
 export interface MetricsData {
   reqs: number;
@@ -693,6 +679,14 @@ export interface AnthropicProxyIPConfig {
   proxy_ip: string;
 }
 
+export interface TelegramBreakerAlertConfig {
+  enabled: boolean;
+  bot_token: string;
+  chat_id: string;
+  api_base: string;
+  proxy_url: string;
+}
+
 export interface ModelPriceSyncConfig {
   enabled: boolean;
   interval_minutes: number;
@@ -716,6 +710,11 @@ export const configAPI = {
 
   runModelPriceSync: () =>
     apiRequest<{ status: string }>(`/config/model-price-sync/run`, {
+      method: 'POST',
+    }),
+
+  runTelegramBreakerAlertTest: () =>
+    apiRequest<{ status: string }>(`/config/breaker-alert-tg/test`, {
       method: 'POST',
     }),
 };
@@ -792,6 +791,10 @@ export interface SystemLogSnapshot {
   updated_at?: string;
   content: string;
   lines: number;
+  process?: {
+    memory_bytes: number;
+    cpu_percent: number;
+  };
 }
 
 export interface RequestAmountPoint {
@@ -805,6 +808,12 @@ export interface RequestAmountSummary {
   total_amount: number;
   range: string;
   points: RequestAmountPoint[];
+}
+
+export interface ModelUsageSummaryItem {
+  model: string;
+  total_tokens: number;
+  total_cost: number;
 }
 
 export interface DailyModelCostSeries {
@@ -835,6 +844,8 @@ export async function getLogs(
     status?: string;
     style?: string;
     authKeyId?: string;
+    startAt?: string;
+    endAt?: string;
   } = {}
 ): Promise<LogsResponse> {
   const params = new URLSearchParams();
@@ -847,6 +858,8 @@ export async function getLogs(
   if (filters.status) params.append("status", filters.status);
   if (filters.style) params.append("style", filters.style);
   if (filters.authKeyId) params.append("auth_key_id", filters.authKeyId);
+  if (filters.startAt) params.append("start_at", filters.startAt);
+  if (filters.endAt) params.append("end_at", filters.endAt);
 
   return apiRequest<LogsResponse>(`/logs?${params.toString()}`);
 }
@@ -865,6 +878,10 @@ export async function clearSystemLogs(): Promise<{ path: string }> {
 
 export async function getRequestAmountTrend(): Promise<RequestAmountSummary> {
   return apiRequest<RequestAmountSummary>('/metrics/request-amount');
+}
+
+export async function getModelUsageSummary(): Promise<ModelUsageSummaryItem[]> {
+  return apiRequest<ModelUsageSummaryItem[]>('/metrics/model-usage');
 }
 
 export async function getDailyModelCostTrend(days: number = 7, top: number = 5): Promise<DailyModelCostSummary> {
@@ -1000,7 +1017,6 @@ export interface SystemHealth {
   firstDeployTime: string; // 首次部署时间（ISO 8601）
   components: {
     database: ComponentStatus;
-    redis: ComponentStatus;
     providers: {
       status: "healthy" | "degraded" | "unhealthy";
       total: number;

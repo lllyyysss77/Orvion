@@ -7,7 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import Loading from "@/components/loading";
-import { getLogs, type ChatLog, cleanLogs } from "@/lib/api";
+import { getLogs, type ChatLog, cleanLogs, getProviders, getAuthKeysList, type Provider, type AuthKeyItem } from "@/lib/api";
 import { ChevronLeft, ChevronRight, RefreshCw, Trash2, Eye, EyeOff, Timer, Zap, ArrowDown, ArrowUp, Database, Coins } from "lucide-react";
 import hunyuanIcon from "@/assets/modelIcon/hunyuan.svg";
 import doubaoIcon from "@/assets/modelIcon/doubao.svg";
@@ -17,6 +17,7 @@ import minimaxIcon from "@/assets/modelIcon/minimax.svg";
 import openaiIcon from "@/assets/modelIcon/openai.svg";
 import claudeIcon from "@/assets/modelIcon/claude.svg";
 import geminiIcon from "@/assets/modelIcon/gemini.svg";
+import gemmaIcon from "@/assets/modelIcon/gemma.svg";
 import deepseekIcon from "@/assets/modelIcon/deepseek.svg";
 import glmIcon from "@/assets/modelIcon/glm.svg";
 import kimiIcon from "@/assets/modelIcon/kimi.svg";
@@ -93,6 +94,18 @@ const formatCostValue = (value?: number) => {
   if (typeof value !== "number" || !Number.isFinite(value)) return "-";
   const trimmed = value.toFixed(6).replace(/\.?0+$/, "");
   return `$${trimmed}`;
+};
+
+type LogFilterState = {
+  providerName: string;
+  status: string;
+  authKeyId: string;
+};
+
+const defaultLogFilters: LogFilterState = {
+  providerName: "",
+  status: "",
+  authKeyId: "",
 };
 
 type LogCardProps = {
@@ -280,6 +293,7 @@ const modelIconConfigs: ModelIconConfig[] = [
   { test: /minimax|abab/i, src: minimaxIcon, alt: "MiniMax" },
   { test: /openai|gpt|o1|o3|o4/i, src: openaiIcon, alt: "OpenAI" },
   { test: /claude|anthropic/i, src: claudeIcon, alt: "Claude" },
+  { test: /gemma/i, src: gemmaIcon, alt: "Gemma" },
   { test: /gemini|google/i, src: geminiIcon, alt: "Gemini" },
   { test: /glm|zhipu/i, src: glmIcon, alt: "GLM" },
   { test: /kimi|moonshot/i, src: kimiIcon, alt: "Kimi" },
@@ -312,6 +326,10 @@ export default function LogsPage() {
   const [pageSize, setPageSize] = useState(10);
   const [total, setTotal] = useState(0);
   const [pages, setPages] = useState(0);
+  const [providerOptions, setProviderOptions] = useState<Provider[]>([]);
+  const [authKeyOptions, setAuthKeyOptions] = useState<AuthKeyItem[]>([]);
+  const [filters, setFilters] = useState<LogFilterState>(defaultLogFilters);
+  const [draftFilters, setDraftFilters] = useState<LogFilterState>(defaultLogFilters);
   const navigate = useNavigate();
   // 详情弹窗
   const [selectedLog, setSelectedLog] = useState<ChatLog | null>(null);
@@ -321,23 +339,57 @@ export default function LogsPage() {
   const [cleanValue, setCleanValue] = useState<string>('1000');
   const [isCleanDialogOpen, setIsCleanDialogOpen] = useState(false);
   const [cleanLoading, setCleanLoading] = useState(false);
+  const fetchFilterOptions = useCallback(async () => {
+    try {
+      const [providers, authKeys] = await Promise.all([
+        getProviders(),
+        getAuthKeysList(),
+      ]);
+      setProviderOptions(providers);
+      setAuthKeyOptions(authKeys);
+    } catch (error) {
+      console.error("Error fetching log filter options:", error);
+    }
+  }, []);
+
   const fetchLogs = useCallback(async () => {
     setLoading(true);
     try {
-      const result = await getLogs(page, pageSize);
+      const result = await getLogs(page, pageSize, {
+        providerName: filters.providerName || undefined,
+        status: filters.status || undefined,
+        authKeyId: filters.authKeyId || undefined,
+      });
       setLogs(result.data);
       setTotal(result.total);
       setPages(result.pages);
     } catch (error) {
       console.error("Error fetching logs:", error);
+      toast.error("获取日志失败");
     } finally {
       setLoading(false);
     }
-  }, [page, pageSize]);
+  }, [page, pageSize, filters]);
 
   useEffect(() => {
     void fetchLogs();
   }, [fetchLogs]);
+
+  useEffect(() => {
+    void fetchFilterOptions();
+  }, [fetchFilterOptions]);
+
+  const applyFilters = () => {
+    setPage(1);
+    setFilters(draftFilters);
+  };
+
+  const resetFilters = () => {
+    setPage(1);
+    setDraftFilters(defaultLogFilters);
+    setFilters(defaultLogFilters);
+  };
+
   const handlePageChange = (newPage: number) => {
     if (newPage >= 1 && newPage <= pages) setPage(newPage);
   };
@@ -415,6 +467,61 @@ export default function LogsPage() {
               title="刷新列表"
             >
               <RefreshCw className="size-4" />
+            </Button>
+          </div>
+        </div>
+        <div className="rounded-xl border border-border/60 bg-card/80 p-3">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Select
+              value={draftFilters.providerName || "all"}
+              onValueChange={(value) => setDraftFilters((prev) => ({ ...prev, providerName: value === "all" ? "" : value }))}
+            >
+              <SelectTrigger className="h-8 w-[150px] text-xs">
+                <SelectValue placeholder="提供商" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">全部提供商</SelectItem>
+                {providerOptions.map((provider) => (
+                  <SelectItem key={provider.ID} value={provider.Name}>
+                    {provider.Name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select
+              value={draftFilters.status || "all"}
+              onValueChange={(value) => setDraftFilters((prev) => ({ ...prev, status: value === "all" ? "" : value }))}
+            >
+              <SelectTrigger className="h-8 w-[120px] text-xs">
+                <SelectValue placeholder="状态" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">全部状态</SelectItem>
+                <SelectItem value="success">成功</SelectItem>
+                <SelectItem value="error">错误</SelectItem>
+              </SelectContent>
+            </Select>
+            <Select
+              value={draftFilters.authKeyId || "all"}
+              onValueChange={(value) => setDraftFilters((prev) => ({ ...prev, authKeyId: value === "all" ? "" : value }))}
+            >
+              <SelectTrigger className="h-8 w-[170px] text-xs">
+                <SelectValue placeholder="AuthKey" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">全部 AuthKey</SelectItem>
+                {authKeyOptions.map((authKey) => (
+                  <SelectItem key={authKey.id} value={String(authKey.id)}>
+                    {authKey.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button variant="outline" size="sm" className="h-8 text-xs" onClick={resetFilters}>
+              重置
+            </Button>
+            <Button size="sm" className="h-8 text-xs" onClick={applyFilters}>
+              应用筛选
             </Button>
           </div>
         </div>
@@ -539,10 +646,10 @@ export default function LogsPage() {
                   const d = getLogDurationsMs(selectedLog);
                   return (
                     <>
-                      <DetailCard label="代理耗时" value={formatDurationValue(d.proxy)} />
                       <DetailCard label="首包耗时" value={formatDurationValue(d.first)} />
                       <DetailCard label="完成耗时" value={formatDurationValue(d.chunk)} />
                       <DetailCard label="TPS" value={formatTpsValue(selectedLog.Tps)} />
+                      <DetailCard label="价格" value={formatCostValue(selectedLog.total_cost)} />
                     </>
                   );
                 })()}
@@ -557,7 +664,6 @@ export default function LogsPage() {
                       <DetailCard label="输出" value={formatTokenValue(selectedLog.completion_tokens)} />
                       <DetailCard label="总计" value={formatTokenValue(selectedLog.total_tokens)} />
                       <DetailCard label="缓存" value={formatTokenValue(cachedTokens)} />
-                      <DetailCard label="价格" value={formatCostValue(selectedLog.total_cost)} />
                     </>
                   );
                 })()}

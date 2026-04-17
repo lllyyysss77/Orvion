@@ -4,16 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"slices"
+	"strings"
+	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/racio/orvion/common"
 	"github.com/racio/orvion/consts"
-	"github.com/racio/orvion/limiter"
 	"github.com/racio/orvion/models"
 	"github.com/racio/orvion/service"
 	runtimesvc "github.com/racio/orvion/service/runtime"
@@ -38,6 +41,14 @@ func EmbeddingsHandler(c *gin.Context) {
 	ctx := context.WithValue(c.Request.Context(), consts.ContextKeyOpenAIEndpoint, "embeddings")
 	c.Request = c.Request.WithContext(ctx)
 	chatHandler(c, service.BeforerOpenAI, service.ProcesserOpenAI, consts.StyleOpenAI, consts.StyleOpenAIEmbeddings, "embeddings")
+}
+
+// RerankHandler 转发 OpenAI 兼容 rerank 接口:
+// POST /v1/rerank
+func RerankHandler(c *gin.Context) {
+	ctx := context.WithValue(c.Request.Context(), consts.ContextKeyOpenAIEndpoint, "rerank")
+	c.Request = c.Request.WithContext(ctx)
+	chatHandler(c, service.BeforerOpenAI, service.ProcesserOpenAI, consts.StyleOpenAI, consts.StyleOpenAI, "rerank")
 }
 
 // ImagesGenerationsHandler 转发 OpenAI 兼容 images/generations 接口:
@@ -78,6 +89,14 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 		common.InternalServerError(c, err.Error())
 		return
 	}
+	slog.Info("接收到客户端消息",
+		"path", c.FullPath(),
+		"endpoint", endpoint,
+		"model", before.Model,
+		"stream", before.Stream,
+		"payload_bytes", len(reqBody),
+		"payload_preview", formatBodyPreview(reqBody),
+	)
 
 	ctx := c.Request.Context()
 	if endpoint != "" {
@@ -111,11 +130,6 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 		UserAgent: c.Request.UserAgent(),
 	})
 	if err != nil {
-		// 限流/锁定依赖不可用：按 fail-closed 策略直接拒绝
-		if errors.Is(err, limiter.ErrLimiterUnavailable) {
-			common.ErrorWithHttpStatus(c, http.StatusServiceUnavailable, http.StatusServiceUnavailable, "限流服务不可用，请稍后重试")
-			return
-		}
 		common.InternalServerError(c, err.Error())
 		return
 	}
@@ -132,14 +146,22 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 	go service.RecordLog(context.Background(), startReq, pr, postProcessor, logId, log.AuthKeyID, *before, providersWithMeta.IOLog, logStyle)
 
 	writeHeader(c, before.Stream, res.Header, logStyle)
-	mirror := io.MultiWriter(c.Writer, pw)
+	clientWriter := &countingWriter{writer: c.Writer}
+	mirror := io.MultiWriter(clientWriter, pw)
 	if logStyle == consts.StyleOpenAI {
 		if before.Stream {
 			if err := runtimesvc.CopyStreamWithTransform(res.Body, mirror, runtimesvc.NormalizeOpenAIStreamLine); err != nil {
 				_ = pw.CloseWithError(err)
-				slog.Error("stream copy", "err", err)
+				logStreamCopyError("stream copy", err)
 				return
 			}
+			slog.Info("已发送响应消息",
+				"path", c.FullPath(),
+				"endpoint", endpoint,
+				"model", before.Model,
+				"stream", true,
+				"response_bytes", clientWriter.written,
+			)
 		} else {
 			body, readErr := io.ReadAll(res.Body)
 			if readErr != nil {
@@ -153,17 +175,32 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 				slog.Error("write response body", "err", writeErr)
 				return
 			}
+			slog.Info("已发送响应消息",
+				"path", c.FullPath(),
+				"endpoint", endpoint,
+				"model", before.Model,
+				"stream", false,
+				"response_bytes", clientWriter.written,
+				"response_preview", formatBodyPreview(normalized),
+			)
 		}
 		_ = pw.Close()
 		return
 	}
 
 	tee := io.TeeReader(res.Body, pw)
-	if _, err := io.Copy(c.Writer, tee); err != nil {
+	if _, err := io.Copy(clientWriter, tee); err != nil {
 		_ = pw.CloseWithError(err)
-		slog.Error("io copy", "err", err)
+		logStreamCopyError("io copy", err)
 		return
 	}
+	slog.Info("已发送响应消息",
+		"path", c.FullPath(),
+		"endpoint", endpoint,
+		"model", before.Model,
+		"stream", before.Stream,
+		"response_bytes", clientWriter.written,
+	)
 
 	_ = pw.Close()
 }
@@ -193,6 +230,60 @@ func formatHeadersJSON(header http.Header) string {
 		return "{}"
 	}
 	return string(content)
+}
+
+func logStreamCopyError(msg string, err error) {
+	if err == nil {
+		return
+	}
+	if isExpectedClientDisconnect(err) {
+		slog.Debug(msg, "err", err)
+		return
+	}
+	slog.Error(msg, "err", err)
+}
+
+func isExpectedClientDisconnect(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, syscall.EPIPE) {
+		return true
+	}
+	errText := strings.ToLower(err.Error())
+	return strings.Contains(errText, "closed pipe") ||
+		strings.Contains(errText, "broken pipe") ||
+		strings.Contains(errText, "client disconnected")
+}
+
+type countingWriter struct {
+	writer  io.Writer
+	written int64
+}
+
+func (w *countingWriter) Write(p []byte) (int, error) {
+	n, err := w.writer.Write(p)
+	w.written += int64(n)
+	return n, err
+}
+
+func formatBodyPreview(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	const maxPreviewBytes = 512
+	preview := raw
+	truncated := false
+	if len(preview) > maxPreviewBytes {
+		preview = preview[:maxPreviewBytes]
+		truncated = true
+	}
+	if !utf8.Valid(preview) {
+		return fmt.Sprintf("[非 UTF-8 内容，总长度 %d 字节]", len(raw))
+	}
+	text := strings.ReplaceAll(string(preview), "\n", "\\n")
+	text = strings.ReplaceAll(text, "\r", "\\r")
+	if truncated {
+		return text + "...(已截断)"
+	}
+	return text
 }
 
 // 校验auhtKey的模型使用权限

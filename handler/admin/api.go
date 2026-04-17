@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -34,7 +35,10 @@ type ProviderRequest struct {
 const (
 	modelsFetchModeV1Models = "v1_models"
 	modelsFetchModePricing  = "api_pricing"
+	pricingFetchTimeout     = 20 * time.Second
 )
+
+var pricingHTTPClient = &http.Client{Timeout: pricingFetchTimeout}
 
 // ModelRequest represents the request body for creating/updating a model
 type ModelRequest struct {
@@ -93,15 +97,31 @@ type ConfigValueRequest struct {
 // GetProviders 获取所有提供商列表（支持名称搜索）
 func GetProviders(c *gin.Context) {
 	name := c.Query("name")
+	ctx := c.Request.Context()
+	now := time.Now()
+	year, month, day := now.Date()
+	startOfDay := time.Date(year, month, day, 0, 0, 0, 0, now.Location())
 
-	query := models.DB.Model(&models.Provider{}).WithContext(c.Request.Context())
+	query := models.DB.Model(&models.Provider{}).WithContext(ctx)
 
 	if name != "" {
 		query = query.Where("name LIKE ?", "%"+name+"%")
 	}
 
-	// 默认按创建时间升序排列（新创建的在后），保证“提供商管理”列表的排行稳定且可预期
-	query = query.Order("created_at ASC").Order("id DESC")
+	// 按“今天使用量”降序排序，使用量相同时再按创建时间和 ID 稳定排序。
+	usageSubQuery := models.DB.
+		Model(&models.ChatLog{}).
+		Select("provider_name, COUNT(*) AS usage_count").
+		Where("deleted_at IS NULL").
+		Where("created_at >= ?", startOfDay).
+		Group("provider_name")
+
+	query = query.
+		Joins("LEFT JOIN (?) AS usage_stats ON usage_stats.provider_name = providers.name", usageSubQuery).
+		Order("COALESCE(usage_stats.usage_count, 0) DESC").
+		Order("providers.created_at ASC").
+		Order("providers.id DESC")
+
 	var providers []models.Provider
 	if err := query.Find(&providers).Error; err != nil {
 		common.InternalServerError(c, err.Error())
@@ -173,7 +193,7 @@ func listProviderModelsFromPricing(ctx context.Context, configRaw string) ([]pro
 	if strings.TrimSpace(cfg.APIKey) != "" {
 		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(cfg.APIKey))
 	}
-	res, err := http.DefaultClient.Do(req)
+	res, err := pricingHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -956,6 +976,8 @@ func GetRequestLogs(c *gin.Context) {
 	status := c.Query("status")
 	style := c.Query("style")
 	authKeyID := c.Query("auth_key_id")
+	startAtRaw := strings.TrimSpace(c.Query("start_at"))
+	endAtRaw := strings.TrimSpace(c.Query("end_at"))
 
 	// 构建查询条件
 	query := models.DB.Model(&models.ChatLog{})
@@ -978,6 +1000,24 @@ func GetRequestLogs(c *gin.Context) {
 
 	if authKeyID != "" {
 		query = query.Where("auth_key_id = ?", authKeyID)
+	}
+
+	if startAtRaw != "" {
+		startAt, err := parseLogQueryTime(startAtRaw)
+		if err != nil {
+			common.BadRequest(c, "Invalid start_at format")
+			return
+		}
+		query = query.Where("created_at >= ?", startAt)
+	}
+
+	if endAtRaw != "" {
+		endAt, err := parseLogQueryTime(endAtRaw)
+		if err != nil {
+			common.BadRequest(c, "Invalid end_at format")
+			return
+		}
+		query = query.Where("created_at <= ?", endAt)
 	}
 
 	// 执行分页查询
@@ -1018,6 +1058,29 @@ func GetRequestLogs(c *gin.Context) {
 	// 返回分页响应
 	response := common.NewPaginationResponse(wrapLogs, total, params)
 	common.Success(c, response)
+}
+
+func parseLogQueryTime(raw string) (time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, fmt.Errorf("empty time")
+	}
+	layouts := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02T15:04",
+		"2006-01-02 15:04:05",
+		"2006-01-02",
+	}
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, raw); err == nil {
+			return t, nil
+		}
+		if t, err := time.ParseInLocation(layout, raw, time.Local); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("invalid time format")
 }
 
 // GetChatIO 查询指定日志的输入输出记录
@@ -1230,6 +1293,21 @@ func UpdateConfigByKey(c *gin.Context) {
 func RunModelPriceSync(c *gin.Context) {
 	if err := service.TriggerModelPriceSync(c.Request.Context()); err != nil {
 		common.InternalServerError(c, "Failed to sync model prices: "+err.Error())
+		return
+	}
+	common.Success(c, map[string]any{
+		"status": "ok",
+	})
+}
+
+// RunTelegramBreakerAlertTest 发送 TG 告警测试消息
+func RunTelegramBreakerAlertTest(c *gin.Context) {
+	if err := service.SendTelegramBreakerAlertTest(c.Request.Context()); err != nil {
+		if errors.Is(err, service.ErrTelegramNotifierNotConfigured) {
+			common.BadRequest(c, "TG 告警未启用或配置不完整，请先保存 TG 告警配置")
+			return
+		}
+		common.InternalServerError(c, "Failed to send telegram breaker alert test: "+err.Error())
 		return
 	}
 	common.Success(c, map[string]any{

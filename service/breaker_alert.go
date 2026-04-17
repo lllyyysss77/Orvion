@@ -1,0 +1,501 @@
+package service
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"mime/multipart"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/racio/orvion/balancers"
+	"github.com/racio/orvion/models"
+	"gorm.io/gorm"
+)
+
+const (
+	envTelegramBotToken = "BREAKER_ALERT_TG_BOT_TOKEN"
+	envTelegramChatID   = "BREAKER_ALERT_TG_CHAT_ID"
+	envTelegramAPIBase  = "BREAKER_ALERT_TG_API_BASE"
+	envTelegramProxyURL = "BREAKER_ALERT_TG_PROXY_URL"
+
+	telegramDefaultAPIBase         = "https://api.telegram.org"
+	telegramHTTPTimeout            = 25 * time.Second
+	telegramPhotoHTTPTimeout       = 35 * time.Second
+	telegramRequestRetryMaxAttempt = 3
+	telegramRequestRetryDelay      = 800 * time.Millisecond
+)
+
+var ErrTelegramNotifierNotConfigured = errors.New("telegram 告警未启用或配置不完整")
+
+type telegramNotifier struct {
+	endpoint string
+	chatID   string
+	client   *http.Client
+	apiBase  string
+	botToken string
+}
+
+type telegramSendMessageRequest struct {
+	ChatID      string `json:"chat_id"`
+	Text        string `json:"text"`
+	ReplyMarkup any    `json:"reply_markup,omitempty"`
+}
+
+type telegramSendPhotoRequest struct {
+	ChatID  string `json:"chat_id"`
+	Photo   string `json:"photo"`
+	Caption string `json:"caption,omitempty"`
+}
+
+type telegramEditMessageTextRequest struct {
+	ChatID      int64  `json:"chat_id"`
+	MessageID   int64  `json:"message_id"`
+	Text        string `json:"text"`
+	ReplyMarkup any    `json:"reply_markup,omitempty"`
+}
+
+type telegramAnswerCallbackQueryRequest struct {
+	CallbackQueryID string `json:"callback_query_id"`
+	Text            string `json:"text,omitempty"`
+	ShowAlert       bool   `json:"show_alert,omitempty"`
+}
+
+type telegramSetMyCommandsRequest struct {
+	Commands []telegramBotCommand `json:"commands"`
+}
+
+type telegramBotCommand struct {
+	Command     string `json:"command"`
+	Description string `json:"description"`
+}
+
+type telegramSendMessageResponse struct {
+	OK          bool   `json:"ok"`
+	Description string `json:"description"`
+}
+
+// InitBreakerAlertNotifier 初始化熔断告警通知（Telegram）。
+// 优先读取系统配置（configs.key=breaker_alert_tg），未配置时回退环境变量。
+func InitBreakerAlertNotifier() {
+	balancers.SetBreakerOpenHook(func(event balancers.BreakerOpenEvent) {
+		notifier, ok, err := resolveTelegramNotifier(context.Background())
+		if err != nil {
+			slog.Warn("加载 Telegram 告警配置失败", "error", err)
+			return
+		}
+		if !ok {
+			return
+		}
+		if err := notifier.SendBreakerOpen(event); err != nil {
+			slog.Warn("发送熔断告警失败", "error", err, "model_with_provider_id", event.Key)
+		}
+	})
+
+	notifier, ok, err := resolveTelegramNotifier(context.Background())
+	if err != nil {
+		slog.Warn("初始化 Telegram 告警失败", "error", err)
+		return
+	}
+	if ok && notifier != nil {
+		slog.Info("已启用熔断 Telegram 告警")
+	}
+}
+
+func resolveTelegramNotifier(ctx context.Context) (*telegramNotifier, bool, error) {
+	cfg, found, err := loadTelegramBreakerAlertConfig(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	if found {
+		return buildTelegramNotifier(cfg.BotToken, cfg.ChatID, cfg.APIBase, cfg.ProxyURL, cfg.Enabled)
+	}
+	return buildTelegramNotifierFromEnv()
+}
+
+func loadTelegramBreakerAlertConfig(ctx context.Context) (models.TelegramBreakerAlertConfig, bool, error) {
+	config, err := gorm.G[models.Config](models.DB).Where("key = ?", models.KeyTelegramBreakerAlert).First(ctx)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return models.TelegramBreakerAlertConfig{}, false, nil
+		}
+		return models.TelegramBreakerAlertConfig{}, false, err
+	}
+
+	raw := strings.TrimSpace(config.Value)
+	if raw == "" {
+		return models.TelegramBreakerAlertConfig{}, true, nil
+	}
+
+	var cfg models.TelegramBreakerAlertConfig
+	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+		return models.TelegramBreakerAlertConfig{}, true, fmt.Errorf("解析 TG 告警配置失败: %w", err)
+	}
+	return cfg, true, nil
+}
+
+func buildTelegramNotifierFromEnv() (*telegramNotifier, bool, error) {
+	botToken := strings.TrimSpace(os.Getenv(envTelegramBotToken))
+	chatID := strings.TrimSpace(os.Getenv(envTelegramChatID))
+	apiBase := strings.TrimSpace(os.Getenv(envTelegramAPIBase))
+	proxyURL := strings.TrimSpace(os.Getenv(envTelegramProxyURL))
+	return buildTelegramNotifier(botToken, chatID, apiBase, proxyURL, true)
+}
+
+func buildTelegramNotifier(botToken string, chatID string, apiBase string, proxyURL string, enabled bool) (*telegramNotifier, bool, error) {
+	if !enabled {
+		return nil, false, nil
+	}
+	botToken = strings.TrimSpace(botToken)
+	chatID = strings.TrimSpace(chatID)
+	if botToken == "" || chatID == "" {
+		return nil, false, nil
+	}
+
+	apiBase = strings.TrimSpace(apiBase)
+	if apiBase == "" {
+		apiBase = telegramDefaultAPIBase
+	}
+	apiBase = strings.TrimRight(apiBase, "/")
+
+	httpClient, err := buildTelegramHTTPClient(proxyURL)
+	if err != nil {
+		return nil, false, err
+	}
+	return &telegramNotifier{
+		endpoint: fmt.Sprintf("%s/bot%s/sendMessage", apiBase, botToken),
+		chatID:   chatID,
+		client:   httpClient,
+		apiBase:  apiBase,
+		botToken: botToken,
+	}, true, nil
+}
+
+func buildTelegramHTTPClient(proxyURL string) (*http.Client, error) {
+	proxyURL = strings.TrimSpace(proxyURL)
+	if proxyURL == "" {
+		return &http.Client{Timeout: telegramHTTPTimeout}, nil
+	}
+
+	proxyParsed, err := url.Parse(proxyURL)
+	if err != nil {
+		return nil, fmt.Errorf("代理 URL 无效: %w", err)
+	}
+	if strings.TrimSpace(proxyParsed.Scheme) == "" || strings.TrimSpace(proxyParsed.Host) == "" {
+		return nil, fmt.Errorf("代理 URL 缺少 scheme 或 host")
+	}
+
+	defaultTransport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return nil, fmt.Errorf("默认 HTTP transport 类型不受支持")
+	}
+	transport := defaultTransport.Clone()
+	transport.Proxy = http.ProxyURL(proxyParsed)
+
+	return &http.Client{
+		Timeout:   telegramHTTPTimeout,
+		Transport: transport,
+	}, nil
+}
+
+// SendTelegramBreakerAlertTest 发送 TG 熔断告警测试消息。
+func SendTelegramBreakerAlertTest(ctx context.Context) error {
+	notifier, ok, err := resolveTelegramNotifier(ctx)
+	if err != nil {
+		return err
+	}
+	if !ok || notifier == nil {
+		return ErrTelegramNotifierNotConfigured
+	}
+
+	testContent := strings.Join([]string{
+		"【Orvion TG 告警测试】",
+		fmt.Sprintf("时间：%s", time.Now().Format("2006-01-02 15:04:05")),
+		"状态：测试消息发送成功",
+		"说明：这是一条来自系统配置页面的测试消息。",
+	}, "\n")
+
+	return notifier.sendText(testContent)
+}
+
+func (n *telegramNotifier) SendBreakerOpen(event balancers.BreakerOpenEvent) error {
+	content := strings.Join([]string{
+		"【Orvion 熔断告警】",
+		fmt.Sprintf("时间：%s", event.At.Format("2006-01-02 15:04:05")),
+		fmt.Sprintf("模型关联ID：%d", event.Key),
+		fmt.Sprintf("前置状态：%s", event.PrevState.String()),
+		fmt.Sprintf("触发原因：%s", event.Reason),
+		fmt.Sprintf("失败计数：%d", event.FailCount),
+		fmt.Sprintf("冷却结束：%s", event.OpenUntil.Format("2006-01-02 15:04:05")),
+	}, "\n")
+	return n.sendText(content)
+}
+
+func (n *telegramNotifier) sendText(content string) error {
+	return n.sendTextWithMarkupToChat(n.chatID, content, nil)
+}
+
+func (n *telegramNotifier) sendTextWithMarkupToChat(chatID string, content string, replyMarkup any) error {
+	payload := telegramSendMessageRequest{
+		ChatID:      chatID,
+		Text:        content,
+		ReplyMarkup: replyMarkup,
+	}
+	if err := n.postTelegramMethod(context.Background(), "sendMessage", payload); err != nil {
+		slog.Warn("发送 TG 文本消息失败", "chat_id", strings.TrimSpace(chatID), "text_bytes", len(content), "error", err)
+		return err
+	}
+	slog.Info("已发送 TG 文本消息", "chat_id", strings.TrimSpace(chatID), "text_bytes", len(content))
+	return nil
+}
+
+func (n *telegramNotifier) sendPhotoWithCaptionToChat(chatID string, photoURL string, caption string) error {
+	payload := telegramSendPhotoRequest{
+		ChatID:  strings.TrimSpace(chatID),
+		Photo:   strings.TrimSpace(photoURL),
+		Caption: strings.TrimSpace(caption),
+	}
+	if err := n.postTelegramMethod(context.Background(), "sendPhoto", payload); err != nil {
+		slog.Warn("发送 TG 图片消息失败", "chat_id", payload.ChatID, "photo_url", payload.Photo, "caption_bytes", len(payload.Caption), "error", err)
+		return err
+	}
+	slog.Info("已发送 TG 图片消息", "chat_id", payload.ChatID, "photo_url", payload.Photo, "caption_bytes", len(payload.Caption))
+	return nil
+}
+
+func (n *telegramNotifier) sendPhotoBinaryToChat(chatID string, filename string, photoData []byte, caption string) error {
+	if n == nil {
+		return fmt.Errorf("telegram notifier is nil")
+	}
+	methodURL := n.telegramMethodURL("sendPhoto")
+	if methodURL == "" {
+		return fmt.Errorf("telegram method url is empty: sendPhoto")
+	}
+	chatID = strings.TrimSpace(chatID)
+	if chatID == "" {
+		return fmt.Errorf("chat_id is empty")
+	}
+	if len(photoData) == 0 {
+		return fmt.Errorf("photo binary is empty")
+	}
+	filename = strings.TrimSpace(filename)
+	if filename == "" {
+		filename = "status.jpg"
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("chat_id", chatID); err != nil {
+		return err
+	}
+	if strings.TrimSpace(caption) != "" {
+		if err := writer.WriteField("caption", strings.TrimSpace(caption)); err != nil {
+			return err
+		}
+	}
+	filePart, err := writer.CreateFormFile("photo", filename)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(filePart, bytes.NewReader(photoData)); err != nil {
+		return err
+	}
+	if err := writer.Close(); err != nil {
+		return err
+	}
+
+	if err := n.postTelegramRawWithRetry(context.Background(), methodURL, writer.FormDataContentType(), body.Bytes(), telegramPhotoHTTPTimeout); err != nil {
+		slog.Warn("发送 TG 二进制图片消息失败", "chat_id", chatID, "filename", filename, "photo_bytes", len(photoData), "caption_bytes", len(strings.TrimSpace(caption)), "error", err)
+		return err
+	}
+	slog.Info("已发送 TG 二进制图片消息", "chat_id", chatID, "filename", filename, "photo_bytes", len(photoData), "caption_bytes", len(strings.TrimSpace(caption)))
+	return nil
+}
+
+func (n *telegramNotifier) editMessageTextWithMarkup(chatID int64, messageID int64, content string, replyMarkup any) error {
+	payload := telegramEditMessageTextRequest{
+		ChatID:      chatID,
+		MessageID:   messageID,
+		Text:        content,
+		ReplyMarkup: replyMarkup,
+	}
+	return n.postTelegramMethod(context.Background(), "editMessageText", payload)
+}
+
+func (n *telegramNotifier) answerCallbackQuery(callbackQueryID string, text string, showAlert bool) error {
+	payload := telegramAnswerCallbackQueryRequest{
+		CallbackQueryID: strings.TrimSpace(callbackQueryID),
+		Text:            strings.TrimSpace(text),
+		ShowAlert:       showAlert,
+	}
+	return n.postTelegramMethod(context.Background(), "answerCallbackQuery", payload)
+}
+
+func (n *telegramNotifier) setMyCommands(commands []telegramBotCommand) error {
+	if len(commands) == 0 {
+		return nil
+	}
+	payload := telegramSetMyCommandsRequest{
+		Commands: commands,
+	}
+	return n.postTelegramMethod(context.Background(), "setMyCommands", payload)
+}
+
+func (n *telegramNotifier) postTelegramMethod(parent context.Context, method string, payload any) error {
+	if n == nil {
+		return fmt.Errorf("telegram notifier is nil")
+	}
+	methodURL := n.telegramMethodURL(method)
+	if methodURL == "" {
+		return fmt.Errorf("telegram method url is empty: %s", method)
+	}
+
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+
+	return n.postTelegramRawWithRetry(parent, methodURL, "application/json", raw, telegramHTTPTimeout)
+}
+
+func (n *telegramNotifier) postTelegramRawWithRetry(parent context.Context, methodURL string, contentType string, rawBody []byte, timeout time.Duration) error {
+	if n == nil {
+		return fmt.Errorf("telegram notifier is nil")
+	}
+	if parent == nil {
+		parent = context.Background()
+	}
+	if timeout <= 0 {
+		timeout = telegramHTTPTimeout
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= telegramRequestRetryMaxAttempt; attempt++ {
+		attemptCtx, cancel := context.WithTimeout(parent, timeout)
+		req, err := http.NewRequestWithContext(attemptCtx, http.MethodPost, methodURL, bytes.NewReader(rawBody))
+		if err != nil {
+			cancel()
+			return err
+		}
+		req.Header.Set("Content-Type", contentType)
+
+		res, err := n.client.Do(req)
+		if err != nil {
+			cancel()
+			lastErr = err
+			if !shouldRetryTelegramNetworkError(err) || attempt >= telegramRequestRetryMaxAttempt {
+				return lastErr
+			}
+			if !sleepTelegramRetry(parent, telegramRequestRetryDelay*time.Duration(attempt)) {
+				return lastErr
+			}
+			continue
+		}
+
+		var response telegramSendMessageResponse
+		decodeErr := json.NewDecoder(res.Body).Decode(&response)
+		_ = res.Body.Close()
+		cancel()
+
+		if decodeErr != nil {
+			lastErr = decodeErr
+			if attempt >= telegramRequestRetryMaxAttempt {
+				return fmt.Errorf("telegram decode response failed: %w", decodeErr)
+			}
+			if !sleepTelegramRetry(parent, telegramRequestRetryDelay*time.Duration(attempt)) {
+				return lastErr
+			}
+			continue
+		}
+
+		if res.StatusCode == http.StatusOK && response.OK {
+			return nil
+		}
+
+		if res.StatusCode != http.StatusOK {
+			lastErr = fmt.Errorf("telegram status=%d description=%s", res.StatusCode, response.Description)
+		} else {
+			lastErr = fmt.Errorf("telegram response not ok: %s", response.Description)
+		}
+
+		if !shouldRetryTelegramStatus(res.StatusCode, response.Description) || attempt >= telegramRequestRetryMaxAttempt {
+			return lastErr
+		}
+		if !sleepTelegramRetry(parent, telegramRequestRetryDelay*time.Duration(attempt)) {
+			return lastErr
+		}
+	}
+
+	if lastErr == nil {
+		lastErr = fmt.Errorf("telegram request failed")
+	}
+	return lastErr
+}
+
+func shouldRetryTelegramNetworkError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "client.timeout") ||
+		strings.Contains(text, "deadline exceeded") ||
+		strings.Contains(text, "connection reset by peer") ||
+		strings.Contains(text, "broken pipe") ||
+		strings.Contains(text, "unexpected eof") ||
+		strings.Contains(text, "timeout")
+}
+
+func shouldRetryTelegramStatus(statusCode int, description string) bool {
+	if statusCode == http.StatusTooManyRequests || statusCode == http.StatusRequestTimeout {
+		return true
+	}
+	if statusCode >= http.StatusInternalServerError {
+		return true
+	}
+	desc := strings.ToLower(strings.TrimSpace(description))
+	return strings.Contains(desc, "too many requests") || strings.Contains(desc, "timeout")
+}
+
+func sleepTelegramRetry(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return true
+	}
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(d):
+		return true
+	}
+}
+
+func (n *telegramNotifier) telegramMethodURL(method string) string {
+	method = strings.TrimSpace(method)
+	if method == "" {
+		return ""
+	}
+	if n.apiBase != "" && n.botToken != "" {
+		return fmt.Sprintf("%s/bot%s/%s", strings.TrimRight(n.apiBase, "/"), n.botToken, method)
+	}
+	if method == "sendMessage" {
+		return n.endpoint
+	}
+	return ""
+}

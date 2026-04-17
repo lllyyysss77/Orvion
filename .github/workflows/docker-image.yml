@@ -120,6 +120,8 @@ jobs:
           push: true
           provenance: false
           sbom: false
+          build-args: |
+            VERSION=${{ needs.version.outputs.version }}
           tags: |
             ${{ needs.version.outputs.image }}:build-amd64-${{ github.sha }}
           cache-from: |
@@ -158,6 +160,8 @@ jobs:
           push: true
           provenance: false
           sbom: false
+          build-args: |
+            VERSION=${{ needs.version.outputs.version }}
           tags: |
             ${{ needs.version.outputs.image }}:build-arm64-${{ github.sha }}
           cache-from: |

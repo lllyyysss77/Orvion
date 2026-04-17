@@ -4,6 +4,7 @@ import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import {
   Form,
   FormControl,
@@ -18,11 +19,12 @@ import { Switch } from '@/components/ui/switch';
 import {
   configAPI,
   type AnthropicProxyIPConfig,
+  type TelegramBreakerAlertConfig,
   type ModelPriceSyncConfig,
   type SystemLogCleanupConfig,
 } from '@/lib/api';
 import { toast } from 'sonner';
-import { Settings, Network, Coins, FileClock } from 'lucide-react';
+import { Settings, Network, Coins, FileClock, Type, Send } from 'lucide-react';
 
 const anthropicProxySchema = z.object({
   enabled: z.boolean(),
@@ -38,18 +40,73 @@ const priceSyncSchema = z.object({
   source_url: z.string().trim(),
 });
 
+const telegramBreakerAlertSchema = z.object({
+  enabled: z.boolean(),
+  bot_token: z.string().trim(),
+  chat_id: z.string().trim(),
+  api_base: z.string().trim(),
+  proxy_url: z.string().trim(),
+}).refine((data) => !data.enabled || data.bot_token.length > 0, {
+  message: '启用 TG 告警时必须填写 Bot Token',
+  path: ['bot_token'],
+}).refine((data) => !data.enabled || data.chat_id.length > 0, {
+  message: '启用 TG 告警时必须填写 Chat ID',
+  path: ['chat_id'],
+}).refine((data) => data.api_base.length === 0 || isValidURL(data.api_base), {
+  message: 'TG API 地址格式不正确',
+  path: ['api_base'],
+}).refine((data) => data.proxy_url.length === 0 || isValidURL(data.proxy_url), {
+  message: '代理 URL 格式不正确',
+  path: ['proxy_url'],
+});
+
 const systemLogCleanupSchema = z.object({
   enabled: z.boolean(),
   interval_minutes: z.number().min(1, { message: '清理间隔必须大于 0' }),
 });
 
+const uiFontSchema = z.object({
+  font: z.enum(['default', 'kunming_seagull', 'fenyuan', 'lxgw_wenkai']),
+});
+
 type AnthropicProxyForm = z.infer<typeof anthropicProxySchema>;
+type TelegramBreakerAlertForm = z.infer<typeof telegramBreakerAlertSchema>;
 type PriceSyncForm = z.infer<typeof priceSyncSchema>;
 type SystemLogCleanupForm = z.infer<typeof systemLogCleanupSchema>;
+type UIFontForm = z.infer<typeof uiFontSchema>;
+
+const UI_FONT_STORAGE_KEY = "orvion_ui_font";
+
+const resolveUIFont = (font?: string): UIFontForm['font'] => {
+  if (font === 'kunming_seagull' || font === 'fenyuan' || font === 'lxgw_wenkai') {
+    return font;
+  }
+  return 'default';
+};
+
+const isValidURL = (raw: string): boolean => {
+  try {
+    const parsed = new URL(raw);
+    return parsed.protocol.length > 0;
+  } catch {
+    return false;
+  }
+};
+
+const applyUIFontSetting = (font: UIFontForm["font"]) => {
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem(UI_FONT_STORAGE_KEY, font);
+    window.dispatchEvent(new CustomEvent("ui-font-changed", { detail: { font } }));
+  }
+  if (typeof document !== "undefined") {
+    document.documentElement.dataset.uiFont = font;
+  }
+};
 
 export default function ConfigPage() {
   const [loading, setLoading] = useState(true);
   const [priceSyncing, setPriceSyncing] = useState(false);
+  const [tgTesting, setTgTesting] = useState(false);
   const proxyForm = useForm<AnthropicProxyForm>({
     resolver: zodResolver(anthropicProxySchema),
     defaultValues: {
@@ -67,11 +124,29 @@ export default function ConfigPage() {
     },
   });
 
+  const telegramBreakerAlertForm = useForm<TelegramBreakerAlertForm>({
+    resolver: zodResolver(telegramBreakerAlertSchema),
+    defaultValues: {
+      enabled: false,
+      bot_token: '',
+      chat_id: '',
+      api_base: 'https://api.telegram.org',
+      proxy_url: '',
+    },
+  });
+
   const systemLogCleanupForm = useForm<SystemLogCleanupForm>({
     resolver: zodResolver(systemLogCleanupSchema),
     defaultValues: {
       enabled: true,
       interval_minutes: 1440,
+    },
+  });
+
+  const uiFontForm = useForm<UIFontForm>({
+    resolver: zodResolver(uiFontSchema),
+    defaultValues: {
+      font: 'default',
     },
   });
 
@@ -90,6 +165,23 @@ export default function ConfigPage() {
       }
     } catch (error) {
       console.error('Failed to load config:', error);
+    }
+
+    try {
+      const telegramResponse = await configAPI.getConfig('breaker_alert_tg');
+      if (telegramResponse.value) {
+        const tgCfg = JSON.parse(telegramResponse.value) as TelegramBreakerAlertConfig;
+        const nextTGConfig = {
+          enabled: Boolean(tgCfg.enabled),
+          bot_token: tgCfg.bot_token || '',
+          chat_id: tgCfg.chat_id || '',
+          api_base: tgCfg.api_base || 'https://api.telegram.org',
+          proxy_url: tgCfg.proxy_url || '',
+        };
+        telegramBreakerAlertForm.reset(nextTGConfig);
+      }
+    } catch (error) {
+      console.error('Failed to load telegram breaker alert config:', error);
     }
 
     try {
@@ -122,8 +214,20 @@ export default function ConfigPage() {
       console.error('Failed to load system log cleanup config:', error);
     }
 
+    try {
+      const uiFontResponse = await configAPI.getConfig('ui_font');
+      if (uiFontResponse.value) {
+        const fontCfg = JSON.parse(uiFontResponse.value) as { font?: string };
+        const nextFont = resolveUIFont(fontCfg.font);
+        uiFontForm.reset({ font: nextFont });
+        applyUIFontSetting(nextFont);
+      }
+    } catch (error) {
+      console.error('Failed to load ui font config:', error);
+    }
+
     setLoading(false);
-  }, [priceSyncForm, proxyForm, systemLogCleanupForm]);
+  }, [priceSyncForm, proxyForm, systemLogCleanupForm, telegramBreakerAlertForm, uiFontForm]);
 
   useEffect(() => {
     void fetchConfig();
@@ -149,6 +253,30 @@ export default function ConfigPage() {
     }
   };
 
+  const onTelegramBreakerAlertSubmit = async (values: TelegramBreakerAlertForm) => {
+    try {
+      await configAPI.updateConfig('breaker_alert_tg', values);
+      toast.success('TG 告警配置已保存');
+    } catch (error) {
+      console.error('Failed to save telegram breaker alert config:', error);
+      toast.error('保存 TG 告警配置失败');
+    }
+  };
+
+  const handleRunTelegramBreakerAlertTest = async () => {
+    try {
+      setTgTesting(true);
+      await configAPI.runTelegramBreakerAlertTest();
+      toast.success('TG 测试消息已发送');
+    } catch (error) {
+      console.error('Failed to run telegram breaker alert test:', error);
+      const message = error instanceof Error ? error.message : '发送 TG 测试消息失败';
+      toast.error(message);
+    } finally {
+      setTgTesting(false);
+    }
+  };
+
   const onSystemLogCleanupSubmit = async (values: SystemLogCleanupForm) => {
     try {
       await configAPI.updateConfig('system_log_cleanup', values);
@@ -156,6 +284,17 @@ export default function ConfigPage() {
     } catch (error) {
       console.error('Failed to save system log cleanup config:', error);
       toast.error('保存系统日志自动清理配置失败');
+    }
+  };
+
+  const onUIFontSubmit = async (values: UIFontForm) => {
+    try {
+      await configAPI.updateConfig('ui_font', values);
+      applyUIFontSetting(values.font);
+      toast.success('界面字体配置已保存');
+    } catch (error) {
+      console.error('Failed to save ui font config:', error);
+      toast.error('保存界面字体配置失败');
     }
   };
 
@@ -238,6 +377,101 @@ export default function ConfigPage() {
             </CardContent>
             <CardFooter className="flex justify-between">
               <Button type="submit" form="proxy-form">保存配置</Button>
+            </CardFooter>
+          </Card>
+
+          <Card className="rounded-2xl border border-border/60 bg-card/90 shadow-[0_18px_45px_rgba(0,0,0,0.08)]">
+            <CardHeader className="pb-2">
+              <CardTitle className="flex items-center gap-2 text-sm font-semibold">
+                <Send className="size-4 text-emerald-600" />
+                TG 告警配置
+              </CardTitle>
+              <CardDescription className="text-xs">
+                配置熔断告警发送到 Telegram 的 Bot 参数与发送代理。保存后可在 TG 对话中发送 /status 或 /help。
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <Form {...telegramBreakerAlertForm}>
+                <form id="telegram-breaker-alert-form" onSubmit={telegramBreakerAlertForm.handleSubmit(onTelegramBreakerAlertSubmit)} className="space-y-4">
+                  <FormField
+                    control={telegramBreakerAlertForm.control}
+                    name="enabled"
+                    render={({ field }) => (
+                      <FormItem className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/50 px-3 py-2">
+                        <FormLabel className="text-xs text-muted-foreground">启用 TG 告警</FormLabel>
+                        <FormControl>
+                          <Switch
+                            checked={field.value === true}
+                            onCheckedChange={(checked) => field.onChange(checked === true)}
+                          />
+                        </FormControl>
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={telegramBreakerAlertForm.control}
+                    name="bot_token"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Bot Token</FormLabel>
+                        <FormControl>
+                          <Input type="password" placeholder="123456789:AA..." {...field} />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={telegramBreakerAlertForm.control}
+                    name="chat_id"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Chat ID</FormLabel>
+                        <FormControl>
+                          <Input placeholder="-1001234567890" {...field} />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={telegramBreakerAlertForm.control}
+                    name="api_base"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>TG API 地址</FormLabel>
+                        <FormControl>
+                          <Input placeholder="https://api.telegram.org" {...field} />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={telegramBreakerAlertForm.control}
+                    name="proxy_url"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>发送代理 URL（可选）</FormLabel>
+                        <FormControl>
+                          <Input placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080" {...field} />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </form>
+              </Form>
+            </CardContent>
+            <CardFooter className="flex justify-between">
+              <Button type="button" variant="outline" onClick={handleRunTelegramBreakerAlertTest} disabled={tgTesting}>
+                {tgTesting ? '发送中...' : '发送测试消息'}
+              </Button>
+              <Button type="submit" form="telegram-breaker-alert-form">保存配置</Button>
             </CardFooter>
           </Card>
 
@@ -367,6 +601,50 @@ export default function ConfigPage() {
             </CardContent>
             <CardFooter className="justify-end">
               <Button type="submit" form="system-log-cleanup-form">保存配置</Button>
+            </CardFooter>
+          </Card>
+
+          <Card className="rounded-2xl border border-border/60 bg-card/90 shadow-[0_18px_45px_rgba(0,0,0,0.08)]">
+            <CardHeader className="pb-2">
+              <CardTitle className="flex items-center gap-2 text-sm font-semibold">
+                <Type className="size-4 text-emerald-600" />
+                界面字体配置
+              </CardTitle>
+              <CardDescription className="text-xs">
+                当前支持默认字体、昆明海鸥体、粉圆体和霞鹜文楷。选择昆明海鸥体后，正文会略微放大。
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <Form {...uiFontForm}>
+                <form id="ui-font-form" onSubmit={uiFontForm.handleSubmit(onUIFontSubmit)} className="space-y-4">
+                  <FormField
+                    control={uiFontForm.control}
+                    name="font"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>字体</FormLabel>
+                        <FormControl>
+                          <Select value={field.value} onValueChange={(value) => field.onChange(value as UIFontForm['font'])}>
+                            <SelectTrigger className="h-9 w-full bg-white">
+                              <SelectValue placeholder="选择字体" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="default">默认字体</SelectItem>
+                              <SelectItem value="kunming_seagull">昆明海鸥体</SelectItem>
+                              <SelectItem value="fenyuan">粉圆体</SelectItem>
+                              <SelectItem value="lxgw_wenkai">霞鹜文楷</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </form>
+              </Form>
+            </CardContent>
+            <CardFooter className="justify-end">
+              <Button type="submit" form="ui-font-form">保存配置</Button>
             </CardFooter>
           </Card>
         </div>

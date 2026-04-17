@@ -113,6 +113,7 @@ func registerUnifiedRoutes(router *gin.Engine, authOpenAI gin.HandlerFunc, authA
 	v1.POST("/chat/completions", authOpenAI, handler.ChatCompletionsHandler)
 	v1.POST("/responses", authOpenAI, handler.ResponsesHandler)
 	v1.POST("/embeddings", authOpenAI, handler.EmbeddingsHandler)
+	v1.POST("/rerank", authOpenAI, handler.RerankHandler)
 	v1.POST("/images/generations", authOpenAI, handler.ImagesGenerationsHandler)
 	v1.POST("/images/edits", authOpenAI, handler.ImagesEditsHandler)
 	v1.POST("/videos", authOpenAI, handler.VideosHandler)
@@ -147,6 +148,7 @@ func registerMetricsRoutes(api *gin.RouterGroup) {
 	api.GET("/metrics/counts", handler.Counts)
 	api.GET("/metrics/projects", handler.ProjectCounts)
 	api.GET("/metrics/request-amount", handler.RequestAmountTrend)
+	api.GET("/metrics/model-usage", handler.ModelUsageSummary)
 	api.GET("/metrics/daily-model-cost", handler.DailyModelCostTrend)
 }
 
@@ -200,6 +202,7 @@ func registerConfigRoutes(api *gin.RouterGroup) {
 	api.GET("/config/:key", adminhandler.GetConfigByKey)
 	api.PUT("/config/:key", adminhandler.UpdateConfigByKey)
 	api.POST("/config/model-price-sync/run", adminhandler.RunModelPriceSync)
+	api.POST("/config/breaker-alert-tg/test", adminhandler.RunTelegramBreakerAlertTest)
 }
 
 func registerLimiterRoutes(api *gin.RouterGroup) {

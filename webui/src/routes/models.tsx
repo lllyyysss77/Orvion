@@ -74,6 +74,7 @@ import minimaxIcon from "@/assets/modelIcon/minimax.svg";
 import openaiIcon from "@/assets/modelIcon/openai.svg";
 import claudeIcon from "@/assets/modelIcon/claude.svg";
 import geminiIcon from "@/assets/modelIcon/gemini.svg";
+import gemmaIcon from "@/assets/modelIcon/gemma.svg";
 import glmIcon from "@/assets/modelIcon/glm.svg";
 import kimiIcon from "@/assets/modelIcon/kimi.svg";
 import { cn } from "@/lib/utils";
@@ -92,6 +93,7 @@ const modelIconConfigs: ModelIconConfig[] = [
   { test: /minimax|abab/i, src: minimaxIcon, alt: "MiniMax" },
   { test: /openai|gpt|o1|o3|o4/i, src: openaiIcon, alt: "OpenAI" },
   { test: /claude|anthropic/i, src: claudeIcon, alt: "Claude" },
+  { test: /gemma/i, src: gemmaIcon, alt: "Gemma" },
   { test: /gemini|google/i, src: geminiIcon, alt: "Gemini" },
   { test: /glm|zhipu/i, src: glmIcon, alt: "GLM" },
   { test: /kimi|moonshot/i, src: kimiIcon, alt: "Kimi" },
@@ -150,15 +152,15 @@ const ModelIcon = ({ name }: { name: string }) => {
 
   if (!config) {
     return (
-      <div className="size-10 rounded-2xl bg-primary/10 text-primary flex items-center justify-center font-semibold text-sm">
+      <div className="inline-flex size-10 shrink-0 items-center justify-center rounded-2xl bg-primary/10 text-primary font-semibold text-sm leading-none">
         {fallback}
       </div>
     );
   }
 
   return (
-    <div className="size-10 rounded-2xl bg-muted/60 flex items-center justify-center">
-      <img src={config.src} alt={config.alt} className="size-5" />
+    <div className="inline-flex size-10 shrink-0 items-center justify-center rounded-2xl bg-muted/60 leading-none">
+      <img src={config.src} alt={config.alt} className="block size-5 object-contain" />
     </div>
   );
 };
@@ -172,6 +174,13 @@ const formatPrice = (value?: number | null) => {
 
 const isModelEnabled = (model: Model) => (model.Status == null ? true : Number(model.Status) === 1);
 
+const isValidNonNegativePrice = (value: string) => {
+  const trimmed = value.trim();
+  if (trimmed === "") return false;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) && parsed >= 0;
+};
+
 // 定义表单验证模式
 const formSchema = z.object({
   name: z.string().min(1, { message: "模型名称不能为空" }),
@@ -182,8 +191,8 @@ const formSchema = z.object({
   strategy: z.enum(["lottery", "rotor"]),
   breaker: z.boolean(),
   capabilities: z.array(z.enum(capabilityValues)).min(1, { message: "至少选择一个模型类型" }),
-  input_price: z.number().min(0, { message: "输入价格不能为负数" }),
-  output_price: z.number().min(0, { message: "输出价格不能为负数" }),
+  input_price: z.string().refine(isValidNonNegativePrice, { message: "输入价格不能为负数" }),
+  output_price: z.string().refine(isValidNonNegativePrice, { message: "输出价格不能为负数" }),
   status: z.boolean(),
 });
 
@@ -215,8 +224,8 @@ export default function ModelsPage() {
       strategy: "lottery",
       breaker: false,
       capabilities: ["chat"],
-      input_price: 0,
-      output_price: 0,
+      input_price: "0",
+      output_price: "0",
       status: true,
     },
   });
@@ -277,8 +286,8 @@ export default function ModelsPage() {
         strategy: values.strategy,
         breaker: values.breaker,
         capabilities: values.capabilities,
-        input_price: values.input_price,
-        output_price: values.output_price,
+        input_price: Number(values.input_price),
+        output_price: Number(values.output_price),
       });
       setOpen(false);
       toast.success(`模型: ${values.name} 创建成功`);
@@ -291,8 +300,8 @@ export default function ModelsPage() {
         strategy: "lottery",
         breaker: false,
         capabilities: ["chat"],
-        input_price: 0,
-        output_price: 0,
+        input_price: "0",
+        output_price: "0",
       });
       await fetchModels();
     } catch (err) {
@@ -313,8 +322,8 @@ export default function ModelsPage() {
         strategy: values.strategy,
         breaker: values.breaker,
         capabilities: values.capabilities,
-        input_price: values.input_price,
-        output_price: values.output_price,
+        input_price: Number(values.input_price),
+        output_price: Number(values.output_price),
       });
       const previousEnabled = editingModel.Status == null ? true : Number(editingModel.Status) === 1;
       if (previousEnabled !== values.status) {
@@ -332,8 +341,8 @@ export default function ModelsPage() {
         strategy: "lottery",
         breaker: false,
         capabilities: ["chat"],
-        input_price: 0,
-        output_price: 0,
+        input_price: "0",
+        output_price: "0",
         status: true,
       });
       await fetchModels();
@@ -375,8 +384,8 @@ export default function ModelsPage() {
       strategy: model.Strategy === "rotor" ? "rotor" : "lottery",
       breaker: Boolean(model.Breaker),
       capabilities: normalizedCapabilities.length > 0 ? normalizedCapabilities : ["chat"],
-      input_price: model.InputPrice ?? 0,
-      output_price: model.OutputPrice ?? 0,
+      input_price: String(model.InputPrice ?? 0),
+      output_price: String(model.OutputPrice ?? 0),
       status: statusEnabled,
     });
     setOpen(true);
@@ -398,8 +407,8 @@ export default function ModelsPage() {
       strategy: "lottery",
       breaker: false,
       capabilities: ["chat"],
-      input_price: 0,
-      output_price: 0,
+      input_price: "0",
+      output_price: "0",
       status: true,
     });
     setOpen(true);
@@ -518,7 +527,7 @@ export default function ModelsPage() {
           </div>
         ) : (
           <div className="h-full flex flex-col">
-            <div className="flex-1 min-h-0 overflow-hidden rounded-[28px] border border-border/70 bg-card/88 shadow-[0_18px_50px_rgba(98,71,47,0.08)]">
+            <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-[28px] border border-border/70 bg-card/88 shadow-[0_18px_50px_rgba(98,71,47,0.08)]">
               <div className="hidden xl:grid xl:grid-cols-[minmax(0,2.1fr)_9rem_9rem_minmax(11rem,1fr)_9rem_19rem] items-center gap-4 border-b border-border/60 px-5 py-3 text-xs font-medium text-muted-foreground">
                 <div>模型</div>
                 <div className="text-center">输入</div>
@@ -538,10 +547,10 @@ export default function ModelsPage() {
                     >
                       <div className="min-w-0">
                         <div className="mb-1 text-[11px] font-medium text-muted-foreground xl:hidden">模型</div>
-                        <div className="flex min-w-0 items-center gap-3">
+                        <div className="grid min-w-0 grid-cols-[2.5rem_minmax(0,1fr)] items-center gap-3">
                           <ModelIcon name={model.Name} />
-                          <div className="min-w-0">
-                            <div className="truncate text-base font-semibold">{model.Name}</div>
+                          <div className="min-w-0 leading-tight">
+                            <div className="truncate cursor-pointer text-base font-semibold leading-6" title={model.Name}>{model.Name}</div>
                             {model.Remark ? (
                               <div className="mt-1 text-[11px] text-muted-foreground truncate" title={model.Remark}>
                                 {model.Remark}
@@ -622,38 +631,44 @@ export default function ModelsPage() {
                       <div className="flex flex-wrap items-center justify-start gap-2 xl:justify-self-end xl:justify-end">
                         <Button
                           variant="outline"
-                          className="h-9 rounded-full px-4"
+                          className="h-9 rounded-full px-4 leading-none"
                           onClick={(event) => {
                             event.stopPropagation();
                             openProviderPanel(model);
                           }}
                         >
-                          <Boxes className="h-4 w-4" />
-                          <span>提供商</span>
+                          <span className="inline-flex size-4 shrink-0 items-center justify-center">
+                            <Boxes className="h-4 w-4" />
+                          </span>
+                          <span className="leading-none">提供商</span>
                         </Button>
                         <Button
                           variant="outline"
-                          className="h-9 rounded-full px-4"
+                          className="h-9 rounded-full px-4 leading-none"
                           onClick={(event) => {
                             event.stopPropagation();
                             openEditDialog(model);
                           }}
                         >
-                          <Pencil className="h-4 w-4" />
-                          <span>编辑</span>
+                          <span className="inline-flex size-4 shrink-0 items-center justify-center">
+                            <Pencil className="h-4 w-4" />
+                          </span>
+                          <span className="leading-none">编辑</span>
                         </Button>
                         <AlertDialog>
                           <AlertDialogTrigger asChild>
                             <Button
                               variant="destructive"
-                              className="h-9 rounded-full px-4"
+                              className="h-9 rounded-full px-4 leading-none"
                               onClick={(event) => {
                                 event.stopPropagation();
                                 openDeleteDialog(model.ID);
                               }}
                             >
-                              <Trash2 className="h-4 w-4" />
-                              <span>删除</span>
+                              <span className="inline-flex size-4 shrink-0 items-center justify-center">
+                                <Trash2 className="h-4 w-4" />
+                              </span>
+                              <span className="leading-none">删除</span>
                             </Button>
                           </AlertDialogTrigger>
                           <AlertDialogContent>
@@ -798,8 +813,9 @@ export default function ModelsPage() {
                           type="number"
                           className="h-9"
                           step="0.0001"
+                          inputMode="decimal"
                           {...field}
-                          onChange={(e) => field.onChange(+e.target.value)}
+                          onChange={(e) => field.onChange(e.target.value)}
                         />
                       </FormControl>
                       <FormMessage />
@@ -817,8 +833,9 @@ export default function ModelsPage() {
                           type="number"
                           className="h-9"
                           step="0.0001"
+                          inputMode="decimal"
                           {...field}
-                          onChange={(e) => field.onChange(+e.target.value)}
+                          onChange={(e) => field.onChange(e.target.value)}
                         />
                       </FormControl>
                       <FormMessage />

@@ -107,8 +107,8 @@ const calcProviderSuccessRate = (provider: ProviderHealth): number => {
 
 const pickSuccessRateClass = (successRate: number): string => {
   if (!Number.isFinite(successRate)) return "bg-slate-500/80 text-white";
-  if (successRate >= 98) return "bg-emerald-500/90 text-white";
-  if (successRate >= 90) return "bg-amber-500/90 text-white";
+  if (successRate >= 80) return "bg-emerald-500/90 text-white";
+  if (successRate >= 60) return "bg-amber-500/90 text-white";
   return "bg-rose-500/90 text-white";
 };
 

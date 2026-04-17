@@ -15,7 +15,6 @@ import (
 	_ "time/tzdata"
 
 	"github.com/gin-gonic/gin"
-	"github.com/go-redis/redis/v8"
 	"github.com/joho/godotenv"
 	"github.com/racio/orvion/consts"
 	"github.com/racio/orvion/limiter"
@@ -45,38 +44,11 @@ func init() {
 		slog.Warn("Failed to init total consumed amount, will fallback at runtime", "error", err)
 	}
 
-	// 初始化Redis客户端（可选）
-	var redisClient *redis.Client
-	redisURL := os.Getenv("REDIS_URL")
-	if redisURL != "" {
-		opt, err := redis.ParseURL(redisURL)
-		if err != nil {
-			slog.Warn("Failed to parse Redis URL, using memory storage", "error", err)
-		} else {
-			// 限流相关 Redis 调用是“尽力而为”，不应阻塞主请求太久：缩短超时并关闭重试，避免网络抖动导致卡顿。
-			opt.MaxRetries = 0
-			opt.MinRetryBackoff = 0
-			opt.MaxRetryBackoff = 0
-			opt.DialTimeout = 1 * time.Second
-			opt.ReadTimeout = 1 * time.Second
-			opt.WriteTimeout = 1 * time.Second
-
-			redisClient = redis.NewClient(opt)
-			// 测试Redis连接
-			pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-			defer cancel()
-			if err := redisClient.Ping(pingCtx).Err(); err != nil {
-				slog.Warn("Redis connection failed, using memory storage", "error", err)
-				redisClient = nil
-			} else {
-				slog.Info("Redis connected successfully")
-			}
-		}
-	}
-
 	// 初始化限流管理器
-	limiterManager := limiter.NewManager(redisClient)
+	limiterManager := limiter.NewManager()
 	service.SetLimiterManager(limiterManager)
+	// 初始化熔断告警（Telegram，可选配置）
+	service.InitBreakerAlertNotifier()
 
 	slog.Info("TZ", "time.Local", time.Local.String())
 }
@@ -113,7 +85,7 @@ func main() {
 	token := os.Getenv("TOKEN")
 	router := buildRouter(token)
 
-	port := os.Getenv("LLMIO_SERVER_PORT")
+	port := os.Getenv("ORVION_SERVER_PORT")
 	if port == "" {
 		port = consts.DefaultPort
 	}
@@ -169,14 +141,14 @@ func main() {
 
 func resolveShutdownTimeout() time.Duration {
 	const defaultTimeout = 10 * time.Second
-	raw := strings.TrimSpace(os.Getenv("LLMIO_SHUTDOWN_TIMEOUT_SECONDS"))
+	raw := strings.TrimSpace(os.Getenv("ORVION_SHUTDOWN_TIMEOUT_SECONDS"))
 	if raw == "" {
 		return defaultTimeout
 	}
 
 	seconds, err := strconv.Atoi(raw)
 	if err != nil || seconds <= 0 {
-		slog.Warn("Invalid LLMIO_SHUTDOWN_TIMEOUT_SECONDS, using default", "value", raw, "default", int(defaultTimeout/time.Second))
+		slog.Warn("Invalid ORVION_SHUTDOWN_TIMEOUT_SECONDS, using default", "value", raw, "default", int(defaultTimeout/time.Second))
 		return defaultTimeout
 	}
 	return time.Duration(seconds) * time.Second
@@ -186,4 +158,5 @@ func startBackgroundWorkers(ctx context.Context) {
 	service.StartPriceSync(ctx)
 	service.StartSystemLogCleanup(ctx)
 	service.StartModelProviderAutoRecovery(ctx)
+	service.StartTelegramCommandBot(ctx)
 }

@@ -1,6 +1,38 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
+@font-face {
+  font-family: "KunmingSeagull";
+  src: url("./assets/fonts/昆明海鸥体.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "HanyiDieYu";
+  src: url("./assets/fonts/HanYiDieYuTiJian-1.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "JustFontFenyuan";
+  src: url("./assets/fonts/JustFontFenYuanZiTi-2.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "LXGWWenKai";
+  src: url("./assets/fonts/LXGWWenKaiMonoGBScreen.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
 @custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
 
 @theme {
@@ -243,4 +275,56 @@
   [role="button"]:not(:disabled) {
     cursor: pointer;
   }
+}
+
+.main-content-font-default {
+  font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+}
+
+.main-content-font-kunming {
+  font-family: "KunmingSeagull", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+.main-content-font-hanyi {
+  font-family: "HanyiDieYu", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+.main-content-font-fenyuan {
+  font-family: "JustFontFenyuan", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+.main-content-font-lxgw-wenkai {
+  font-family: "LXGWWenKai", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+/* 让 Portal 组件（弹窗/下拉/提示）继承当前界面字体 */
+:root[data-ui-font="default"] body {
+  font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+}
+
+:root[data-ui-font="kunming_seagull"] body {
+  font-family: "KunmingSeagull", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+:root[data-ui-font="fenyuan"] body {
+  font-family: "JustFontFenyuan", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+:root[data-ui-font="lxgw_wenkai"] body {
+  font-family: "LXGWWenKai", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+/* 昆明海鸥体下正文字号略微放大 */
+.main-content-font-kunming :where(div, p, span, li, a, button, label, input, textarea, select, td, th, h1, h2, h3, h4, h5, h6) {
+  font-size: 0.98em;
+}
+
+/* 系统日志滚动区域保持固定日志字体与字号，不受界面字体缩放影响 */
+.font-exempt-log-viewer {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace !important;
+  font-size: 0.75rem !important;
+}
+
+.main-content-font-kunming .font-exempt-log-viewer :where(div, p, span, li, a, button, label, input, textarea, select, td, th, h1, h2, h3, h4, h5, h6) {
+  font-size: inherit !important;
 }

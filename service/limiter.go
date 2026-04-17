@@ -4,7 +4,6 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/go-redis/redis/v8"
 	"github.com/racio/orvion/limiter"
 )
 
@@ -17,20 +16,12 @@ func SetLimiterManager(manager *limiter.Manager) {
 	slog.Info("Limiter manager initialized", "enabled", manager.IsEnabled())
 }
 
-// GetRedisClient 获取Redis客户端
-func GetRedisClient() *redis.Client {
-	if globalLimiterManager == nil {
-		return nil
-	}
-	return globalLimiterManager.GetRedisClient()
-}
-
 // CheckAuthKeyLimits 检查 API Key 限制
-func CheckAuthKeyLimits(ctx context.Context, authKeyID uint, rpmLimit int, modelWithProviderID uint) (bool, string, error) {
+func CheckAuthKeyLimits(ctx context.Context, authKeyID uint, rpmLimit int) (bool, string, error) {
 	if globalLimiterManager == nil {
 		return true, "", nil
 	}
-	return globalLimiterManager.CheckAuthKeyLimits(ctx, authKeyID, rpmLimit, modelWithProviderID, authKeyID)
+	return globalLimiterManager.CheckAuthKeyLimits(ctx, authKeyID, rpmLimit)
 }
 
 // RecordAuthKeyAccess 记录 API Key 访问

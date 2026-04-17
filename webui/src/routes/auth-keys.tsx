@@ -112,9 +112,12 @@ const MobileInfoItem = ({ label, value, mono = false }: MobileInfoItemProps) => 
 
 const maskApiKey = (key: string): string => {
   const trimmed = (key || "").trim();
-  if (!trimmed) return "***...****";
-  const suffix = trimmed.slice(-4).padStart(4, "*");
-  return `***...${suffix}`;
+  if (!trimmed) return "*************************";
+  if (trimmed.length <= 12) return trimmed;
+  const prefix = trimmed.slice(0, 6);
+  const suffix = trimmed.slice(-6);
+  const middleMask = "*************************";
+  return `${prefix}${middleMask}${suffix}`;
 };
 
 const formatCost = (value: number | null | undefined): string => {

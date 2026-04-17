@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
@@ -42,6 +42,7 @@ type ChatMessage = {
   role: "user" | "assistant";
   content: string;
   status?: "streaming" | "done" | "error";
+  imagePreviewUrl?: string;
 };
 
 type StreamMessageContentPart = {
@@ -59,8 +60,25 @@ type StreamChoice = {
 };
 
 type StreamPayload = {
+  type?: string;
   choices?: StreamChoice[];
   output_text?: string;
+  output?: Array<{
+    content?: Array<{
+      text?: string;
+    }>;
+  }>;
+  delta?: string | {
+    text?: string;
+    content?: string;
+  };
+  candidates?: Array<{
+    content?: {
+      parts?: Array<{
+        text?: string;
+      }>;
+    };
+  }>;
   content?: string;
   data?: {
     content?: string;
@@ -71,6 +89,21 @@ type StreamPayload = {
 const STREAMABLE_ENDPOINTS = ["chat/completions", "messages", "responses"];
 const BASE_ENDPOINTS = ["chat/completions", "images/generations", "images/edits"];
 const IMAGE_URL_PATTERN = /^https?:\/\/\S+\.(png|jpe?g|webp|gif|bmp|svg)(\?.*)?$/i;
+
+const ThinkingBubble = () => (
+  <div className="inline-flex items-center gap-2 rounded-full border border-fuchsia-200/70 bg-white/90 px-3 py-1.5 text-xs text-fuchsia-700 shadow-sm">
+    <span className="font-medium">思考中</span>
+    <span className="flex items-center gap-1">
+      {[0, 1, 2].map((index) => (
+        <span
+          key={index}
+          className="size-1.5 rounded-full bg-fuchsia-500/80 animate-bounce"
+          style={{ animationDelay: `${index * 120}ms`, animationDuration: "0.9s" }}
+        />
+      ))}
+    </span>
+  </div>
+);
 
 export default function ModelChatTestPage() {
   const [models, setModels] = useState<Model[]>([]);
@@ -88,10 +121,36 @@ export default function ModelChatTestPage() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
-  const [imageUrlEnabled, setImageUrlEnabled] = useState(false);
-  const [imageUrl, setImageUrl] = useState("");
+  const [localImageEnabled, setLocalImageEnabled] = useState(false);
   const [modelCollapsed, setModelCollapsed] = useState(false);
   const [imageCollapsed, setImageCollapsed] = useState(false);
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const maskInputRef = useRef<HTMLInputElement | null>(null);
+  const chatViewportRef = useRef<HTMLDivElement | null>(null);
+  const previewUrlsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!localImageEnabled) {
+      setImageFile(null);
+      setMaskFile(null);
+    }
+  }, [localImageEnabled]);
+
+  useEffect(() => {
+    const viewport = chatViewportRef.current;
+    if (!viewport) {
+      return;
+    }
+    viewport.scrollTop = viewport.scrollHeight;
+  }, [messages]);
+
+  useEffect(() => {
+    const previewUrls = previewUrlsRef.current;
+    return () => {
+      previewUrls.forEach((url) => URL.revokeObjectURL(url));
+      previewUrls.clear();
+    };
+  }, []);
 
   useEffect(() => {
     const fetchBase = async () => {
@@ -257,6 +316,23 @@ export default function ModelChatTestPage() {
       }
       if (typeof choice?.message?.content === "string") return choice.message.content;
       if (typeof parsed.output_text === "string") return parsed.output_text;
+      if (typeof parsed.delta === "string") return parsed.delta;
+      if (typeof parsed.delta === "object" && parsed.delta !== null) {
+        if (typeof parsed.delta.text === "string") return parsed.delta.text;
+        if (typeof parsed.delta.content === "string") return parsed.delta.content;
+      }
+      if (Array.isArray(parsed.output)) {
+        return parsed.output
+          .flatMap((item) => item?.content ?? [])
+          .map((item) => item?.text ?? "")
+          .join("");
+      }
+      if (Array.isArray(parsed.candidates)) {
+        return parsed.candidates
+          .flatMap((item) => item?.content?.parts ?? [])
+          .map((part) => part?.text ?? "")
+          .join("");
+      }
       if (typeof parsed.content === "string") return parsed.content;
       if (typeof parsed.data?.content === "string") return parsed.data.content;
       if (typeof parsed.text === "string") return parsed.text;
@@ -316,10 +392,11 @@ export default function ModelChatTestPage() {
         if (eventType === "error" && normalized) {
           throw new Error(normalized);
         }
-        if (eventType === "message" || eventType === "delta" || eventType === "content" || eventType === "token") {
-          const text = extractSseText(normalized);
-          appendAssistantContent(assistantId, text);
+        if (!normalized || normalized === "[DONE]") {
+          continue;
         }
+        const text = extractSseText(normalized);
+        appendAssistantContent(assistantId, text);
       }
     }
   };
@@ -349,18 +426,16 @@ export default function ModelChatTestPage() {
     if (token) {
       headers.Authorization = `Bearer ${token}`;
     }
-    const shouldUseFileRequest = Boolean(imageFile);
+    const shouldUseFileRequest = localImageEnabled && Boolean(imageFile);
     if (shouldUseFileRequest) {
       const formData = new FormData();
       formData.append("prompt", promptText);
       formData.append("endpoint", endpoint);
+      formData.append("stream", STREAMABLE_ENDPOINTS.includes(endpoint) ? "true" : "false");
       if (size.trim()) {
         formData.append("size", size.trim());
       }
       formData.append("image", imageFile as File);
-      if (imageUrlEnabled && imageUrl.trim()) {
-        formData.append("image_url", imageUrl.trim());
-      }
       if (maskFile && endpoint === "images/edits") {
         formData.append("mask", maskFile);
       }
@@ -382,9 +457,6 @@ export default function ModelChatTestPage() {
     if (size.trim()) {
       payload.size = size.trim();
     }
-    if (imageUrlEnabled && imageUrl.trim()) {
-      payload.image_url = imageUrl.trim();
-    }
     return fetch(`/api/test/chat/${selectedProviderId}`, {
       method: "POST",
       headers,
@@ -402,11 +474,15 @@ export default function ModelChatTestPage() {
       toast.error("请输入测试内容");
       return;
     }
+    const userImagePreviewUrl = localImageEnabled && imageFile ? URL.createObjectURL(imageFile) : undefined;
+    if (userImagePreviewUrl) {
+      previewUrlsRef.current.add(userImagePreviewUrl);
+    }
     const userMessageId = `u-${Date.now()}`;
     const assistantMessageId = `a-${Date.now()}`;
     setMessages((prev) => [
       ...prev,
-      { id: userMessageId, role: "user", content: promptText, status: "done" },
+      { id: userMessageId, role: "user", content: promptText, status: "done", imagePreviewUrl: userImagePreviewUrl },
       { id: assistantMessageId, role: "assistant", content: "", status: "streaming" },
     ]);
     setPrompt("");
@@ -465,7 +541,14 @@ export default function ModelChatTestPage() {
   };
 
   const handleDeleteMessage = (id: string) => {
-    setMessages((prev) => prev.filter((message) => message.id !== id));
+    setMessages((prev) => {
+      const target = prev.find((message) => message.id === id);
+      if (target?.imagePreviewUrl) {
+        URL.revokeObjectURL(target.imagePreviewUrl);
+        previewUrlsRef.current.delete(target.imagePreviewUrl);
+      }
+      return prev.filter((message) => message.id !== id);
+    });
   };
 
   const getLastUserMessage = (): string => {
@@ -491,7 +574,7 @@ export default function ModelChatTestPage() {
 
   return (
     <div className="h-full overflow-hidden">
-      <div className="grid h-full min-h-0 grid-cols-1 gap-4 lg:grid-cols-[360px_1fr]">
+      <div className="grid h-full min-h-0 grid-cols-1 gap-4 lg:grid-cols-[310px_1fr]">
         <aside className="h-full min-h-0 overflow-y-auto rounded-[30px] border border-border/65 bg-card/82 p-5 shadow-[0_18px_50px_rgba(98,71,47,0.07)]">
           <div className="flex items-center gap-3 px-1">
             <Settings className="h-5 w-5 text-foreground/80" />
@@ -615,50 +698,71 @@ export default function ModelChatTestPage() {
               >
                 <div className="flex items-center gap-2 text-sm font-medium text-foreground">
                   <ImageIcon className="h-5 w-5 text-foreground/75" />
-                  <span>图片地址</span>
+                  <span>图片上传</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <Switch
-                    checked={imageUrlEnabled}
-                    onCheckedChange={setImageUrlEnabled}
+                    checked={localImageEnabled}
+                    onCheckedChange={setLocalImageEnabled}
                     onClick={(event) => event.stopPropagation()}
                   />
                   <button
                     type="button"
                     onClick={(event) => {
                       event.stopPropagation();
+                      if (!localImageEnabled) {
+                        return;
+                      }
                       setImageCollapsed(false);
-                      setImageUrlEnabled(true);
+                      imageInputRef.current?.click();
                     }}
-                    className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-border/60 bg-background text-foreground/70 transition-colors hover:bg-muted"
+                    disabled={!localImageEnabled}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-border/60 bg-background text-foreground/70 transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     <Plus className="h-4 w-4" />
                   </button>
+                  {imageCollapsed ? <ChevronRight className="h-4 w-4 text-foreground/70" /> : <ChevronDown className="h-4 w-4 text-foreground/70" />}
                 </div>
               </button>
               {!imageCollapsed && (
                 <div className="space-y-2">
-                  <p className="text-xs text-muted-foreground">启用后可添加图片 URL 进行多模态对话</p>
-                  <Input
-                    value={imageUrl}
-                    onChange={(event) => setImageUrl(event.target.value)}
-                    disabled={!imageUrlEnabled}
-                    placeholder="https://example.com/image1.jpg"
-                    className="h-9 bg-white"
-                  />
                   <div className="space-y-2 rounded-xl border border-border/60 bg-white/70 p-2.5">
-                    <p className="text-xs text-muted-foreground">本地图片上传（多模态测试）</p>
-                    <Input
+                    <p className="text-xs text-muted-foreground">仅支持本地图片上传。请先开启开关，再点击右侧 + 号选择图片。</p>
+                    <input
+                      ref={imageInputRef}
                       type="file"
                       accept="image/*"
+                      className="hidden"
                       onChange={(event) => setImageFile(event.target.files?.[0] ?? null)}
                     />
+                    <div className="rounded-lg border border-border/60 bg-background/80 px-3 py-2 text-xs text-muted-foreground">
+                      主图片：{imageFile ? imageFile.name : "未选择"}
+                    </div>
                     {endpoint === "images/edits" && (
-                      <Input
-                        type="file"
-                        accept="image/*"
-                        onChange={(event) => setMaskFile(event.target.files?.[0] ?? null)}
-                      />
+                      <>
+                        <input
+                          ref={maskInputRef}
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={(event) => setMaskFile(event.target.files?.[0] ?? null)}
+                        />
+                        <div className="flex items-center gap-2">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="h-8 rounded-full px-3"
+                            disabled={!localImageEnabled}
+                            onClick={() => maskInputRef.current?.click()}
+                          >
+                            上传遮罩
+                          </Button>
+                          <span className="min-w-0 truncate text-xs text-muted-foreground">
+                            {maskFile ? maskFile.name : "未选择遮罩"}
+                          </span>
+                        </div>
+                      </>
                     )}
                   </div>
                 </div>
@@ -681,7 +785,7 @@ export default function ModelChatTestPage() {
             </div>
           </div>
 
-          <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 pb-4">
+          <div ref={chatViewportRef} className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 pb-4">
             {messages.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-border/60 bg-white/55 px-4 py-3 text-sm text-muted-foreground">
                 在下方输入测试内容后发送，右侧会按聊天气泡展示请求与响应结果。
@@ -692,9 +796,19 @@ export default function ModelChatTestPage() {
                   key={message.id}
                   className={message.role === "user" ? "ml-auto max-w-[88%]" : "mr-auto max-w-[88%]"}
                 >
+                  {message.role === "user" && message.imagePreviewUrl ? (
+                    <div className="mb-2 flex justify-end pr-8">
+                      <img
+                        src={message.imagePreviewUrl}
+                        alt="上传图片预览"
+                        className="h-20 w-auto max-w-[140px] rounded-xl border border-border/60 object-cover shadow-sm"
+                        loading="lazy"
+                      />
+                    </div>
+                  ) : null}
                   <div className={message.role === "user" ? "flex items-start justify-end gap-2" : "flex items-start gap-2"}>
                     {message.role === "assistant" && (
-                      <div className="mt-1 flex h-6 w-6 items-center justify-center rounded-full bg-gradient-to-br from-fuchsia-400 to-cyan-400 text-[11px] font-semibold text-white">
+                      <div className="mt-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-fuchsia-400 to-cyan-400 text-[11px] font-semibold text-white">
                         AI
                       </div>
                     )}
@@ -706,46 +820,50 @@ export default function ModelChatTestPage() {
                       }
                     >
                       {message.role === "assistant" ? (
-                        <ReactMarkdown
-                          remarkPlugins={[remarkGfm]}
-                          components={{
-                            h1: ({ children }) => <h1 className="mb-3 text-lg font-semibold">{children}</h1>,
-                            h2: ({ children }) => <h2 className="mb-2 text-base font-semibold">{children}</h2>,
-                            h3: ({ children }) => <h3 className="mb-2 text-sm font-semibold">{children}</h3>,
-                            p: ({ children }) => <p className="mb-3 text-sm leading-6 last:mb-0">{children}</p>,
-                            ul: ({ children }) => <ul className="mb-3 list-disc space-y-1 pl-5">{children}</ul>,
-                            ol: ({ children }) => <ol className="mb-3 list-decimal space-y-1 pl-5">{children}</ol>,
-                            code: ({ className, children }) =>
-                              !className ? (
-                                <code className="rounded bg-muted-foreground/15 px-1 py-0.5 font-mono text-xs">{children}</code>
-                              ) : (
-                                <pre className="overflow-x-auto rounded-lg bg-muted/80 p-3 text-xs">
-                                  <code className="font-mono">{children}</code>
-                                </pre>
+                        message.status === "streaming" && !message.content.trim() ? (
+                          <ThinkingBubble />
+                        ) : (
+                          <ReactMarkdown
+                            remarkPlugins={[remarkGfm]}
+                            components={{
+                              h1: ({ children }) => <h1 className="mb-3 text-lg font-semibold">{children}</h1>,
+                              h2: ({ children }) => <h2 className="mb-2 text-base font-semibold">{children}</h2>,
+                              h3: ({ children }) => <h3 className="mb-2 text-sm font-semibold">{children}</h3>,
+                              p: ({ children }) => <p className="mb-3 text-sm leading-6 last:mb-0">{children}</p>,
+                              ul: ({ children }) => <ul className="mb-3 list-disc space-y-1 pl-5">{children}</ul>,
+                              ol: ({ children }) => <ol className="mb-3 list-decimal space-y-1 pl-5">{children}</ol>,
+                              code: ({ className, children }) =>
+                                !className ? (
+                                  <code className="rounded bg-muted-foreground/15 px-1 py-0.5 font-mono text-xs">{children}</code>
+                                ) : (
+                                  <pre className="overflow-x-auto rounded-lg bg-muted/80 p-3 text-xs">
+                                    <code className="font-mono">{children}</code>
+                                  </pre>
+                                ),
+                              img: ({ src, alt }) => (
+                                <img
+                                  src={src}
+                                  alt={alt || "markdown-image"}
+                                  className="my-2 max-h-80 w-auto max-w-full rounded-lg border border-border/60 object-contain"
+                                  loading="lazy"
+                                />
                               ),
-                            img: ({ src, alt }) => (
-                              <img
-                                src={src}
-                                alt={alt || "markdown-image"}
-                                className="my-2 max-h-80 w-auto max-w-full rounded-lg border border-border/60 object-contain"
-                                loading="lazy"
-                              />
-                            ),
-                            blockquote: ({ children }) => (
-                              <blockquote className="mb-3 border-l-2 border-primary/40 pl-3 text-muted-foreground">
-                                {children}
-                              </blockquote>
-                            ),
-                          }}
-                        >
-                          {toRenderableMarkdown(message.content || (message.status === "streaming" ? "思考中..." : "(无内容)"))}
-                        </ReactMarkdown>
+                              blockquote: ({ children }) => (
+                                <blockquote className="mb-3 border-l-2 border-primary/40 pl-3 text-muted-foreground">
+                                  {children}
+                                </blockquote>
+                              ),
+                            }}
+                          >
+                            {toRenderableMarkdown(message.content || "(无内容)")}
+                          </ReactMarkdown>
+                        )
                       ) : (
                         <p className="whitespace-pre-wrap break-words">{message.content}</p>
                       )}
                     </div>
                     {message.role === "user" && (
-                      <div className="mt-1 flex h-6 w-6 items-center justify-center rounded-full bg-lime-500 text-[11px] font-semibold text-white">
+                      <div className="mt-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-lime-500 text-[11px] font-semibold text-white">
                         L
                       </div>
                     )}
@@ -790,9 +908,6 @@ export default function ModelChatTestPage() {
                       <Trash2 className="h-4 w-4" />
                     </Button>
                   </div>
-                  {message.role === "assistant" && message.status === "streaming" && (
-                    <p className="mt-1 pl-8 text-xs text-muted-foreground">正在流式返回...</p>
-                  )}
                 </div>
               ))
             )}
@@ -803,6 +918,14 @@ export default function ModelChatTestPage() {
               <Textarea
                 value={prompt}
                 onChange={(event) => setPrompt(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                    event.preventDefault();
+                    if (!submitting) {
+                      void handleSubmit();
+                    }
+                  }
+                }}
                 rows={2}
                 placeholder={promptPlaceholder}
                 className="min-h-[44px] resize-none border-none bg-transparent px-1 py-1 shadow-none focus-visible:ring-0"
