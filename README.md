@@ -92,7 +92,7 @@ docker run -d \
 - `BREAKER_ALERT_TG_BOT_TOKEN`
 - `BREAKER_ALERT_TG_CHAT_ID`
 - `BREAKER_ALERT_TG_API_BASE`（默认 `https://api.telegram.org`）
-- `BREAKER_ALERT_TG_PROXY_URL`
+- `BREAKER_ALERT_TG_PROXY_URL`（可选；仅当数据库未配置 TG 代理且该变量为空时，自动复用内置代理：优先 `GITHUB_HTTP_PROXY`，否则 `socks5://127.0.0.1:${GITHUB_XRAY_SOCKS_PORT|17890}`）
 
 ## 认证与鉴权
 

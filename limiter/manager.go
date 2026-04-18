@@ -78,6 +78,23 @@ func (m *Manager) CheckAuthKeyLimits(ctx context.Context, authKeyID uint, rpmLim
 	return true, "", nil
 }
 
+// TryAcquireAuthKey 原子地执行 check+record,消除 Check/Record 两步调用的竞态。
+// 返回 (是否通过, 拒绝原因, 错误)。rpmLimit<=0 时不限流。
+func (m *Manager) TryAcquireAuthKey(ctx context.Context, authKeyID uint, rpmLimit int) (bool, string, error) {
+	if !m.enabled || rpmLimit <= 0 {
+		return true, "", nil
+	}
+	ok, err := m.rpmLimiter.TryAcquire(ctx, authKeyID, rpmLimit)
+	if err != nil {
+		slog.Warn("RPM acquire failed", "auth_key_id", authKeyID, "error", err)
+		return false, "limiter_unavailable", err
+	}
+	if !ok {
+		return false, "rpm_limit_exceeded", nil
+	}
+	return true, "", nil
+}
+
 // RecordAuthKeyAccess 记录 API Key 访问
 func (m *Manager) RecordAuthKeyAccess(ctx context.Context, authKeyID uint, rpmLimit int) error {
 	if !m.enabled {

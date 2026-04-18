@@ -22,6 +22,8 @@ const (
 	KeyFirstDeployTime = "first_deploy_time"
 	// KeyTotalConsumedAmount 全局累计消费金额（持久化累加，不受日志删除影响）。
 	KeyTotalConsumedAmount = "total_consumed_amount"
+	// KeyTelegramDailyUsageReportLastSentDate TG 每日使用日报最近一次发送的自然日（本地时区 yyyy-mm-dd）。
+	KeyTelegramDailyUsageReportLastSentDate = "tg_daily_usage_report_last_sent_date"
 )
 
 type AnthropicCountTokens struct {

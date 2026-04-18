@@ -417,7 +417,11 @@ func GetModels(c *gin.Context) {
 	}
 
 	list := make([]models.Model, 0)
-	total, err := common.PaginateQuery(query.Order("id DESC"), params, &list)
+	total, err := common.PaginateQuery(
+		query.Order("LOWER(name) ASC").Order("id ASC"),
+		params,
+		&list,
+	)
 	if err != nil {
 		common.InternalServerError(c, "Failed to query models: "+err.Error())
 		return
@@ -469,7 +473,10 @@ func GetModels(c *gin.Context) {
 
 // GetModelList 返回所有模型列表用于下拉选择等场景
 func GetModelList(c *gin.Context) {
-	modelsList, err := gorm.G[models.Model](models.DB).Order("id DESC").Find(c.Request.Context())
+	modelsList, err := gorm.G[models.Model](models.DB).
+		Order("LOWER(name) ASC").
+		Order("id ASC").
+		Find(c.Request.Context())
 	if err != nil {
 		common.InternalServerError(c, "Failed to get models: "+err.Error())
 		return

@@ -7,20 +7,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import Loading from "@/components/loading";
-import { getLogs, type ChatLog, cleanLogs, getProviders, getAuthKeysList, type Provider, type AuthKeyItem } from "@/lib/api";
-import { ChevronLeft, ChevronRight, RefreshCw, Trash2, Eye, EyeOff, Timer, Zap, ArrowDown, ArrowUp, Database, Coins } from "lucide-react";
-import hunyuanIcon from "@/assets/modelIcon/hunyuan.svg";
-import doubaoIcon from "@/assets/modelIcon/doubao.svg";
-import grokIcon from "@/assets/modelIcon/grok.svg";
-import qwenIcon from "@/assets/modelIcon/qwen.svg";
-import minimaxIcon from "@/assets/modelIcon/minimax.svg";
-import openaiIcon from "@/assets/modelIcon/openai.svg";
-import claudeIcon from "@/assets/modelIcon/claude.svg";
-import geminiIcon from "@/assets/modelIcon/gemini.svg";
-import gemmaIcon from "@/assets/modelIcon/gemma.svg";
-import deepseekIcon from "@/assets/modelIcon/deepseek.svg";
-import glmIcon from "@/assets/modelIcon/glm.svg";
-import kimiIcon from "@/assets/modelIcon/kimi.svg";
+import { getLogs, type ChatLog, cleanLogs, getProviders, getAuthKeysList, getChatIO, type Provider, type AuthKeyItem } from "@/lib/api";
+import { getStoredAuthToken, getStoredAuthTokenMode } from "@/lib/auth";
+import { buildReplayCurlSnippet, inferGatewayEndpoint, maskAuthToken } from "@/lib/curl";
+import { ChevronLeft, ChevronRight, RefreshCw, Trash2, Eye, EyeOff, Timer, Zap, ArrowDown, ArrowUp, Database, Coins, Copy } from "lucide-react";
+import { resolveModelIcon } from "@/lib/model-icon";
 
 // 格式化耗时显示（后端字段单位为毫秒）
 const formatDurationMs = (milliseconds: number): string => {
@@ -279,29 +270,8 @@ const getCachedTokensFromLog = (log: ChatLog) => {
   return 0;
 };
 
-type ModelIconConfig = {
-  test: RegExp;
-  src: string;
-  alt: string;
-};
-
-const modelIconConfigs: ModelIconConfig[] = [
-  { test: /hunyuan/i, src: hunyuanIcon, alt: "Hunyuan" },
-  { test: /doubao|ark/i, src: doubaoIcon, alt: "Doubao" },
-  { test: /grok|xai/i, src: grokIcon, alt: "Grok" },
-  { test: /qwen|tongyi/i, src: qwenIcon, alt: "Qwen" },
-  { test: /minimax|abab/i, src: minimaxIcon, alt: "MiniMax" },
-  { test: /openai|gpt|o1|o3|o4/i, src: openaiIcon, alt: "OpenAI" },
-  { test: /claude|anthropic/i, src: claudeIcon, alt: "Claude" },
-  { test: /gemma/i, src: gemmaIcon, alt: "Gemma" },
-  { test: /gemini|google/i, src: geminiIcon, alt: "Gemini" },
-  { test: /glm|zhipu/i, src: glmIcon, alt: "GLM" },
-  { test: /kimi|moonshot/i, src: kimiIcon, alt: "Kimi" },
-  { test: /deepseek/i, src: deepseekIcon, alt: "DeepSeek" },
-];
-
 const ModelIcon = ({ name }: { name: string }) => {
-  const config = modelIconConfigs.find((item) => item.test.test(name));
+  const config = resolveModelIcon(name);
   const fallback = (name || "M").slice(0, 2).toUpperCase();
 
   if (!config) {
@@ -320,6 +290,7 @@ const ModelIcon = ({ name }: { name: string }) => {
 };
 
 export default function LogsPage() {
+  const isAuthKeyMode = getStoredAuthTokenMode() === "auth_key";
   const [logs, setLogs] = useState<ChatLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
@@ -339,7 +310,13 @@ export default function LogsPage() {
   const [cleanValue, setCleanValue] = useState<string>('1000');
   const [isCleanDialogOpen, setIsCleanDialogOpen] = useState(false);
   const [cleanLoading, setCleanLoading] = useState(false);
+  const [copyingCurlVariant, setCopyingCurlVariant] = useState<"masked" | "raw" | null>(null);
   const fetchFilterOptions = useCallback(async () => {
+    if (isAuthKeyMode) {
+      setProviderOptions([]);
+      setAuthKeyOptions([]);
+      return;
+    }
     try {
       const [providers, authKeys] = await Promise.all([
         getProviders(),
@@ -350,7 +327,7 @@ export default function LogsPage() {
     } catch (error) {
       console.error("Error fetching log filter options:", error);
     }
-  }, []);
+  }, [isAuthKeyMode]);
 
   const fetchLogs = useCallback(async () => {
     setLoading(true);
@@ -358,7 +335,7 @@ export default function LogsPage() {
       const result = await getLogs(page, pageSize, {
         providerName: filters.providerName || undefined,
         status: filters.status || undefined,
-        authKeyId: filters.authKeyId || undefined,
+        authKeyId: !isAuthKeyMode ? (filters.authKeyId || undefined) : undefined,
       });
       setLogs(result.data);
       setTotal(result.total);
@@ -369,7 +346,7 @@ export default function LogsPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, pageSize, filters]);
+  }, [isAuthKeyMode, page, pageSize, filters]);
 
   useEffect(() => {
     void fetchLogs();
@@ -428,8 +405,52 @@ export default function LogsPage() {
   }, []);
   const handleViewChatIO = useCallback((log: ChatLog) => {
     if (log.Status !== 'success' || !log.ChatIO) return;
-    navigate(`/logs/${log.ID}/chat-io`);
+    navigate(`/logs/${log.ID}/chat-io`, {
+      state: {
+        style: log.Style,
+      },
+    });
   }, [navigate]);
+  const handleCopyReplayCurl = useCallback(async (log: ChatLog, masked: boolean) => {
+    if (copyingCurlVariant) return;
+    if (log.Status !== "success" || !log.ChatIO) {
+      toast.error("该日志未记录请求输入，无法复制 cURL");
+      return;
+    }
+
+    setCopyingCurlVariant(masked ? "masked" : "raw");
+    try {
+      const chatIO = await getChatIO(log.ID, { mode: "full" });
+      const requestBody = (chatIO.Input ?? "").trim();
+      if (!requestBody) {
+        toast.error("请求输入为空，无法生成 cURL");
+        return;
+      }
+
+      const endpoint = inferGatewayEndpoint(log.Style, requestBody);
+      const rawAuthToken = getStoredAuthToken();
+      const authToken = masked ? maskAuthToken(rawAuthToken) : (rawAuthToken || "YOUR_AUTH_TOKEN");
+      const baseUrl = window.location.origin;
+      const curlSnippet = buildReplayCurlSnippet({
+        baseUrl,
+        endpoint,
+        authToken,
+        requestBody,
+      });
+
+      await navigator.clipboard.writeText(curlSnippet);
+      toast.success(masked ? "已复制 cURL（掩码版）" : "已复制 cURL（真实版）");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "未知错误";
+      toast.error(`复制 cURL 失败: ${message}`);
+    } finally {
+      setCopyingCurlVariant(null);
+    }
+  }, [copyingCurlVariant]);
+  const handleCopyReplayCurlFromDetail = useCallback((masked: boolean) => {
+    if (!selectedLog) return;
+    void handleCopyReplayCurl(selectedLog, masked);
+  }, [handleCopyReplayCurl, selectedLog]);
   const logsList = useMemo(() => logs ?? [], [logs]);
   const listRef = useRef<HTMLDivElement | null>(null);
   const rowVirtualizer = useVirtualizer({
@@ -448,16 +469,18 @@ export default function LogsPage() {
             <h2 className="text-2xl font-bold tracking-tight">请求日志</h2>
           </div>
           <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
-            <Button
-              onClick={() => setIsCleanDialogOpen(true)}
-              variant="outline"
-              size="icon"
-              className="shrink-0"
-              aria-label="清理日志"
-              title="清理日志"
-            >
-              <Trash2 className="size-4" />
-            </Button>
+            {!isAuthKeyMode ? (
+              <Button
+                onClick={() => setIsCleanDialogOpen(true)}
+                variant="outline"
+                size="icon"
+                className="shrink-0"
+                aria-label="清理日志"
+                title="清理日志"
+              >
+                <Trash2 className="size-4" />
+              </Button>
+            ) : null}
             <Button
               onClick={handleRefresh}
               variant="outline"
@@ -501,22 +524,24 @@ export default function LogsPage() {
                 <SelectItem value="error">错误</SelectItem>
               </SelectContent>
             </Select>
-            <Select
-              value={draftFilters.authKeyId || "all"}
-              onValueChange={(value) => setDraftFilters((prev) => ({ ...prev, authKeyId: value === "all" ? "" : value }))}
-            >
-              <SelectTrigger className="h-8 w-[170px] text-xs">
-                <SelectValue placeholder="AuthKey" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">全部 AuthKey</SelectItem>
-                {authKeyOptions.map((authKey) => (
-                  <SelectItem key={authKey.id} value={String(authKey.id)}>
-                    {authKey.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            {!isAuthKeyMode ? (
+              <Select
+                value={draftFilters.authKeyId || "all"}
+                onValueChange={(value) => setDraftFilters((prev) => ({ ...prev, authKeyId: value === "all" ? "" : value }))}
+              >
+                <SelectTrigger className="h-8 w-[170px] text-xs">
+                  <SelectValue placeholder="AuthKey" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">全部 AuthKey</SelectItem>
+                  {authKeyOptions.map((authKey) => (
+                    <SelectItem key={authKey.id} value={String(authKey.id)}>
+                      {authKey.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : null}
             <Button variant="outline" size="sm" className="h-8 text-xs" onClick={resetFilters}>
               重置
             </Button>
@@ -623,6 +648,28 @@ export default function LogsPage() {
                   <span className="rounded-full bg-muted/60 px-2 py-0.5">{selectedLog.key_name}</span>
                 ) : null}
               </div>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8"
+                  onClick={() => handleCopyReplayCurlFromDetail(true)}
+                  disabled={copyingCurlVariant !== null || selectedLog.Status !== "success" || !selectedLog.ChatIO}
+                >
+                  <Copy className="size-3.5" />
+                  复制 cURL（掩码）
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8"
+                  onClick={() => handleCopyReplayCurlFromDetail(false)}
+                  disabled={copyingCurlVariant !== null || selectedLog.Status !== "success" || !selectedLog.ChatIO}
+                >
+                  <Copy className="size-3.5" />
+                  复制 cURL（真实）
+                </Button>
+              </div>
             </div>
             <div className="overflow-y-auto px-5 py-4 flex-1 space-y-4 text-sm">
               {selectedLog.Error && (
@@ -680,58 +727,60 @@ export default function LogsPage() {
         </Dialog>
       )}
       {/* 清理日志弹窗 */}
-      <Dialog open={isCleanDialogOpen} onOpenChange={setIsCleanDialogOpen}>
-        <DialogContent className="w-[92vw] sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>清理日志</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="flex gap-2">
-              <Button
-                variant={cleanType === 'count' ? 'default' : 'outline'}
-                size="sm"
-                onClick={() => handleCleanTypeChange('count')}
-                className="flex-1"
-              >
-                保留条数
+      {!isAuthKeyMode ? (
+        <Dialog open={isCleanDialogOpen} onOpenChange={setIsCleanDialogOpen}>
+          <DialogContent className="w-[92vw] sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>清理日志</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4 py-4">
+              <div className="flex gap-2">
+                <Button
+                  variant={cleanType === 'count' ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => handleCleanTypeChange('count')}
+                  className="flex-1"
+                >
+                  保留条数
+                </Button>
+                <Button
+                  variant={cleanType === 'days' ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => handleCleanTypeChange('days')}
+                  className="flex-1"
+                >
+                  保留天数
+                </Button>
+              </div>
+              <div className="flex items-center gap-2">
+                <Input
+                  type="number"
+                  min="1"
+                  value={cleanValue}
+                  onChange={(e) => setCleanValue(e.target.value)}
+                  placeholder={cleanType === 'count' ? '输入保留条数' : '输入保留天数'}
+                  className="h-10"
+                />
+                <span className="text-sm text-muted-foreground whitespace-nowrap">
+                  {cleanType === 'count' ? '条' : '天'}
+                </span>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setIsCleanDialogOpen(false)}>
+                取消
               </Button>
               <Button
-                variant={cleanType === 'days' ? 'default' : 'outline'}
-                size="sm"
-                onClick={() => handleCleanTypeChange('days')}
-                className="flex-1"
+                variant="destructive"
+                onClick={handleCleanLogs}
+                disabled={cleanLoading || !cleanValue || parseInt(cleanValue) <= 0}
               >
-                保留天数
+                {cleanLoading ? '清理中...' : '确定清理'}
               </Button>
             </div>
-            <div className="flex items-center gap-2">
-              <Input
-                type="number"
-                min="1"
-                value={cleanValue}
-                onChange={(e) => setCleanValue(e.target.value)}
-                placeholder={cleanType === 'count' ? '输入保留条数' : '输入保留天数'}
-                className="h-10"
-              />
-              <span className="text-sm text-muted-foreground whitespace-nowrap">
-                {cleanType === 'count' ? '条' : '天'}
-              </span>
-            </div>
-          </div>
-          <div className="flex justify-end gap-2">
-            <Button variant="outline" onClick={() => setIsCleanDialogOpen(false)}>
-              取消
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={handleCleanLogs}
-              disabled={cleanLoading || !cleanValue || parseInt(cleanValue) <= 0}
-            >
-              {cleanLoading ? '清理中...' : '确定清理'}
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
+          </DialogContent>
+        </Dialog>
+      ) : null}
     </div>
   );
 }

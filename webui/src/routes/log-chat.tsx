@@ -1,12 +1,15 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import Loading from "@/components/loading";
 import { getChatIO, type ChatIO } from "@/lib/api";
+import { getStoredAuthToken } from "@/lib/auth";
+import { buildReplayCurlSnippet, inferGatewayEndpoint, maskAuthToken } from "@/lib/curl";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { duotoneLight } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { toast } from "sonner";
+import { Copy } from "lucide-react";
 
 type SyntaxStyle = typeof duotoneLight;
 
@@ -139,13 +142,20 @@ function useSyntaxStyle(): SyntaxStyle {
   return duotoneLight;
 }
 
+type LogChatLocationState = {
+  style?: string;
+};
+
 export default function LogChatPage() {
   const { logId } = useParams<{ logId: string }>();
+  const location = useLocation();
   const navigate = useNavigate();
   const [chatIO, setChatIO] = useState<ChatIO | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingFull, setLoadingFull] = useState(false);
+  const [copyingCurlVariant, setCopyingCurlVariant] = useState<"masked" | "raw" | null>(null);
   const [loadErrorMessage, setLoadErrorMessage] = useState<string | null>(null);
+  const logStyle = ((location.state as LogChatLocationState | null)?.style ?? "").trim();
   const outputList = chatIO?.OfStringArray ?? [];
   const hasArrayOutput = outputList.length > 0;
   const singleOutput = chatIO?.OfString ?? "";
@@ -222,6 +232,47 @@ export default function LogChatPage() {
     }
   };
 
+  const getReplayInput = async (): Promise<string> => {
+    const currentInput = (chatIO?.Input ?? "").trim();
+    if (currentInput && !chatIO?.truncated_input) {
+      return currentInput;
+    }
+    if (!logId) {
+      throw new Error("缺少日志 ID");
+    }
+    const fullData = await getChatIO(logId, { mode: "full" });
+    setChatIO(fullData);
+    const fullInput = (fullData.Input ?? "").trim();
+    if (!fullInput) {
+      throw new Error("请求输入为空");
+    }
+    return fullInput;
+  };
+
+  const handleCopyReplayCurl = async (masked: boolean) => {
+    if (copyingCurlVariant) return;
+    setCopyingCurlVariant(masked ? "masked" : "raw");
+    try {
+      const requestBody = await getReplayInput();
+      const endpoint = inferGatewayEndpoint(logStyle, requestBody);
+      const rawAuthToken = getStoredAuthToken();
+      const authToken = masked ? maskAuthToken(rawAuthToken) : (rawAuthToken || "YOUR_AUTH_TOKEN");
+      const curlSnippet = buildReplayCurlSnippet({
+        baseUrl: window.location.origin,
+        endpoint,
+        authToken,
+        requestBody,
+      });
+      await navigator.clipboard.writeText(curlSnippet);
+      toast.success(masked ? "已复制 cURL（掩码版）" : "已复制 cURL（真实版）");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "未知错误";
+      toast.error(`复制 cURL 失败: ${message}`);
+    } finally {
+      setCopyingCurlVariant(null);
+    }
+  };
+
   if (loading) {
     return <Loading message="加载会话详情" />;
   }
@@ -233,9 +284,31 @@ export default function LogChatPage() {
           <h1 className="text-2xl font-bold">会话详情</h1>
           <p className="text-sm text-muted-foreground">日志 ID：{logId}</p>
         </div>
-        <Button variant="outline" onClick={() => navigate(-1)}>
-          返回
-        </Button>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8"
+            onClick={() => void handleCopyReplayCurl(true)}
+            disabled={copyingCurlVariant !== null || Boolean(loadErrorMessage)}
+          >
+            <Copy className="size-3.5" />
+            复制 cURL（掩码）
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8"
+            onClick={() => void handleCopyReplayCurl(false)}
+            disabled={copyingCurlVariant !== null || Boolean(loadErrorMessage)}
+          >
+            <Copy className="size-3.5" />
+            复制 cURL（真实）
+          </Button>
+          <Button variant="outline" onClick={() => navigate(-1)}>
+            返回
+          </Button>
+        </div>
       </div>
 
       {loadErrorMessage && (

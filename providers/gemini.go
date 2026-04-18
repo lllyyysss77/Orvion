@@ -66,6 +66,8 @@ type geminiModel struct {
 }
 
 func (g *Gemini) Models(ctx context.Context) ([]Model, error) {
+	ctx, cancel := context.WithTimeout(ctx, modelsListTimeout)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/models", strings.TrimRight(g.BaseURL, "/")), nil)
 	if err != nil {
 		return nil, err
@@ -73,7 +75,7 @@ func (g *Gemini) Models(ctx context.Context) ([]Model, error) {
 	req.Header.Set("x-goog-api-key", g.APIKey)
 	req.Header.Set("Content-Type", "application/json")
 
-	res, err := http.DefaultClient.Do(req)
+	res, err := GetClient(modelsListTimeout).Do(req)
 	if err != nil {
 		return nil, err
 	}

@@ -20,7 +20,9 @@ import (
 
 	"github.com/racio/orvion/consts"
 	"github.com/racio/orvion/models"
+	"github.com/racio/orvion/pkg"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const (
@@ -37,6 +39,10 @@ const (
 
 	telegramModelListPageSize         = 12
 	telegramModelProviderListPageSize = 8
+
+	telegramDailyUsageReportHour          = 9
+	telegramDailyUsageReportMinute        = 0
+	telegramDailyUsageReportCheckInterval = 1 * time.Minute
 )
 
 var telegramCommandProcessStartTime = time.Now()
@@ -107,9 +113,48 @@ type telegramStatusImageItem struct {
 	Source   string
 }
 
+type telegramDailyUsageTopModelRow struct {
+	Name     string `gorm:"column:name"`
+	ReqCount int64  `gorm:"column:req_count"`
+}
+
+type telegramDailyUsageSlowRow struct {
+	ID        uint      `gorm:"column:id"`
+	Name      string    `gorm:"column:name"`
+	Provider  string    `gorm:"column:provider_name"`
+	Status    string    `gorm:"column:status"`
+	CreatedAt time.Time `gorm:"column:created_at"`
+	LatencyMs int       `gorm:"column:latency_ms"`
+}
+
+type telegramDailySlowRequest struct {
+	ID        uint
+	ModelName string
+	Provider  string
+	Status    string
+	LatencyMs int
+	CreatedAt time.Time
+}
+
+type telegramDailyUsageSummary struct {
+	StartDate       time.Time
+	EndDate         time.Time
+	TotalCost       float64
+	TotalRequests   int64
+	SuccessRequests int64
+	TopModelName    string
+	TopModelReqs    int64
+	SlowestRequest  *telegramDailySlowRequest
+}
+
 // StartTelegramCommandBot 启动 Telegram 命令对话机器人（/status、/model、/help）。
 func StartTelegramCommandBot(ctx context.Context) {
-	go telegramCommandLoop(ctx)
+	pkg.GoSafe("service.telegram_command_loop", func() { telegramCommandLoop(ctx) })
+}
+
+// StartTelegramDailyUsageReport 每天早上 9 点推送前一天使用日报。
+func StartTelegramDailyUsageReport(ctx context.Context) {
+	pkg.GoSafe("service.telegram_daily_usage_report_loop", func() { telegramDailyUsageReportLoop(ctx) })
 }
 
 func telegramCommandLoop(ctx context.Context) {
@@ -129,7 +174,7 @@ func telegramCommandLoop(ctx context.Context) {
 		default:
 		}
 
-		botToken, chatID, apiBase, proxyURL, enabled, err := resolveTelegramRuntimeConfig(ctx)
+		botToken, chatID, apiBase, proxyURL, enabled, allowBuiltinFallback, err := resolveTelegramRuntimeConfig(ctx)
 		if err != nil {
 			slog.Warn("读取 TG 命令配置失败", "error", err)
 			if !waitWithContext(ctx, telegramCommandErrorInterval) {
@@ -144,9 +189,9 @@ func telegramCommandLoop(ctx context.Context) {
 			continue
 		}
 
-		nextSign := strings.Join([]string{botToken, chatID, apiBase, proxyURL}, "|")
+		nextSign := strings.Join([]string{botToken, chatID, apiBase, proxyURL, strconv.FormatBool(allowBuiltinFallback)}, "|")
 		if nextSign != configSign || notifier == nil {
-			notifier, _, err = buildTelegramNotifier(botToken, chatID, apiBase, proxyURL, true)
+			notifier, _, err = buildTelegramNotifier(botToken, chatID, apiBase, proxyURL, true, allowBuiltinFallback)
 			if err != nil {
 				slog.Warn("初始化 TG 命令发送器失败", "error", err)
 				if !waitWithContext(ctx, telegramCommandErrorInterval) {
@@ -158,7 +203,7 @@ func telegramCommandLoop(ctx context.Context) {
 				slog.Warn("同步 TG 命令列表失败", "error", err)
 			}
 			primeTelegramStatusImageWindow(ctx)
-			pollClient, err = buildTelegramCommandPollClient(proxyURL)
+			pollClient, err = buildTelegramCommandPollClient(proxyURL, allowBuiltinFallback)
 			if err != nil {
 				slog.Warn("初始化 TG 命令轮询客户端失败", "error", err)
 				if !waitWithContext(ctx, telegramCommandErrorInterval) {
@@ -224,8 +269,121 @@ func telegramCommandLoop(ctx context.Context) {
 	}
 }
 
-func buildTelegramCommandPollClient(proxyURL string) (*http.Client, error) {
-	client, err := buildTelegramHTTPClient(proxyURL)
+func telegramDailyUsageReportLoop(ctx context.Context) {
+	lastSentScheduleDate, err := loadTelegramDailyUsageReportLastSentDate(ctx)
+	if err != nil {
+		slog.Warn("读取 TG 每日使用日报发送游标失败", "error", err)
+	}
+
+	runOnce := func(now time.Time) {
+		scheduleDate, shouldRun := shouldRunTelegramDailyUsageReport(now, lastSentScheduleDate)
+		if !shouldRun {
+			return
+		}
+
+		sent, sendErr := dispatchTelegramDailyUsageReport(ctx, now)
+		if sendErr != nil {
+			slog.Warn("发送 TG 每日使用日报失败", "schedule_date", scheduleDate, "error", sendErr)
+			return
+		}
+		if !sent {
+			return
+		}
+
+		lastSentScheduleDate = scheduleDate
+		if saveErr := saveTelegramDailyUsageReportLastSentDate(ctx, scheduleDate); saveErr != nil {
+			slog.Warn("保存 TG 每日使用日报发送游标失败", "schedule_date", scheduleDate, "error", saveErr)
+		}
+	}
+
+	runOnce(time.Now())
+
+	ticker := time.NewTicker(telegramDailyUsageReportCheckInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			runOnce(now)
+		}
+	}
+}
+
+func shouldRunTelegramDailyUsageReport(now time.Time, lastSentScheduleDate string) (string, bool) {
+	scheduleDate := now.Format("2006-01-02")
+	y, m, d := now.Date()
+	triggerAt := time.Date(y, m, d, telegramDailyUsageReportHour, telegramDailyUsageReportMinute, 0, 0, now.Location())
+	if now.Before(triggerAt) {
+		return scheduleDate, false
+	}
+	if strings.TrimSpace(lastSentScheduleDate) == scheduleDate {
+		return scheduleDate, false
+	}
+	return scheduleDate, true
+}
+
+func dispatchTelegramDailyUsageReport(ctx context.Context, now time.Time) (bool, error) {
+	notifier, ok, err := resolveTelegramNotifier(ctx)
+	if err != nil {
+		return false, err
+	}
+	if !ok || notifier == nil {
+		return false, nil
+	}
+
+	content := buildTelegramYesterdayUsageReportMessage(ctx, now)
+	if err := sendTelegramCaptionWithStatusImage(ctx, notifier, notifier.chatID, content); err != nil {
+		return true, err
+	}
+
+	slog.Info("已发送 TG 每日使用日报",
+		"chat_id", notifier.chatID,
+		"yesterday", now.AddDate(0, 0, -1).Format("2006-01-02"),
+	)
+	return true, nil
+}
+
+func loadTelegramDailyUsageReportLastSentDate(ctx context.Context) (string, error) {
+	cfg, err := gorm.G[models.Config](models.DB).
+		Where("key = ?", models.KeyTelegramDailyUsageReportLastSentDate).
+		First(ctx)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", nil
+		}
+		return "", err
+	}
+
+	value := strings.TrimSpace(cfg.Value)
+	if _, parseErr := time.Parse("2006-01-02", value); parseErr != nil {
+		return "", nil
+	}
+	return value, nil
+}
+
+func saveTelegramDailyUsageReportLastSentDate(ctx context.Context, scheduleDate string) error {
+	scheduleDate = strings.TrimSpace(scheduleDate)
+	if scheduleDate == "" {
+		return nil
+	}
+
+	return models.DB.WithContext(ctx).
+		Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "key"}},
+			DoUpdates: clause.Assignments(map[string]any{
+				"value": scheduleDate,
+			}),
+		}).
+		Create(&models.Config{
+			Key:   models.KeyTelegramDailyUsageReportLastSentDate,
+			Value: scheduleDate,
+		}).Error
+}
+
+func buildTelegramCommandPollClient(proxyURL string, allowBuiltinFallback bool) (*http.Client, error) {
+	client, err := buildTelegramHTTPClient(proxyURL, allowBuiltinFallback)
 	if err != nil {
 		return nil, err
 	}
@@ -234,10 +392,10 @@ func buildTelegramCommandPollClient(proxyURL string) (*http.Client, error) {
 	return client, nil
 }
 
-func resolveTelegramRuntimeConfig(ctx context.Context) (botToken, chatID, apiBase, proxyURL string, enabled bool, err error) {
+func resolveTelegramRuntimeConfig(ctx context.Context) (botToken, chatID, apiBase, proxyURL string, enabled bool, allowBuiltinFallback bool, err error) {
 	cfg, found, loadErr := loadTelegramBreakerAlertConfig(ctx)
 	if loadErr != nil {
-		return "", "", "", "", false, loadErr
+		return "", "", "", "", false, false, loadErr
 	}
 	if found {
 		botToken = strings.TrimSpace(cfg.BotToken)
@@ -245,10 +403,11 @@ func resolveTelegramRuntimeConfig(ctx context.Context) (botToken, chatID, apiBas
 		apiBase = strings.TrimSpace(cfg.APIBase)
 		proxyURL = strings.TrimSpace(cfg.ProxyURL)
 		enabled = cfg.Enabled && botToken != "" && chatID != ""
+		allowBuiltinFallback = false
 		if apiBase == "" {
 			apiBase = telegramDefaultAPIBase
 		}
-		return botToken, chatID, apiBase, proxyURL, enabled, nil
+		return botToken, chatID, apiBase, proxyURL, enabled, allowBuiltinFallback, nil
 	}
 
 	botToken = strings.TrimSpace(os.Getenv(envTelegramBotToken))
@@ -259,7 +418,8 @@ func resolveTelegramRuntimeConfig(ctx context.Context) (botToken, chatID, apiBas
 		apiBase = telegramDefaultAPIBase
 	}
 	enabled = botToken != "" && chatID != ""
-	return botToken, chatID, apiBase, proxyURL, enabled, nil
+	allowBuiltinFallback = true
+	return botToken, chatID, apiBase, proxyURL, enabled, allowBuiltinFallback, nil
 }
 
 func fetchTelegramLatestOffset(ctx context.Context, client *http.Client, endpoint string) (int64, error) {
@@ -530,11 +690,12 @@ func syncTelegramCommandList(notifier *telegramNotifier) error {
 
 func primeTelegramStatusImageWindow(ctx context.Context) {
 	for i := 0; i < telegramStatusImageWindowSize; i++ {
-		go func(worker int) {
+		worker := i + 1
+		pkg.GoSafe("service.telegram_status_image_prefetch", func() {
 			if err := prefetchTelegramStatusImageIntoWindow(ctx, fmt.Sprintf("startup_worker_%d", worker)); err != nil {
 				slog.Warn("启动预拉 /status 图片失败", "worker", worker, "error", err)
 			}
-		}(i + 1)
+		})
 	}
 }
 
@@ -569,7 +730,7 @@ func scheduleTelegramStatusImageRefill(ctx context.Context) {
 	telegramStatusImageRefillRunning = true
 	telegramStatusImageWindowMu.Unlock()
 
-	go func() {
+	pkg.GoSafe("service.telegram_status_image_refill", func() {
 		defer func() {
 			telegramStatusImageWindowMu.Lock()
 			telegramStatusImageRefillRunning = false
@@ -595,7 +756,7 @@ func scheduleTelegramStatusImageRefill(ctx context.Context) {
 				return
 			}
 		}
-	}()
+	})
 }
 
 func prefetchTelegramStatusImageIntoWindowWithRetry(ctx context.Context, trigger string) error {
@@ -661,17 +822,30 @@ func handleTelegramStatusCommand(ctx context.Context, notifier *telegramNotifier
 
 	content := buildTelegramSystemStatusMessage(ctx)
 	chatID := strconv.FormatInt(message.Chat.ID, 10)
+	return true, sendTelegramCaptionWithStatusImage(ctx, notifier, chatID, content)
+}
+
+func sendTelegramCaptionWithStatusImage(ctx context.Context, notifier *telegramNotifier, chatID string, content string) error {
+	if notifier == nil {
+		return errors.New("telegram notifier is nil")
+	}
+	chatID = strings.TrimSpace(chatID)
+	if chatID == "" {
+		return errors.New("telegram chat id is empty")
+	}
+	content = strings.TrimSpace(content)
+
 	item, ok := popTelegramStatusImageWindowItem(ctx)
 	if !ok {
 		photoURL := buildTelegramStatusCoverImageURL()
 		photoBinary, fileName, sourceURL, err := downloadTelegramStatusCoverImage(ctx, photoURL)
 		if err != nil {
-			slog.Error("下载 /status 状态图片失败", "url", photoURL, "error", err)
-			// 下载图片失败时回退到纯文本，避免状态消息丢失。
+			slog.Error("下载 TG 状态图片失败", "url", photoURL, "error", err)
+			// 下载图片失败时回退到纯文本，避免关键消息丢失。
 			if fallbackErr := notifier.sendTextWithMarkupToChat(chatID, content, nil); fallbackErr != nil {
-				return true, fmt.Errorf("下载状态图片失败: %v, 文本回退也失败: %w", err, fallbackErr)
+				return fmt.Errorf("下载状态图片失败: %v, 文本回退也失败: %w", err, fallbackErr)
 			}
-			return true, nil
+			return nil
 		}
 		item = telegramStatusImageItem{
 			Binary:   photoBinary,
@@ -682,14 +856,137 @@ func handleTelegramStatusCommand(ctx context.Context, notifier *telegramNotifier
 	defer clearTelegramStatusBinary(item.Binary)
 
 	if err := notifier.sendPhotoBinaryToChat(chatID, item.FileName, item.Binary, content); err != nil {
-		// 图片发送失败时回退到纯文本，避免状态消息丢失。
+		// 图片发送失败时回退到纯文本，避免关键消息丢失。
 		if fallbackErr := notifier.sendTextWithMarkupToChat(chatID, content, nil); fallbackErr != nil {
-			return true, fmt.Errorf("发送状态图片失败: %v, 文本回退也失败: %w", err, fallbackErr)
+			return fmt.Errorf("发送状态图片失败: %v, 文本回退也失败: %w", err, fallbackErr)
 		}
-		return true, nil
+		return nil
 	}
+
 	scheduleTelegramStatusImageRefill(ctx)
-	return true, nil
+	return nil
+}
+
+func buildTelegramYesterdayUsageReportMessage(ctx context.Context, now time.Time) string {
+	start, end := resolveTelegramYesterdayRange(now)
+	summary := collectTelegramDailyUsageSummary(ctx, start, end)
+	yesterdayText := start.Format("2006-01-02")
+
+	lines := []string{
+		"【🌞 Orvion 昨日使用小报】\n",
+		fmt.Sprintf("早安呀～这是 %s 的可爱小账本 ✨", yesterdayText),
+		"━━━━━━━━━━━━━━━━",
+		fmt.Sprintf("💸 花费：$%.4f", summary.TotalCost),
+	}
+
+	if summary.TopModelName != "" && summary.TopModelReqs > 0 {
+		lines = append(lines, fmt.Sprintf("🔥 最活跃模型：%s（%d 次）", summary.TopModelName, summary.TopModelReqs))
+	} else {
+		lines = append(lines, "🔥 最活跃模型：昨天还没有请求，先攒攒能量~")
+	}
+
+	if summary.SlowestRequest != nil {
+		statusText := telegramReadableStatus(summary.SlowestRequest.Status)
+		lines = append(lines, fmt.Sprintf("🐢 最慢一次请求：%s / %s（%d ms，%s）",
+			summary.SlowestRequest.ModelName,
+			summary.SlowestRequest.Provider,
+			summary.SlowestRequest.LatencyMs,
+			statusText,
+		))
+	} else {
+		lines = append(lines, "🐢 最慢一次请求：暂无记录，速度小火箭待命中~")
+	}
+
+	if summary.TotalRequests > 0 {
+		failed := summary.TotalRequests - summary.SuccessRequests
+		if failed < 0 {
+			failed = 0
+		}
+		lines = append(lines, fmt.Sprintf("📦 请求总数：%d（成功 %d / 失败 %d）", summary.TotalRequests, summary.SuccessRequests, failed))
+	}
+	lines = append(lines, "💌 今天也一起稳定发挥、少花钱多产出～")
+	return strings.Join(lines, "\n")
+}
+
+func resolveTelegramYesterdayRange(now time.Time) (time.Time, time.Time) {
+	y, m, d := now.Date()
+	startOfToday := time.Date(y, m, d, 0, 0, 0, 0, now.Location())
+	startOfYesterday := startOfToday.AddDate(0, 0, -1)
+	return startOfYesterday, startOfToday
+}
+
+func collectTelegramDailyUsageSummary(ctx context.Context, start time.Time, end time.Time) telegramDailyUsageSummary {
+	summary := telegramDailyUsageSummary{
+		StartDate: start,
+		EndDate:   end,
+	}
+	if models.DB == nil {
+		return summary
+	}
+
+	db := models.DB.WithContext(ctx)
+	buildBase := func() *gorm.DB {
+		return db.Model(&models.ChatLog{}).
+			Where("deleted_at IS NULL").
+			Where("created_at >= ? AND created_at < ?", start, end)
+	}
+
+	_ = buildBase().Count(&summary.TotalRequests).Error
+	_ = buildBase().Where("status = ?", "success").Count(&summary.SuccessRequests).Error
+	_ = buildBase().Select("COALESCE(SUM(total_cost), 0)").Scan(&summary.TotalCost).Error
+
+	var topModel telegramDailyUsageTopModelRow
+	if err := buildBase().
+		Select("name, COUNT(*) AS req_count").
+		Where("name <> ?", "").
+		Group("name").
+		Order("req_count DESC").
+		Order("name ASC").
+		Take(&topModel).Error; err == nil {
+		summary.TopModelName = strings.TrimSpace(topModel.Name)
+		summary.TopModelReqs = topModel.ReqCount
+	}
+
+	var slowRow telegramDailyUsageSlowRow
+	if err := buildBase().
+		Select("id, name, provider_name, status, created_at, (proxy_time_ms + first_chunk_time_ms + chunk_time_ms) AS latency_ms").
+		Order("(proxy_time_ms + first_chunk_time_ms + chunk_time_ms) DESC").
+		Order("id DESC").
+		Take(&slowRow).Error; err == nil {
+		latency := slowRow.LatencyMs
+		if latency < 0 {
+			latency = 0
+		}
+		modelName := strings.TrimSpace(slowRow.Name)
+		if modelName == "" {
+			modelName = "unknown-model"
+		}
+		providerName := strings.TrimSpace(slowRow.Provider)
+		if providerName == "" {
+			providerName = "unknown-provider"
+		}
+		summary.SlowestRequest = &telegramDailySlowRequest{
+			ID:        slowRow.ID,
+			ModelName: modelName,
+			Provider:  providerName,
+			Status:    strings.TrimSpace(slowRow.Status),
+			LatencyMs: latency,
+			CreatedAt: slowRow.CreatedAt,
+		}
+	}
+
+	return summary
+}
+
+func telegramReadableStatus(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "success":
+		return "成功"
+	case "error":
+		return "失败"
+	default:
+		return "未知状态"
+	}
 }
 
 func buildTelegramStatusCoverImageURL() string {

@@ -66,38 +66,8 @@ import {
   ArrowUpDown,
   MessageSquare,
 } from "lucide-react";
-import hunyuanIcon from "@/assets/modelIcon/hunyuan.svg";
-import doubaoIcon from "@/assets/modelIcon/doubao.svg";
-import grokIcon from "@/assets/modelIcon/grok.svg";
-import qwenIcon from "@/assets/modelIcon/qwen.svg";
-import minimaxIcon from "@/assets/modelIcon/minimax.svg";
-import openaiIcon from "@/assets/modelIcon/openai.svg";
-import claudeIcon from "@/assets/modelIcon/claude.svg";
-import geminiIcon from "@/assets/modelIcon/gemini.svg";
-import gemmaIcon from "@/assets/modelIcon/gemma.svg";
-import glmIcon from "@/assets/modelIcon/glm.svg";
-import kimiIcon from "@/assets/modelIcon/kimi.svg";
 import { cn } from "@/lib/utils";
-
-type ModelIconConfig = {
-  test: RegExp;
-  src: string;
-  alt: string;
-};
-
-const modelIconConfigs: ModelIconConfig[] = [
-  { test: /hunyuan/i, src: hunyuanIcon, alt: "Hunyuan" },
-  { test: /doubao|ark/i, src: doubaoIcon, alt: "Doubao" },
-  { test: /grok|xai/i, src: grokIcon, alt: "Grok" },
-  { test: /qwen|tongyi/i, src: qwenIcon, alt: "Qwen" },
-  { test: /minimax|abab/i, src: minimaxIcon, alt: "MiniMax" },
-  { test: /openai|gpt|o1|o3|o4/i, src: openaiIcon, alt: "OpenAI" },
-  { test: /claude|anthropic/i, src: claudeIcon, alt: "Claude" },
-  { test: /gemma/i, src: gemmaIcon, alt: "Gemma" },
-  { test: /gemini|google/i, src: geminiIcon, alt: "Gemini" },
-  { test: /glm|zhipu/i, src: glmIcon, alt: "GLM" },
-  { test: /kimi|moonshot/i, src: kimiIcon, alt: "Kimi" },
-];
+import { resolveModelIcon } from "@/lib/model-icon";
 
 const capabilityValues = ["chat", "vision", "video", "embedding", "rerank"] as const;
 type ModelCapability = (typeof capabilityValues)[number];
@@ -147,7 +117,7 @@ const capabilityOptions: {
 ];
 
 const ModelIcon = ({ name }: { name: string }) => {
-  const config = modelIconConfigs.find((item) => item.test.test(name));
+  const config = resolveModelIcon(name);
   const fallback = (name || "M").slice(0, 2).toUpperCase();
 
   if (!config) {

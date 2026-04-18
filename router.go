@@ -109,6 +109,7 @@ func registerPublicRoutes(router *gin.Engine) {
 func registerUnifiedRoutes(router *gin.Engine, authOpenAI gin.HandlerFunc, authAnthropic gin.HandlerFunc) {
 	// 统一接口
 	v1 := router.Group("/v1")
+	v1.Use(middleware.LimitRequestBody(middleware.ResolveMaxRequestBodyBytes()))
 	v1.GET("/models", authOpenAI, handler.OpenAIModelsHandler)
 	v1.POST("/chat/completions", authOpenAI, handler.ChatCompletionsHandler)
 	v1.POST("/responses", authOpenAI, handler.ResponsesHandler)
@@ -125,6 +126,8 @@ func registerAuthKeySummaryRoutes(router *gin.Engine, authOpenAI gin.HandlerFunc
 	// API Key 概览（用于前端在 API Key 登录时展示）
 	authKey := router.Group("/auth-key", authOpenAI)
 	authKey.GET("/summary", handler.AuthKeySummary)
+	authKey.GET("/logs", handler.GetAuthKeyRequestLogs)
+	authKey.GET("/logs/:id/chat-io", handler.GetAuthKeyChatIO)
 }
 
 func registerAdminAPIRoutes(router *gin.Engine, token string) {
@@ -150,6 +153,7 @@ func registerMetricsRoutes(api *gin.RouterGroup) {
 	api.GET("/metrics/request-amount", handler.RequestAmountTrend)
 	api.GET("/metrics/model-usage", handler.ModelUsageSummary)
 	api.GET("/metrics/daily-model-cost", handler.DailyModelCostTrend)
+	api.GET("/stream/requests", handler.StreamRequests)
 }
 
 func registerProviderRoutes(api *gin.RouterGroup) {
@@ -181,6 +185,7 @@ func registerModelProviderRoutes(api *gin.RouterGroup) {
 
 func registerSystemRoutes(api *gin.RouterGroup) {
 	api.GET("/version", handler.GetVersion)
+	api.GET("/version/update-check", handler.GetVersionUpdateCheck)
 	api.GET("/logs", adminhandler.GetRequestLogs)
 	api.GET("/logs/:id/chat-io", adminhandler.GetChatIO)
 	api.GET("/system-logs", adminhandler.GetSystemLogs)

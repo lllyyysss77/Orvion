@@ -21,17 +21,9 @@ import {
   UserCircle2,
   X,
 } from "lucide-react";
-import { configAPI, getVersion, checkLatestRelease, type GitHubRelease } from "@/lib/api";
-import { clearStoredAuthToken, getStoredAuthToken } from "@/lib/auth";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { checkVersionUpdate, configAPI, getVersion, type VersionUpdateCheck } from "@/lib/api";
+import { clearStoredAuthToken, getStoredAuthTokenMode } from "@/lib/auth";
 
-const AUTH_KEY_PREFIXES = ["sk-github.com/racio/orvion-", "sk-github.com/racio/llmio-"];
 const SIDEBAR_STORAGE_KEY = "orvion_sidebar_collapsed";
 const UI_FONT_STORAGE_KEY = "orvion_ui_font";
 type UIFontOption = "default" | "kunming_seagull" | "fenyuan" | "lxgw_wenkai";
@@ -72,6 +64,16 @@ const navSections = [
   },
 ] as const;
 
+const authKeyNavSections = [
+  {
+    title: "概览",
+    items: [
+      { to: "/", label: "API 概览", icon: House },
+      { to: "/logs", label: "请求日志", icon: ScrollText },
+    ],
+  },
+] as const;
+
 function getInitialSidebarCollapsed() {
   if (typeof window === "undefined") {
     return false;
@@ -96,8 +98,8 @@ function getInitialUIFont(): UIFontOption {
 
 export default function Layout() {
   const [version, setVersion] = useState("dev");
-  const [latestRelease, setLatestRelease] = useState<GitHubRelease | null>(null);
-  const [showUpdateDialog, setShowUpdateDialog] = useState(false);
+  const [versionUpdate, setVersionUpdate] = useState<VersionUpdateCheck | null>(null);
+  const [updatePopoverOpen, setUpdatePopoverOpen] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(getInitialSidebarCollapsed);
   const [uiFont, setUIFont] = useState<UIFontOption>(getInitialUIFont);
@@ -107,8 +109,7 @@ export default function Layout() {
   const location = useLocation();
   const effectiveUIFont: UIFontOption = uiFont;
   const layoutFontClass = UI_FONT_CLASS_MAP[effectiveUIFont];
-  const token = getStoredAuthToken();
-  const isAuthKeyToken = AUTH_KEY_PREFIXES.some((prefix) => token.startsWith(prefix));
+  const isAuthKeyToken = getStoredAuthTokenMode() === "auth_key";
   const progressTimersRef = useRef<number[]>([]);
   const progressStartedRef = useRef(false);
 
@@ -119,43 +120,43 @@ export default function Layout() {
 
     let active = true;
 
-    const fetchVersion = async () => {
+    const fetchVersionAndUpdate = async () => {
       try {
-        const value = await getVersion();
-        if (active && value) {
-          setVersion(value);
+        const info = await checkVersionUpdate();
+        if (!active) {
+          return;
         }
-      } catch {
-        // 保持默认版本号。
+        if (info.currentVersion) {
+          setVersion(info.currentVersion);
+        }
+        setVersionUpdate(info.hasUpdate ? info : null);
+      } catch (error) {
+        console.error("检查版本更新失败:", error);
+        setVersionUpdate(null);
+        setUpdatePopoverOpen(false);
+        try {
+          const value = await getVersion();
+          if (active && value) {
+            setVersion(value);
+          }
+        } catch {
+          // 保持默认版本号。
+        }
       }
     };
 
-    void fetchVersion();
+    void fetchVersionAndUpdate();
 
     return () => {
       active = false;
     };
-  }, [isAuthKeyToken]);
+  }, [isAuthKeyToken, location.pathname]);
 
   useEffect(() => {
-    if (isAuthKeyToken || location.pathname !== "/") {
-      return;
+    if (!versionUpdate?.hasUpdate) {
+      setUpdatePopoverOpen(false);
     }
-
-    const checkForUpdates = async () => {
-      try {
-        const release = await checkLatestRelease("raciott", "llmio");
-        if (release && release.tag_name !== version) {
-          setLatestRelease(release);
-          setShowUpdateDialog(true);
-        }
-      } catch (error) {
-        console.error("Failed to check for updates:", error);
-      }
-    };
-
-    void checkForUpdates();
-  }, [isAuthKeyToken, location.pathname, version]);
+  }, [versionUpdate?.hasUpdate]);
 
   useEffect(() => {
     if (isAuthKeyToken) {
@@ -326,8 +327,9 @@ export default function Layout() {
 
   const renderNavGroups = (mobile = false) => {
     const collapsed = !mobile && sidebarCollapsed;
+    const sections = isAuthKeyToken ? authKeyNavSections : navSections;
 
-    return navSections.map((section) => (
+    return sections.map((section) => (
       <div key={section.title} className={SIDEBAR_GROUP_PADDING}>
         <div
           className={cn(
@@ -411,13 +413,15 @@ export default function Layout() {
             </div>
           </div>
           <div className="my-1 h-px bg-border/70" />
-          <Link
-            to="/config"
-            className="flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors hover:bg-accent hover:text-accent-foreground"
-          >
-            <Settings2 className="h-4 w-4" />
-            系统配置
-          </Link>
+          {!isAuthKeyToken ? (
+            <Link
+              to="/config"
+              className="flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors hover:bg-accent hover:text-accent-foreground"
+            >
+              <Settings2 className="h-4 w-4" />
+              系统配置
+            </Link>
+          ) : null}
           <button
             type="button"
             onClick={handleLogout}
@@ -432,10 +436,6 @@ export default function Layout() {
   };
 
   const renderDesktopSidebar = () => {
-    if (isAuthKeyToken) {
-      return null;
-    }
-
     return (
       <aside
         className={cn(
@@ -459,10 +459,6 @@ export default function Layout() {
   };
 
   const renderMobileSidebar = () => {
-    if (isAuthKeyToken) {
-      return null;
-    }
-
     return (
       <div
         className={cn(
@@ -512,11 +508,9 @@ export default function Layout() {
   };
 
   const sidebarOffsetStyle = {
-    "--sidebar-offset": isAuthKeyToken
-      ? "0rem"
-      : sidebarCollapsed
-        ? DESKTOP_SIDEBAR_COLLAPSED_WIDTH
-        : DESKTOP_SIDEBAR_WIDTH,
+    "--sidebar-offset": sidebarCollapsed
+      ? DESKTOP_SIDEBAR_COLLAPSED_WIDTH
+      : DESKTOP_SIDEBAR_WIDTH,
   } as CSSProperties;
 
   return (
@@ -533,17 +527,15 @@ export default function Layout() {
       <header className="bg-background/95 supports-[backdrop-filter]:bg-background/60 fixed top-0 z-50 w-full border-b border-border/60 backdrop-blur">
         <div className="flex h-14 items-center justify-between px-4 md:px-6">
           <div className="flex items-center gap-2 pl-0 md:pl-2">
-            {!isAuthKeyToken ? (
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-8 md:-ml-4"
-                onClick={handleToggleSidebar}
-                aria-label="切换侧边栏"
-              >
-                <PanelLeft className="h-4 w-4" />
-              </Button>
-            ) : null}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-8 md:-ml-4"
+              onClick={handleToggleSidebar}
+              aria-label="切换侧边栏"
+            >
+              <PanelLeft className="h-4 w-4" />
+            </Button>
 
             <Link to="/" className="flex items-center gap-2">
               <div className="flex size-8 shrink-0 items-center justify-center overflow-hidden rounded bg-primary/10">
@@ -554,16 +546,67 @@ export default function Layout() {
           </div>
 
           <div className="flex items-center gap-2 pr-0 md:pr-2">
-            <Badge variant="outline" className="hidden rounded-full border-border/70 bg-background/80 px-3 py-1 text-xs text-muted-foreground md:inline-flex">
-              {version}
-              {latestRelease ? <span className="ml-2 h-1.5 w-1.5 rounded-full bg-primary" /> : null}
+            <Badge
+              variant="outline"
+              className="hidden rounded-full border-border/70 bg-background/80 px-3 py-1 text-xs text-muted-foreground md:inline-flex"
+            >
+              <span>{version}</span>
+              {versionUpdate?.hasUpdate ? (
+                <Popover open={updatePopoverOpen} onOpenChange={setUpdatePopoverOpen}>
+                  <PopoverTrigger asChild>
+                    <button
+                      type="button"
+                      aria-label="查看更新内容"
+                      className="ml-2 h-2.5 w-2.5 rounded-full bg-amber-400 ring-2 ring-amber-100 transition hover:scale-110"
+                    />
+                  </PopoverTrigger>
+                  <PopoverContent
+                    side="bottom"
+                    align="end"
+                    sideOffset={10}
+                    className="w-[min(90vw,28rem)] rounded-2xl border-border/70 bg-card/95 p-0"
+                  >
+                    <div className="space-y-3 p-4">
+                      <div className="space-y-1">
+                        <div className="text-sm font-semibold text-foreground">
+                          发现新版本 {versionUpdate.release?.tagName ?? "latest"}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          当前版本：{version}，最新版本：{versionUpdate.release?.tagName ?? "latest"}
+                        </div>
+                        {versionUpdate.release?.publishedAt ? (
+                          <div className="text-xs text-muted-foreground">
+                            发布时间：{new Date(versionUpdate.release.publishedAt).toLocaleString()}
+                          </div>
+                        ) : null}
+                      </div>
+                      <div className="rounded-xl border border-border/70 bg-muted/40 p-3 text-xs whitespace-pre-wrap text-muted-foreground max-h-72 overflow-y-auto">
+                        {versionUpdate.release?.body?.trim() || "暂无更新说明"}
+                      </div>
+                      <div className="flex justify-end">
+                        <Button
+                          size="sm"
+                          onClick={() => {
+                            void openExternalUrl(versionUpdate.release?.htmlUrl ?? "https://github.com/raciott/llmio/tags");
+                            setUpdatePopoverOpen(false);
+                          }}
+                        >
+                          查看标签页
+                        </Button>
+                      </div>
+                    </div>
+                  </PopoverContent>
+                </Popover>
+              ) : null}
             </Badge>
 
-            <Button variant="ghost" size="icon" className="size-8" asChild>
-              <Link to="/config" aria-label="系统配置">
-                <Settings2 className="h-4 w-4" />
-              </Link>
-            </Button>
+            {!isAuthKeyToken ? (
+              <Button variant="ghost" size="icon" className="size-8" asChild>
+                <Link to="/config" aria-label="系统配置">
+                  <Settings2 className="h-4 w-4" />
+                </Link>
+              </Button>
+            ) : null}
 
             {isAuthKeyToken ? (
               <Button
@@ -593,37 +636,6 @@ export default function Layout() {
         </div>
       </main>
 
-      <Dialog open={showUpdateDialog} onOpenChange={setShowUpdateDialog}>
-        <DialogContent className="max-h-[80vh] max-w-2xl overflow-y-auto rounded-[28px] border-border/70 bg-card/95">
-          <DialogHeader>
-            <DialogTitle>发现新版本 {latestRelease?.tag_name}</DialogTitle>
-            <DialogDescription>
-              当前版本：{version}，最新版本：{latestRelease?.tag_name}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div>
-              <h4 className="mb-2 font-semibold">更新内容</h4>
-              <div className="max-h-96 rounded-2xl border border-border/70 bg-muted/40 p-4 text-sm whitespace-pre-wrap">
-                {latestRelease?.body || "暂无更新说明"}
-              </div>
-            </div>
-            <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => setShowUpdateDialog(false)}>
-                稍后提醒
-              </Button>
-              <Button
-                onClick={() => {
-                  void openExternalUrl(latestRelease?.html_url ?? "");
-                  setShowUpdateDialog(false);
-                }}
-              >
-                查看详情
-              </Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

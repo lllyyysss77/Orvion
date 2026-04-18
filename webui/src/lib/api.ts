@@ -1,5 +1,5 @@
 // API client for interacting with the backend
-import { getStoredAuthToken } from "./auth";
+import { getStoredAuthToken, getStoredAuthTokenMode } from "./auth";
 
 const API_BASE = '/api';
 
@@ -386,6 +386,7 @@ export type AuthKeyPayload = {
 };
 
 export async function getAuthKeys(params: {
+  id?: number;
   page?: number;
   page_size?: number;
   status?: "active" | "inactive";
@@ -394,6 +395,7 @@ export async function getAuthKeys(params: {
 } = {}): Promise<PaginatedResponse<AuthKey>> {
   const searchParams = new URLSearchParams();
 
+  if (params.id != null) searchParams.append("id", params.id.toString());
   if (params.page) searchParams.append("page", params.page.toString());
   if (params.page_size) searchParams.append("page_size", params.page_size.toString());
   if (params.status) searchParams.append("status", params.status);
@@ -406,6 +408,13 @@ export async function getAuthKeys(params: {
     ...res,
     data: (res.data ?? []).map(normalizeAuthKey),
   };
+}
+
+export async function getAuthKeyById(id: number): Promise<AuthKey | null> {
+  if (!Number.isFinite(id) || id <= 0) return null;
+  const res = await getAuthKeys({ id, page: 1, page_size: 1 });
+  const exact = (res.data ?? []).find((item) => item.ID === id);
+  return exact ?? null;
 }
 
 export interface AuthKeyItem {
@@ -771,6 +780,28 @@ export interface ChatIO {
   truncated_output_items?: boolean;
 }
 
+export interface RequestStreamEventData {
+  id: number;
+  created_at: string;
+  auth_key_id: number;
+  auth_key_name: string;
+  provider_name: string;
+  model_name: string;
+  status: string;
+  latency_ms: number;
+  proxy_time_ms: number;
+  first_chunk_time_ms: number;
+  chunk_time_ms: number;
+  stream_like: boolean;
+}
+
+type RequestStreamHandlers = {
+  onRequest?: (event: RequestStreamEventData) => void;
+  onHeartbeat?: (payload: unknown) => void;
+  onHello?: (payload: unknown) => void;
+  onErrorEvent?: (payload: unknown) => void;
+};
+
 type RawChatIO = ChatIO & {
   OutputString?: string | null;
   OutputStringArray?: unknown;
@@ -861,7 +892,12 @@ export async function getLogs(
   if (filters.startAt) params.append("start_at", filters.startAt);
   if (filters.endAt) params.append("end_at", filters.endAt);
 
-  return apiRequest<LogsResponse>(`/logs?${params.toString()}`);
+  const query = `/logs?${params.toString()}`;
+  const mode = getStoredAuthTokenMode();
+  if (mode === "auth_key") {
+    return authKeyRequest<LogsResponse>(`/auth-key${query}`);
+  }
+  return apiRequest<LogsResponse>(query);
 }
 
 export async function getSystemLogs(limit: number = 200): Promise<SystemLogSnapshot> {
@@ -901,16 +937,148 @@ export async function getChatIO(
   } = {}
 ): Promise<ChatIO> {
   const params = new URLSearchParams();
-  const mode = options.mode ?? "summary";
-  if (mode) params.append("mode", mode);
+  const requestMode = options.mode ?? "summary";
+  if (requestMode) params.append("mode", requestMode);
   if (options.inputLimit) params.append("input_limit", options.inputLimit.toString());
   if (options.outputLimit) params.append("output_limit", options.outputLimit.toString());
   if (options.outputItemsLimit) params.append("output_items_limit", options.outputItemsLimit.toString());
 
   const query = params.toString();
-  const url = query ? `/logs/${logId}/chat-io?${query}` : `/logs/${logId}/chat-io`;
-  const raw = await apiRequest<RawChatIO>(url);
+  const path = query ? `/logs/${logId}/chat-io?${query}` : `/logs/${logId}/chat-io`;
+  const tokenMode = getStoredAuthTokenMode();
+  const raw = tokenMode === "auth_key"
+    ? await authKeyRequest<RawChatIO>(`/auth-key${path}`)
+    : await apiRequest<RawChatIO>(path);
   return normalizeChatIO(raw);
+}
+
+const parseSSEPayload = (raw: string): unknown => {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch {
+    return trimmed;
+  }
+};
+
+const dispatchSSEBlock = (block: string, handlers: RequestStreamHandlers): void => {
+  const normalizedBlock = block.replace(/\r/g, "");
+  const lines = normalizedBlock.split("\n");
+  let eventName = "message";
+  const dataLines: string[] = [];
+
+  for (const line of lines) {
+    if (!line || line.startsWith(":")) continue;
+    if (line.startsWith("event:")) {
+      eventName = line.slice(6).trim() || "message";
+      continue;
+    }
+    if (line.startsWith("data:")) {
+      dataLines.push(line.slice(5).trimStart());
+    }
+  }
+
+  if (dataLines.length === 0) return;
+  const payload = parseSSEPayload(dataLines.join("\n"));
+
+  if (eventName === "request") {
+    handlers.onRequest?.(payload as RequestStreamEventData);
+    return;
+  }
+  if (eventName === "heartbeat") {
+    handlers.onHeartbeat?.(payload);
+    return;
+  }
+  if (eventName === "hello") {
+    handlers.onHello?.(payload);
+    return;
+  }
+  if (eventName === "error") {
+    handlers.onErrorEvent?.(payload);
+  }
+};
+
+export async function streamRequestEvents(
+  options: {
+    signal: AbortSignal;
+    afterId?: number;
+    pollMs?: number;
+    batch?: number;
+    heartbeatSec?: number;
+  } & RequestStreamHandlers
+): Promise<void> {
+  const params = new URLSearchParams();
+  if (typeof options.afterId === "number" && Number.isFinite(options.afterId) && options.afterId > 0) {
+    params.append("after_id", Math.floor(options.afterId).toString());
+  }
+  if (typeof options.pollMs === "number" && Number.isFinite(options.pollMs) && options.pollMs > 0) {
+    params.append("poll_ms", Math.floor(options.pollMs).toString());
+  }
+  if (typeof options.batch === "number" && Number.isFinite(options.batch) && options.batch > 0) {
+    params.append("batch", Math.floor(options.batch).toString());
+  }
+  if (typeof options.heartbeatSec === "number" && Number.isFinite(options.heartbeatSec) && options.heartbeatSec > 0) {
+    params.append("heartbeat_sec", Math.floor(options.heartbeatSec).toString());
+  }
+
+  const token = getStoredAuthToken();
+  const query = params.toString();
+  const endpoint = query ? `${API_BASE}/stream/requests?${query}` : `${API_BASE}/stream/requests`;
+
+  const response = await fetch(endpoint, {
+    method: "GET",
+    headers: {
+      Accept: "text/event-stream",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    signal: options.signal,
+  });
+
+  if (response.status === 401) {
+    window.location.href = "/login";
+    throw new Error("Unauthorized");
+  }
+  if (!response.ok) {
+    throw new Error(`API request failed: ${response.status} ${response.statusText}`);
+  }
+  if (!response.body) {
+    throw new Error("SSE stream is unavailable");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        break;
+      }
+      buffer += decoder.decode(value, { stream: true });
+
+      let boundaryIndex = buffer.indexOf("\n\n");
+      while (boundaryIndex >= 0) {
+        const block = buffer.slice(0, boundaryIndex);
+        buffer = buffer.slice(boundaryIndex + 2);
+        if (block.trim().length > 0) {
+          dispatchSSEBlock(block, options);
+        }
+        boundaryIndex = buffer.indexOf("\n\n");
+      }
+    }
+
+    const remain = decoder.decode();
+    if (remain) {
+      buffer += remain;
+    }
+    if (buffer.trim().length > 0) {
+      dispatchSSEBlock(buffer, options);
+    }
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 const parseChatIOStringArray = (value: unknown): string[] => {
@@ -1045,41 +1213,21 @@ export async function getPrometheusMetrics(): Promise<string> {
   return response.text();
 }
 
-// GitHub Release API
-export interface GitHubRelease {
-  tag_name: string;
+export interface VersionReleaseInfo {
+  tagName: string;
   name: string;
-  published_at: string;
-  html_url: string;
+  publishedAt: string;
+  htmlUrl: string;
   body: string;
 }
 
-export async function checkLatestRelease(owner: string, repo: string): Promise<GitHubRelease | null> {
-  try {
-    const response = await fetch(
-      `https://api.github.com/repos/${owner}/${repo}/releases/latest`,
-      {
-        headers: {
-          'Accept': 'application/vnd.github+json',
-        },
-      }
-    );
+export interface VersionUpdateCheck {
+  currentVersion: string;
+  latestVersion?: string;
+  hasUpdate: boolean;
+  release?: VersionReleaseInfo;
+}
 
-    if (!response.ok) {
-      console.warn('Failed to fetch latest release:', response.status);
-      return null;
-    }
-
-    const data = await response.json();
-    return {
-      tag_name: data.tag_name,
-      name: data.name,
-      published_at: data.published_at,
-      html_url: data.html_url,
-      body: data.body,
-    };
-  } catch (error) {
-    console.error('Error checking for updates:', error);
-    return null;
-  }
+export async function checkVersionUpdate(): Promise<VersionUpdateCheck> {
+  return apiRequest<VersionUpdateCheck>("/version/update-check");
 }

@@ -51,6 +51,7 @@ RUN apk add --no-cache ca-certificates tzdata
 RUN mkdir -p /orvion
 
 COPY --from=builder /app/orvion /orvion/orvion
+COPY --from=builder /app/bin/xray-core /orvion/bin/xray-core
 COPY .env.example /orvion/.env.example
 
 WORKDIR /orvion
@@ -59,5 +60,6 @@ EXPOSE 7070
 
 ENV TZ=Asia/Shanghai
 RUN cp /usr/share/zoneinfo/${TZ} /etc/localtime && echo "${TZ}" > /etc/timezone
+RUN find /orvion/bin/xray-core -type f -name "xray*" -exec chmod +x {} + || true
 
 CMD ["./orvion"]

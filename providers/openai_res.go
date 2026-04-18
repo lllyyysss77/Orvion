@@ -35,12 +35,14 @@ func (o *OpenAIRes) BuildReq(ctx context.Context, header http.Header, model stri
 }
 
 func (o *OpenAIRes) Models(ctx context.Context) ([]Model, error) {
+	ctx, cancel := context.WithTimeout(ctx, modelsListTimeout)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s/models", o.BaseURL), nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", o.APIKey))
-	res, err := http.DefaultClient.Do(req)
+	res, err := GetClient(modelsListTimeout).Do(req)
 	if err != nil {
 		return nil, err
 	}

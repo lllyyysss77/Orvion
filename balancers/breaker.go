@@ -3,6 +3,8 @@ package balancers
 import (
 	"sync"
 	"time"
+
+	"github.com/racio/orvion/pkg"
 )
 
 type State int
@@ -76,7 +78,7 @@ func emitBreakerOpen(event BreakerOpenEvent) {
 	if hook == nil {
 		return
 	}
-	go hook(event)
+	pkg.GoSafe("balancers.breaker_open_hook", func() { hook(event) })
 }
 
 type Breaker struct {

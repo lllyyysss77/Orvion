@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, memo, useCallback, useMemo } from "react";
+import { useState, useEffect, memo, useCallback, useMemo, useRef } from "react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -10,23 +10,13 @@ import {
   getAuthKeySummary,
   getRequestAmountTrend,
   getModelUsageSummary,
-  getDailyModelCostTrend
+  getDailyModelCostTrend,
+  streamRequestEvents
 } from "@/lib/api";
-import type { AuthKeySummary, DailyModelCostSummary, MetricsSummary, ModelUsageSummaryItem, RequestAmountSummary } from "@/lib/api";
-import { getStoredAuthToken } from "@/lib/auth";
+import type { AuthKeySummary, DailyModelCostSummary, MetricsSummary, ModelUsageSummaryItem, RequestAmountSummary, RequestStreamEventData } from "@/lib/api";
+import { getStoredAuthTokenMode, setStoredAuthTokenMode } from "@/lib/auth";
 import { toast } from "sonner";
-import hunyuanIcon from "@/assets/modelIcon/hunyuan.svg";
-import doubaoIcon from "@/assets/modelIcon/doubao.svg";
-import grokIcon from "@/assets/modelIcon/grok.svg";
-import qwenIcon from "@/assets/modelIcon/qwen.svg";
-import minimaxIcon from "@/assets/modelIcon/minimax.svg";
-import openaiIcon from "@/assets/modelIcon/openai.svg";
-import claudeIcon from "@/assets/modelIcon/claude.svg";
-import geminiIcon from "@/assets/modelIcon/gemini.svg";
-import gemmaIcon from "@/assets/modelIcon/gemma.svg";
-import deepseekIcon from "@/assets/modelIcon/deepseek.svg";
-import glmIcon from "@/assets/modelIcon/glm.svg";
-import kimiIcon from "@/assets/modelIcon/kimi.svg";
+import { resolveModelIcon } from "@/lib/model-icon";
 import {
   RefreshCw,
   Activity,
@@ -39,6 +29,9 @@ import {
   Coins,
   CheckCircle2,
   XCircle,
+  ActivitySquare,
+  Wifi,
+  AlertTriangle,
   type LucideIcon,
 } from "lucide-react";
 
@@ -56,15 +49,6 @@ const summaryTitleIconClass =
 
 const summaryMetricIconClass =
   "size-6 rounded-lg bg-emerald-50 text-emerald-700 flex items-center justify-center shrink-0 ring-1 ring-emerald-100/80 dark:bg-emerald-400/10 dark:text-emerald-200 dark:ring-emerald-400/20";
-
-const AUTH_KEY_PREFIXES = ["sk-github.com/racio/orvion-", "sk-github.com/racio/llmio-"];
-
-const formatFixedNumber = (value: number | null | undefined, digits = 2) => {
-  if (value == null || !Number.isFinite(value)) {
-    return "--";
-  }
-  return value.toFixed(digits);
-};
 
 const formatTokenCompact = (value: number | null | undefined) => {
   if (value == null || !Number.isFinite(value)) {
@@ -275,30 +259,22 @@ type ModelVisual = {
   typeLabel: string;
 };
 
-type ModelVisualConfig = {
-  test: RegExp;
-  color: string;
-  iconSrc: string;
-  iconAlt: string;
-  typeLabel: string;
+const hashStringFNV1a = (value: string) => {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash >>> 0;
 };
 
-const modelTypeVisualConfigs: ModelVisualConfig[] = [
-  { test: /hunyuan/i, color: "#14B8A6", iconSrc: hunyuanIcon, iconAlt: "Hunyuan", typeLabel: "混元" },
-  { test: /doubao|ark/i, color: "#F97316", iconSrc: doubaoIcon, iconAlt: "Doubao", typeLabel: "豆包" },
-  { test: /grok|xai/i, color: "#10B981", iconSrc: grokIcon, iconAlt: "Grok", typeLabel: "Grok" },
-  { test: /qwen|tongyi/i, color: "#6366F1", iconSrc: qwenIcon, iconAlt: "Qwen", typeLabel: "通义千问" },
-  { test: /minimax|abab/i, color: "#EF4444", iconSrc: minimaxIcon, iconAlt: "MiniMax", typeLabel: "MiniMax" },
-  { test: /openai|gpt|o1|o3|o4/i, color: "#06B6D4", iconSrc: openaiIcon, iconAlt: "OpenAI", typeLabel: "OpenAI" },
-  { test: /claude|anthropic/i, color: "#A855F7", iconSrc: claudeIcon, iconAlt: "Claude", typeLabel: "Claude" },
-  { test: /gemma/i, color: "#2563EB", iconSrc: gemmaIcon, iconAlt: "Gemma", typeLabel: "Gemma" },
-  { test: /gemini|google/i, color: "#3B82F6", iconSrc: geminiIcon, iconAlt: "Gemini", typeLabel: "Gemini" },
-  { test: /glm|zhipu/i, color: "#22C55E", iconSrc: glmIcon, iconAlt: "GLM", typeLabel: "GLM" },
-  { test: /kimi|moonshot/i, color: "#EC4899", iconSrc: kimiIcon, iconAlt: "Kimi", typeLabel: "Kimi" },
-  { test: /deepseek/i, color: "#14B8A6", iconSrc: deepseekIcon, iconAlt: "DeepSeek", typeLabel: "DeepSeek" },
-];
-
-const fallbackModelColors = ["#0EA5E9", "#F59E0B", "#8B5CF6", "#10B981", "#EF4444", "#6366F1"];
+const getStableModelColor = (modelName: string) => {
+  const hash = hashStringFNV1a(modelName);
+  const hue = hash % 360;
+  const saturation = 62 + ((hash >>> 9) % 18); // 62% - 79%
+  const lightness = 46 + ((hash >>> 17) % 16); // 46% - 61%
+  return `hsl(${hue} ${saturation}% ${lightness}%)`;
+};
 
 const getModelVisual = (model: string): ModelVisual => {
   const normalized = model.trim().toLowerCase();
@@ -316,18 +292,18 @@ const getModelVisual = (model: string): ModelVisual => {
       typeLabel: "其他模型",
     };
   }
-  const matched = modelTypeVisualConfigs.find((item) => item.test.test(normalized));
-  if (matched) {
+  const stableColor = getStableModelColor(normalized);
+  const matchedIcon = resolveModelIcon(normalized);
+  if (matchedIcon) {
     return {
-      color: matched.color,
-      iconSrc: matched.iconSrc,
-      iconAlt: matched.iconAlt,
-      typeLabel: matched.typeLabel,
+      color: stableColor,
+      iconSrc: matchedIcon.src,
+      iconAlt: matchedIcon.alt,
+      typeLabel: matchedIcon.alt,
     };
   }
-  const hash = Array.from(normalized).reduce((acc, char) => acc + char.charCodeAt(0), 0);
   return {
-    color: fallbackModelColors[hash % fallbackModelColors.length],
+    color: stableColor,
     iconAlt: "Model",
     typeLabel: "通用模型",
   };
@@ -772,6 +748,16 @@ type AuthKeyDashboardProps = {
 };
 
 const AuthKeyDashboard = ({ summary, errorMessage }: AuthKeyDashboardProps) => {
+  if (!summary && !errorMessage) {
+    return (
+      <Card className="rounded-2xl border border-border/60 bg-card/90 shadow-sm">
+        <CardContent className="py-6 text-sm text-muted-foreground">
+          正在加载 API Key 概览...
+        </CardContent>
+      </Card>
+    );
+  }
+
   const name = summary?.name?.trim() || "未命名";
   const keyMasked = summary?.keyMasked || "--";
   const expiresAt = formatDate(summary?.expiresAt);
@@ -797,18 +783,23 @@ const AuthKeyDashboard = ({ summary, errorMessage }: AuthKeyDashboardProps) => {
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.2fr_1fr]">
         <Card className="rounded-2xl border border-border/60 bg-card/90 shadow-sm">
           <CardContent className="p-4 space-y-4">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className="text-sm font-semibold">名称</div>
-                <div className="mt-2 rounded-xl border border-border/60 bg-muted/40 px-3 py-2 text-sm font-mono">
-                  {keyMasked}
-                </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="rounded-xl border border-border/60 bg-muted/30 px-3 py-2">
+                <div className="text-xs text-muted-foreground">名称</div>
+                <div className="mt-1 text-sm font-semibold text-foreground">{name}</div>
               </div>
-              <div className="text-xs text-muted-foreground">{name}</div>
+              <div className="rounded-xl border border-border/60 bg-muted/30 px-3 py-2">
+                <div className="text-xs text-muted-foreground">过期时间</div>
+                <div className="mt-1 text-sm font-semibold text-foreground">{expiresAt}</div>
+              </div>
+            </div>
+            <div className="rounded-xl border border-border/60 bg-muted/40 px-3 py-2">
+              <div className="text-xs text-muted-foreground">API Key（掩码）</div>
+              <div className="mt-1 break-all font-mono text-sm text-foreground">
+                {keyMasked}
+              </div>
             </div>
             <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-              <span>过期时间</span>
-              <span className="text-foreground">{expiresAt}</span>
               <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] text-emerald-700">
                 {expireText}
               </span>
@@ -822,7 +813,7 @@ const AuthKeyDashboard = ({ summary, errorMessage }: AuthKeyDashboardProps) => {
               <div>
                 <div className="text-sm text-muted-foreground">消耗费用</div>
                 <div className="mt-1 text-4xl font-semibold text-emerald-600">
-                  {formatMoney(summary?.totalCost)}
+                  {formatMoney(summary?.totalCost, 2)}
                 </div>
               </div>
               <Coins className="size-8 text-muted-foreground/40" />
@@ -850,7 +841,7 @@ const AuthKeyDashboard = ({ summary, errorMessage }: AuthKeyDashboardProps) => {
               <CheckCircle2 className="size-4 text-emerald-500" />
               成功请求
             </div>
-            <div className="text-xl font-semibold">{formatFixedNumber(summary?.successRequests)}</div>
+            <div className="text-xl font-semibold">{formatTokenCompact(summary?.successRequests)}</div>
           </CardContent>
         </Card>
         <Card className="rounded-2xl border border-border/60 bg-card/90 shadow-sm">
@@ -859,7 +850,7 @@ const AuthKeyDashboard = ({ summary, errorMessage }: AuthKeyDashboardProps) => {
               <XCircle className="size-4 text-rose-500" />
               失败请求
             </div>
-            <div className="text-xl font-semibold">{formatFixedNumber(summary?.failureRequests)}</div>
+            <div className="text-xl font-semibold">{formatTokenCompact(summary?.failureRequests)}</div>
           </CardContent>
         </Card>
         <Card className="rounded-2xl border border-border/60 bg-card/90 shadow-sm">
@@ -868,7 +859,7 @@ const AuthKeyDashboard = ({ summary, errorMessage }: AuthKeyDashboardProps) => {
               <Activity className="size-4 text-emerald-500" />
               请求次数
             </div>
-            <div className="text-xl font-semibold">{formatFixedNumber(summary?.totalRequests)}</div>
+            <div className="text-xl font-semibold">{formatTokenCompact(summary?.totalRequests)}</div>
           </CardContent>
         </Card>
         <Card className="rounded-2xl border border-border/60 bg-card/90 shadow-sm">
@@ -891,20 +882,20 @@ const AuthKeyDashboard = ({ summary, errorMessage }: AuthKeyDashboardProps) => {
                 消耗 Token
               </div>
               <div className="text-sm font-semibold">
-                {formatFixedNumber(summary?.totalTokens)}
+                {formatTokenCompact(summary?.totalTokens)}
               </div>
             </div>
             <div className="grid grid-cols-2 gap-4 text-xs text-muted-foreground">
               <div className="space-y-1">
                 <div>输入 Tokens</div>
                 <div className="text-base font-semibold text-foreground">
-                  {formatFixedNumber(summary?.promptTokens)}
+                  {formatTokenCompact(summary?.promptTokens)}
                 </div>
               </div>
               <div className="space-y-1">
                 <div>输出 Tokens</div>
                 <div className="text-base font-semibold text-foreground">
-                  {formatFixedNumber(summary?.completionTokens)}
+                  {formatTokenCompact(summary?.completionTokens)}
                 </div>
               </div>
             </div>
@@ -1007,6 +998,424 @@ const formatAxisTick = (value: number) => {
   return value.toFixed(0);
 };
 
+type RequestFlowParticle = {
+  id: number;
+  from: string;
+  to: string;
+  startAt: number;
+  duration: number;
+  color: string;
+  streamLike: boolean;
+  curveX: number;
+  curveY: number;
+  size: number;
+};
+
+type RequestFlowStats = {
+  recentTotal: number;
+  recentSuccess: number;
+  recentError: number;
+  rps: number;
+  lastLatencyMs: number;
+};
+
+const REQUEST_FLOW_MAX_HISTORY = 240;
+const REQUEST_FLOW_MAX_PARTICLES = 180;
+const REQUEST_FLOW_WINDOW_MS = 10_000;
+
+const REQUEST_FLOW_COLORS = {
+  success: "#22c55e",
+  error: "#ef4444",
+  unknown: "#38bdf8",
+};
+
+const clampNumber = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+
+const quadraticPoint = (
+  fromX: number,
+  fromY: number,
+  ctrlX: number,
+  ctrlY: number,
+  toX: number,
+  toY: number,
+  t: number
+) => {
+  const inv = 1 - t;
+  const x = inv * inv * fromX + 2 * inv * t * ctrlX + t * t * toX;
+  const y = inv * inv * fromY + 2 * inv * t * ctrlY + t * t * toY;
+  return { x, y };
+};
+
+const normalizeNodeName = (value: string | null | undefined, fallback: string) => {
+  const trimmed = (value ?? "").trim();
+  return trimmed || fallback;
+};
+
+const extractStreamErrorMessage = (payload: unknown): string => {
+  if (typeof payload === "string" && payload.trim()) return payload.trim();
+  if (payload && typeof payload === "object") {
+    const record = payload as Record<string, unknown>;
+    if (typeof record.message === "string" && record.message.trim()) {
+      return record.message.trim();
+    }
+  }
+  return "请求流返回错误事件";
+};
+
+const RealtimeRequestFlowCard = memo(() => {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const frameRef = useRef<number | null>(null);
+  const reconnectTimerRef = useRef<number | null>(null);
+  const afterIdRef = useRef(0);
+  const historyRef = useRef<RequestStreamEventData[]>([]);
+  const particlesRef = useRef<RequestFlowParticle[]>([]);
+  const authNodesRef = useRef<string[]>(["admin"]);
+  const providerNodesRef = useRef<string[]>(["provider"]);
+
+  const [connectionState, setConnectionState] = useState<"connecting" | "live" | "reconnecting" | "stopped">("connecting");
+  const [streamError, setStreamError] = useState("");
+  const [stats, setStats] = useState<RequestFlowStats>({
+    recentTotal: 0,
+    recentSuccess: 0,
+    recentError: 0,
+    rps: 0,
+    lastLatencyMs: 0,
+  });
+
+  const rebuildNodes = useCallback(() => {
+    const authCounter = new Map<string, number>();
+    const providerCounter = new Map<string, number>();
+    for (const event of historyRef.current) {
+      const authName = normalizeNodeName(event.auth_key_name, "admin");
+      const providerName = normalizeNodeName(event.provider_name, "provider");
+      authCounter.set(authName, (authCounter.get(authName) ?? 0) + 1);
+      providerCounter.set(providerName, (providerCounter.get(providerName) ?? 0) + 1);
+    }
+    const sortByCount = (counter: Map<string, number>) => (
+      Array.from(counter.entries())
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .slice(0, 6)
+        .map(([name]) => name)
+    );
+    const authTop = sortByCount(authCounter);
+    const providerTop = sortByCount(providerCounter);
+    authNodesRef.current = authTop.length > 0 ? authTop : ["admin"];
+    providerNodesRef.current = providerTop.length > 0 ? providerTop : ["provider"];
+  }, []);
+
+  const updateStatsFromHistory = useCallback((lastEventLatencyMs: number) => {
+    const nowMs = Date.now();
+    let recentTotal = 0;
+    let recentSuccess = 0;
+    let recentError = 0;
+
+    for (const event of historyRef.current) {
+      const timestampMs = new Date(event.created_at).getTime();
+      if (!Number.isFinite(timestampMs)) continue;
+      if (nowMs-timestampMs > REQUEST_FLOW_WINDOW_MS) continue;
+      recentTotal += 1;
+      if (event.status === "success") {
+        recentSuccess += 1;
+      } else if (event.status === "error") {
+        recentError += 1;
+      }
+    }
+
+    setStats({
+      recentTotal,
+      recentSuccess,
+      recentError,
+      rps: recentTotal / (REQUEST_FLOW_WINDOW_MS / 1000),
+      lastLatencyMs: lastEventLatencyMs,
+    });
+  }, []);
+
+  const pushEvent = useCallback((event: RequestStreamEventData) => {
+    afterIdRef.current = Math.max(afterIdRef.current, event.id);
+    historyRef.current.push(event);
+    if (historyRef.current.length > REQUEST_FLOW_MAX_HISTORY) {
+      historyRef.current = historyRef.current.slice(historyRef.current.length - REQUEST_FLOW_MAX_HISTORY);
+    }
+    rebuildNodes();
+    updateStatsFromHistory(event.latency_ms);
+  }, [rebuildNodes, updateStatsFromHistory]);
+
+  const pushParticle = useCallback((event: RequestStreamEventData) => {
+    const now = performance.now();
+    const status = event.status === "success" ? "success" : (event.status === "error" ? "error" : "unknown");
+    const duration = clampNumber((event.latency_ms || 0) * 1.2 + 900, 900, 4200);
+    const particle: RequestFlowParticle = {
+      id: now + Math.random(),
+      from: normalizeNodeName(event.auth_key_name, "admin"),
+      to: normalizeNodeName(event.provider_name, "provider"),
+      startAt: now,
+      duration,
+      color: REQUEST_FLOW_COLORS[status],
+      streamLike: Boolean(event.stream_like),
+      curveX: (Math.random() - 0.5) * 80,
+      curveY: (Math.random() - 0.5) * 140,
+      size: event.stream_like ? 3.4 : 2.8,
+    };
+
+    particlesRef.current.push(particle);
+    if (particlesRef.current.length > REQUEST_FLOW_MAX_PARTICLES) {
+      particlesRef.current.shift();
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    let controller: AbortController | null = null;
+
+    const clearReconnectTimer = () => {
+      if (reconnectTimerRef.current != null) {
+        window.clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+    };
+
+    const connect = async (reconnecting: boolean) => {
+      if (cancelled) return;
+      setConnectionState(reconnecting ? "reconnecting" : "connecting");
+      setStreamError("");
+      controller = new AbortController();
+      try {
+        await streamRequestEvents({
+          signal: controller.signal,
+          afterId: afterIdRef.current,
+          pollMs: 1000,
+          batch: 120,
+          heartbeatSec: 12,
+          onHello: () => {
+            if (cancelled) return;
+            setConnectionState("live");
+          },
+          onHeartbeat: () => {
+            if (cancelled) return;
+            setConnectionState("live");
+          },
+          onRequest: (event) => {
+            if (cancelled) return;
+            setConnectionState("live");
+            pushEvent(event);
+            pushParticle(event);
+          },
+          onErrorEvent: (payload) => {
+            if (cancelled) return;
+            setStreamError(extractStreamErrorMessage(payload));
+          },
+        });
+
+        if (cancelled) return;
+        setConnectionState("reconnecting");
+        reconnectTimerRef.current = window.setTimeout(() => {
+          void connect(true);
+        }, 1200);
+      } catch (error) {
+        if (cancelled) return;
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        setConnectionState("reconnecting");
+        setStreamError(error instanceof Error ? error.message : "请求流连接失败");
+        reconnectTimerRef.current = window.setTimeout(() => {
+          void connect(true);
+        }, 1800);
+      }
+    };
+
+    void connect(false);
+
+    return () => {
+      cancelled = true;
+      controller?.abort();
+      clearReconnectTimer();
+      setConnectionState("stopped");
+    };
+  }, [pushEvent, pushParticle]);
+
+  useEffect(() => {
+    const render = () => {
+      const canvas = canvasRef.current;
+      if (!canvas) {
+        frameRef.current = window.requestAnimationFrame(render);
+        return;
+      }
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        frameRef.current = window.requestAnimationFrame(render);
+        return;
+      }
+
+      const rect = canvas.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) {
+        frameRef.current = window.requestAnimationFrame(render);
+        return;
+      }
+      const dpr = window.devicePixelRatio || 1;
+      const expectedWidth = Math.floor(rect.width * dpr);
+      const expectedHeight = Math.floor(rect.height * dpr);
+      if (canvas.width !== expectedWidth || canvas.height !== expectedHeight) {
+        canvas.width = expectedWidth;
+        canvas.height = expectedHeight;
+      }
+
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, rect.width, rect.height);
+
+      const gradient = ctx.createLinearGradient(0, 0, rect.width, rect.height);
+      gradient.addColorStop(0, "rgba(12,18,36,0.96)");
+      gradient.addColorStop(1, "rgba(9,14,30,0.96)");
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, rect.width, rect.height);
+
+      const authNodes = authNodesRef.current;
+      const providerNodes = providerNodesRef.current;
+      const leftX = 92;
+      const rightX = rect.width - 92;
+      const topY = 28;
+      const bottomY = rect.height - 28;
+
+      const buildNodePositions = (labels: string[], x: number) => {
+        const map = new Map<string, { x: number; y: number }>();
+        const count = Math.max(labels.length, 1);
+        const span = Math.max(bottomY-topY, 1);
+        labels.forEach((label, index) => {
+          const ratio = count === 1 ? 0.5 : index / (count - 1);
+          map.set(label, { x, y: topY + span * ratio });
+        });
+        return map;
+      };
+
+      const authPos = buildNodePositions(authNodes, leftX);
+      const providerPos = buildNodePositions(providerNodes, rightX);
+      const defaultAuth = authPos.get(authNodes[0]) ?? { x: leftX, y: rect.height / 2 };
+      const defaultProvider = providerPos.get(providerNodes[0]) ?? { x: rightX, y: rect.height / 2 };
+
+      const now = performance.now();
+      const aliveParticles: RequestFlowParticle[] = [];
+      for (const particle of particlesRef.current) {
+        const progress = (now - particle.startAt) / particle.duration;
+        if (progress >= 1) continue;
+        aliveParticles.push(particle);
+
+        const from = authPos.get(particle.from) ?? defaultAuth;
+        const to = providerPos.get(particle.to) ?? defaultProvider;
+        const ctrlX = (from.x + to.x) / 2 + particle.curveX;
+        const ctrlY = (from.y + to.y) / 2 + particle.curveY;
+        const head = quadraticPoint(from.x, from.y, ctrlX, ctrlY, to.x, to.y, progress);
+        const tailProgress = Math.max(0, progress - (particle.streamLike ? 0.2 : 0.12));
+        const tail = quadraticPoint(from.x, from.y, ctrlX, ctrlY, to.x, to.y, tailProgress);
+
+        ctx.strokeStyle = particle.color;
+        ctx.lineWidth = particle.streamLike ? 2 : 1.4;
+        ctx.globalAlpha = particle.streamLike ? 0.46 : 0.34;
+        ctx.beginPath();
+        ctx.moveTo(tail.x, tail.y);
+        ctx.lineTo(head.x, head.y);
+        ctx.stroke();
+
+        ctx.fillStyle = particle.color;
+        ctx.globalAlpha = 0.92;
+        ctx.beginPath();
+        ctx.arc(head.x, head.y, particle.size, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      particlesRef.current = aliveParticles;
+
+      const drawNodeSet = (labels: string[], nodeMap: Map<string, { x: number; y: number }>, align: CanvasTextAlign) => {
+        labels.forEach((label) => {
+          const point = nodeMap.get(label);
+          if (!point) return;
+          ctx.globalAlpha = 0.86;
+          ctx.fillStyle = "rgba(148, 163, 184, 0.95)";
+          ctx.beginPath();
+          ctx.arc(point.x, point.y, 4, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.globalAlpha = 0.95;
+          ctx.fillStyle = "rgba(226, 232, 240, 0.98)";
+          ctx.textAlign = align;
+          ctx.textBaseline = "middle";
+          ctx.font = "12px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace";
+          const textX = align === "left" ? point.x + 10 : point.x - 10;
+          ctx.fillText(label, textX, point.y);
+        });
+      };
+
+      drawNodeSet(authNodes, authPos, "left");
+      drawNodeSet(providerNodes, providerPos, "right");
+
+      ctx.globalAlpha = 0.34;
+      ctx.fillStyle = "rgba(148,163,184,0.9)";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.font = "11px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace";
+      ctx.fillText("AuthKey", leftX, 14);
+      ctx.fillText("Provider", rightX, 14);
+      ctx.globalAlpha = 1;
+
+      frameRef.current = window.requestAnimationFrame(render);
+    };
+
+    frameRef.current = window.requestAnimationFrame(render);
+    return () => {
+      if (frameRef.current != null) {
+        window.cancelAnimationFrame(frameRef.current);
+        frameRef.current = null;
+      }
+    };
+  }, []);
+
+  const connectionBadgeClass = connectionState === "live"
+    ? "bg-emerald-100 text-emerald-700"
+    : connectionState === "connecting"
+      ? "bg-sky-100 text-sky-700"
+      : connectionState === "reconnecting"
+        ? "bg-amber-100 text-amber-700"
+        : "bg-slate-200 text-slate-700";
+
+  return (
+    <Card className={`${cardHoverClass} gap-3`}>
+      <CardHeader className="pb-2">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="flex flex-col gap-1">
+            <div className="flex items-center gap-2">
+              <ActivitySquare className="size-4 text-cyan-600" />
+              <span className="text-sm font-semibold text-foreground">实时请求流</span>
+              <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${connectionBadgeClass}`}>
+                {connectionState === "live" ? "LIVE" : connectionState === "connecting" ? "连接中" : connectionState === "reconnecting" ? "重连中" : "已停止"}
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
+              <span>近 10 秒请求 {stats.recentTotal}</span>
+              <span>成功 {stats.recentSuccess}</span>
+              <span>失败 {stats.recentError}</span>
+              <span>吞吐 {stats.rps.toFixed(1)} req/s</span>
+              <span>最近延迟 {stats.lastLatencyMs} ms</span>
+            </div>
+          </div>
+          <div className="text-xs text-muted-foreground">
+            <span className="inline-flex items-center gap-1.5">
+              <Wifi className="size-3.5" />
+              粒子速度与延迟正相关
+            </span>
+          </div>
+        </div>
+        {streamError ? (
+          <div className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-amber-50 px-2 py-1 text-[11px] text-amber-700">
+            <AlertTriangle className="size-3.5" />
+            {streamError}
+          </div>
+        ) : null}
+      </CardHeader>
+      <CardContent className="pt-0">
+        <div className="rounded-2xl border border-border/40 bg-card/60 p-2">
+          <canvas ref={canvasRef} className="h-[260px] w-full rounded-xl" />
+        </div>
+      </CardContent>
+    </Card>
+  );
+});
+
 type HomeHeaderProps = {
   title: string;
   onRefresh: () => void;
@@ -1042,6 +1451,7 @@ export default function Home() {
   const [authKeySummary, setAuthKeySummary] = useState<AuthKeySummary | null>(null);
   const [authKeyError, setAuthKeyError] = useState<string | null>(null);
   const [authKeyMode, setAuthKeyMode] = useState(false);
+  const autoRefreshBusyRef = useRef(false);
 
   // Real data from APIs
   const [summary, setSummary] = useState<MetricsSummary>({
@@ -1061,74 +1471,112 @@ export default function Home() {
     totalFailureReqs: 0,
   });
 
-  const fetchAuthKeySummary = useCallback(async () => {
+  const fetchAuthKeySummary = useCallback(async (options?: { silent?: boolean }) => {
+    const silent = options?.silent === true;
     try {
       const data = await getAuthKeySummary();
       setAuthKeySummary(data);
       setAuthKeyError(null);
       return true;
     } catch (err) {
-      setAuthKeySummary(null);
       const message = err instanceof Error ? err.message : String(err);
-      setAuthKeyError(`获取 API Key 概览失败: ${message}`);
+      if (!silent) {
+        setAuthKeySummary(null);
+        setAuthKeyError(`获取 API Key 概览失败: ${message}`);
+      }
       return false;
     }
   }, []);
-  const fetchSummary = useCallback(async () => {
+  const fetchSummary = useCallback(async (options?: { silent?: boolean }) => {
+    const silent = options?.silent === true;
     try {
       const data = await getMetricsSummary();
       setSummary(data);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error(`获取系统概览失败: ${message}`);
+      if (!silent) {
+        toast.error(`获取系统概览失败: ${message}`);
+      }
       console.error(err);
     }
   }, []);
 
-  const fetchRequestAmount = useCallback(async () => {
+  const fetchRequestAmount = useCallback(async (options?: { silent?: boolean }) => {
+    const silent = options?.silent === true;
     try {
       const data = await getRequestAmountTrend();
       setRequestAmount(data);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error(`获取请求金额趋势失败: ${message}`);
+      if (!silent) {
+        toast.error(`获取请求金额趋势失败: ${message}`);
+      }
       console.error(err);
-      setRequestAmount(defaultRequestAmount);
+      if (!silent) {
+        setRequestAmount(defaultRequestAmount);
+      }
     }
   }, []);
 
-  const fetchModelUsage = useCallback(async () => {
+  const fetchModelUsage = useCallback(async (options?: { silent?: boolean }) => {
+    const silent = options?.silent === true;
     try {
       const data = await getModelUsageSummary();
       setModelUsage(data);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error(`获取模型用量失败: ${message}`);
+      if (!silent) {
+        toast.error(`获取模型用量失败: ${message}`);
+      }
       console.error(err);
-      setModelUsage([]);
+      if (!silent) {
+        setModelUsage([]);
+      }
     }
   }, []);
 
-  const fetchDailyModelCost = useCallback(async () => {
+  const fetchDailyModelCost = useCallback(async (options?: { silent?: boolean }) => {
+    const silent = options?.silent === true;
     try {
-      const data = await getDailyModelCostTrend(7, 5);
+      const data = await getDailyModelCostTrend(7, 10);
       setDailyModelCost(data);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error(`获取每日模型成本失败: ${message}`);
+      if (!silent) {
+        toast.error(`获取每日模型成本失败: ${message}`);
+      }
       console.error(err);
-      setDailyModelCost(defaultDailyModelCost);
+      if (!silent) {
+        setDailyModelCost(defaultDailyModelCost);
+      }
     }
   }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
-    const token = getStoredAuthToken();
-    const isAuthKeyToken = AUTH_KEY_PREFIXES.some((prefix) => token.startsWith(prefix));
+    const mode = getStoredAuthTokenMode();
 
-    if (isAuthKeyToken) {
+    if (mode === "auth_key") {
       setAuthKeyMode(true);
       await fetchAuthKeySummary();
+      setLoading(false);
+      return;
+    }
+
+    if (mode === "admin") {
+      setAuthKeyMode(false);
+      setAuthKeySummary(null);
+      setAuthKeyError(null);
+      await Promise.all([fetchSummary(), fetchRequestAmount(), fetchModelUsage(), fetchDailyModelCost()]);
+      setLoading(false);
+      return;
+    }
+
+    // 兼容历史会话：未记录模式时自动探测一次。
+    const authKeyAvailable = await fetchAuthKeySummary();
+    if (authKeyAvailable) {
+      setStoredAuthTokenMode("auth_key");
+      setAuthKeyMode(true);
       setLoading(false);
       return;
     }
@@ -1136,6 +1584,7 @@ export default function Home() {
     setAuthKeyMode(false);
     setAuthKeySummary(null);
     setAuthKeyError(null);
+    setStoredAuthTokenMode("admin");
     await Promise.all([fetchSummary(), fetchRequestAmount(), fetchModelUsage(), fetchDailyModelCost()]);
     setLoading(false);
   }, [fetchAuthKeySummary, fetchDailyModelCost, fetchModelUsage, fetchRequestAmount, fetchSummary]);
@@ -1143,6 +1592,54 @@ export default function Home() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    if (loading) {
+      return;
+    }
+
+    const runSilentRefresh = async () => {
+      if (autoRefreshBusyRef.current) {
+        return;
+      }
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        return;
+      }
+
+      autoRefreshBusyRef.current = true;
+      try {
+        if (authKeyMode) {
+          await fetchAuthKeySummary({ silent: true });
+          return;
+        }
+        await Promise.allSettled([
+          fetchSummary({ silent: true }),
+          fetchRequestAmount({ silent: true }),
+          fetchModelUsage({ silent: true }),
+          fetchDailyModelCost({ silent: true }),
+        ]);
+      } finally {
+        autoRefreshBusyRef.current = false;
+      }
+    };
+
+    const intervalMs = authKeyMode ? 15_000 : 8_000;
+    const timer = window.setInterval(() => {
+      void runSilentRefresh();
+    }, intervalMs);
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        void runSilentRefresh();
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [authKeyMode, fetchAuthKeySummary, fetchDailyModelCost, fetchModelUsage, fetchRequestAmount, fetchSummary, loading]);
 
   const requestCurvePoints: RequestAmountPointView[] = requestAmount.points.length > 0
     ? requestAmount.points.map((point) => ({
@@ -1243,6 +1740,8 @@ export default function Home() {
                 ]}
               />
             </div>
+
+            <RealtimeRequestFlowCard />
 
             <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 xl:items-stretch">
               <DailyModelCostCard trend={dailyModelCost} />

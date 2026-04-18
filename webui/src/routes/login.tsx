@@ -10,7 +10,12 @@ import CliSection from "./login/CliSection";
 import OrvionLineLogo from "./login/OrvionLineLogo";
 import AetherCliArtwork from "./login/AetherCliArtwork";
 import { cliSections, sectionTabs, type SectionId } from "./login/home-config";
-import { clearStoredAuthToken, getStoredAuthToken, setStoredAuthToken } from "@/lib/auth";
+import {
+  clearStoredAuthToken,
+  getStoredAuthToken,
+  setStoredAuthToken,
+  setStoredAuthTokenMode,
+} from "@/lib/auth";
 
 const SECTION_INDEX: Record<SectionId, number> = {
   home: 0,
@@ -157,25 +162,48 @@ export default function LoginPage() {
     setLoginError("");
 
     try {
-      const response = await fetch("/api/version", {
+      // 1) 优先按 AuthKey 校验（API Key 登录）
+      const authKeyResponse = await fetch("/auth-key/summary", {
         method: "GET",
         headers: {
           Authorization: `Bearer ${normalized}`,
         },
       });
 
-      if (response.status === 401 || response.status === 403) {
+      if (authKeyResponse.ok) {
+        setStoredAuthTokenMode("auth_key");
+        navigate("/", { replace: true });
+        return;
+      }
+
+      // 2) AuthKey 校验失败时，回退管理员令牌校验
+      const adminResponse = await fetch("/api/version", {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${normalized}`,
+        },
+      });
+
+      if (adminResponse.ok) {
+        setStoredAuthTokenMode("admin");
+        navigate("/", { replace: true });
+        return;
+      }
+
+      if (
+        authKeyResponse.status === 401 ||
+        authKeyResponse.status === 403 ||
+        adminResponse.status === 401 ||
+        adminResponse.status === 403
+      ) {
         clearStoredAuthToken();
         setLoginError("访问令牌无效或已过期，请检查后重试");
         return;
       }
 
-      if (!response.ok) {
-        setLoginError(`登录校验失败（HTTP ${response.status}）`);
-        return;
-      }
-
-      navigate("/", { replace: true });
+      setLoginError(
+        `登录校验失败（auth-key: ${authKeyResponse.status} / admin: ${adminResponse.status}）`
+      );
     } catch {
       setLoginError("登录校验请求失败，请确认服务可用后重试");
     } finally {

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/racio/orvion/models"
+	"github.com/racio/orvion/pkg"
 	"github.com/racio/orvion/pkg/logutil"
 	"gorm.io/gorm"
 )
@@ -15,7 +16,7 @@ import (
 const defaultSystemLogCleanupIntervalMinutes = 1440
 
 func StartSystemLogCleanup(ctx context.Context) {
-	go systemLogCleanupLoop(ctx)
+	pkg.GoSafe("service.system_log_cleanup", func() { systemLogCleanupLoop(ctx) })
 }
 
 func systemLogCleanupLoop(ctx context.Context) {

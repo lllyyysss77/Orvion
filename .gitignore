@@ -8,5 +8,6 @@ webui/dist
 webui/node_modules
 .tmp/
 /data
-
+orvion.log
 .DS_Store
+/CLAUDE.md

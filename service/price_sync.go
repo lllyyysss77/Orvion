@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/racio/orvion/models"
+	"github.com/racio/orvion/pkg"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -43,7 +44,7 @@ type priceAPIProvider struct {
 type priceAPIResponse map[string]priceAPIProvider
 
 func StartPriceSync(ctx context.Context) {
-	go priceSyncLoop(ctx)
+	pkg.GoSafe("service.price_sync", func() { priceSyncLoop(ctx) })
 }
 
 func TriggerModelPriceSync(ctx context.Context) error {

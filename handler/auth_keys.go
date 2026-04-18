@@ -13,6 +13,7 @@ import (
 	"github.com/racio/orvion/consts"
 	"github.com/racio/orvion/models"
 	"github.com/racio/orvion/pkg"
+	"github.com/racio/orvion/service"
 	"gorm.io/gorm"
 )
 
@@ -59,6 +60,16 @@ func GetAuthKeys(c *gin.Context) {
 
 	// 构建查询
 	query := models.DB.Model(&models.AuthKey{})
+
+	// ID 精确过滤
+	if idRaw := strings.TrimSpace(c.Query("id")); idRaw != "" {
+		id, parseErr := strconv.ParseUint(idRaw, 10, 64)
+		if parseErr != nil {
+			common.BadRequest(c, "Invalid id filter")
+			return
+		}
+		query = query.Where("id = ?", id)
+	}
 
 	// 搜索过滤
 	if search := strings.TrimSpace(c.Query("search")); search != "" {
@@ -153,6 +164,8 @@ func CreateAuthKey(c *gin.Context) {
 		return
 	}
 
+	service.InvalidateAuthKeys()
+
 	common.Success(c, authKey)
 }
 
@@ -223,6 +236,8 @@ func UpdateAuthKey(c *gin.Context) {
 		return
 	}
 
+	service.InvalidateAuthKeys()
+
 	common.Success(c, updated)
 }
 
@@ -238,6 +253,7 @@ func DeleteAuthKey(c *gin.Context) {
 		common.InternalServerError(c, "Failed to delete auth key: "+err.Error())
 		return
 	}
+	service.InvalidateAuthKeys()
 	common.SuccessWithMessage(c, "Deleted", gin.H{"id": id})
 }
 
@@ -278,6 +294,8 @@ func ToggleAuthKeyStatus(c *gin.Context) {
 		common.InternalServerError(c, "Failed to update status: "+err.Error())
 		return
 	}
+
+	service.InvalidateAuthKeys()
 
 	// 返回更新后的记录
 	authKey.Status = newStatus

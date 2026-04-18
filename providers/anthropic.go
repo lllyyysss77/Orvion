@@ -84,6 +84,8 @@ type AnthropicModel struct {
 }
 
 func (a *Anthropic) Models(ctx context.Context) ([]Model, error) {
+	ctx, cancel := context.WithTimeout(ctx, modelsListTimeout)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s/models", a.BaseURL), nil)
 	if err != nil {
 		return nil, err
@@ -92,7 +94,7 @@ func (a *Anthropic) Models(ctx context.Context) ([]Model, error) {
 	req.Header.Set("x-api-key", a.APIKey)
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", a.APIKey))
 	req.Header.Set("anthropic-version", a.resolvedVersion())
-	res, err := http.DefaultClient.Do(req)
+	res, err := GetClient(modelsListTimeout).Do(req)
 	if err != nil {
 		return nil, err
 	}

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/racio/orvion/models"
+	"github.com/racio/orvion/pkg"
 	"gorm.io/gorm"
 )
 
@@ -17,7 +18,7 @@ const (
 )
 
 func StartModelProviderAutoRecovery(ctx context.Context) {
-	go modelProviderAutoRecoveryLoop(ctx)
+	pkg.GoSafe("service.model_provider_auto_recovery", func() { modelProviderAutoRecoveryLoop(ctx) })
 }
 
 func modelProviderAutoRecoveryLoop(ctx context.Context) {

@@ -49,7 +49,9 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, before B
 	retryLog := make(chan models.ChatLog, providersWithMeta.MaxRetry)
 	defer close(retryLog)
 
-	go RecordRetryLog(context.Background(), retryLog)
+	// 使用 root context 派生,让优雅停机能终止这条异步写链;同时与请求 ctx 解耦,
+	// 避免客户端提前断开就丢失已产生的重试日志。
+	pkg.GoSafe("service.record_retry_log", func() { RecordRetryLog(RootContext(), retryLog) })
 
 	// 选择负载均衡策略（含可选熔断包装）
 	balancer := runtimesvc.NewBalancer(providersWithMeta.Strategy, providersWithMeta.Breaker, providersWithMeta.WeightItems)
@@ -65,7 +67,6 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, before B
 	authKeyID, _ := ctx.Value(consts.ContextKeyAuthKeyID).(uint)
 	authKeyRPMLimit, _ := ctx.Value(consts.ContextKeyAuthKeyRPMLimit).(int)
 	limiterChecked := false
-	rpmRecorded := false
 
 	timer := time.NewTimer(time.Second * time.Duration(providersWithMeta.TimeOut))
 	defer timer.Stop()
@@ -96,7 +97,9 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, before B
 			provider := providerMap[modelWithProvider.ProviderID]
 
 			if enableLimiter && authKeyID > 0 && !limiterChecked {
-				canProceed, reason, err := CheckAuthKeyLimits(ctx, authKeyID, authKeyRPMLimit)
+				// 原子地检查配额并记账,消除 Check/Record 两步调用之间的竞态。
+				// 失败请求也会占用配额,避免"刻意触发错误以绕过限流"。
+				canProceed, reason, err := TryAcquireAuthKey(ctx, authKeyID, authKeyRPMLimit)
 				if err != nil {
 					return nil, nil, err
 				}
@@ -106,13 +109,6 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, before B
 					continue
 				}
 				limiterChecked = true
-				// RPM 在进入上游请求前即计数，避免“失败请求不计数”导致限流失效。
-				if !rpmRecorded {
-					if err := RecordAuthKeyAccess(ctx, authKeyID, authKeyRPMLimit); err != nil {
-						slog.Warn("Failed to record auth key access", "auth_key_id", authKeyID, "error", err)
-					}
-					rpmRecorded = true
-				}
 			}
 
 			slog.Info("using provider", "provider", provider.Name, "model", modelWithProvider.ProviderModel)
@@ -202,6 +198,16 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, before B
 						break
 					}
 					// 429/5xx/408：继续重试同一 provider
+					continue
+				}
+
+				// 上游可能返回 HTTP 200 但响应体为空/无效（例如仅返回 [DONE]），
+				// 这类“假成功”需要转为错误并进入重试流程。
+				if err := runtimesvc.ValidateSuccessfulResponseBody(res, before.Stream); err != nil {
+					retryLog <- log.WithError(err)
+					lastStatus = 0
+					lastWas429 = false
+					_ = res.Body.Close()
 					continue
 				}
 
@@ -344,7 +350,13 @@ func SaveChatLog(ctx context.Context, log models.ChatLog) (uint, error) {
 		if log.Status == "error" && log.ModelWithProviderID > 0 {
 			modelWithProviderID := log.ModelWithProviderID
 			go func() {
-				autoCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer func() {
+					if r := recover(); r != nil {
+						slog.Error("auto disable goroutine panic", "recover", r, "model_with_provider_id", modelWithProviderID)
+					}
+				}()
+				// 基于 root ctx 派生 5s 超时,既有 shutdown 感知又防止长挂。
+				autoCtx, cancel := context.WithTimeout(RootContext(), 5*time.Second)
 				defer cancel()
 				if err := TriggerModelProviderAutoDisableIfNeeded(autoCtx, modelWithProviderID); err != nil {
 					slog.Error("检查模型关联提供商自动关闭失败", "error", err, "model_with_provider_id", modelWithProviderID)

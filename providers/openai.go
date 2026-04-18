@@ -7,11 +7,15 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/racio/orvion/consts"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
+
+// modelsListTimeout 列模型接口给一个相对较短的超时,避免某些上游长挂。
+const modelsListTimeout = 30 * time.Second
 
 type OpenAI struct {
 	BaseURL string `json:"base_url"`
@@ -55,12 +59,14 @@ func (o *OpenAI) BuildReq(ctx context.Context, header http.Header, model string,
 }
 
 func (o *OpenAI) Models(ctx context.Context) ([]Model, error) {
+	ctx, cancel := context.WithTimeout(ctx, modelsListTimeout)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s/models", o.BaseURL), nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", o.APIKey))
-	res, err := http.DefaultClient.Do(req)
+	res, err := GetClient(modelsListTimeout).Do(req)
 	if err != nil {
 		return nil, err
 	}

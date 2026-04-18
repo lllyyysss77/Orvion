@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -17,6 +19,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 	"github.com/racio/orvion/consts"
+	"github.com/racio/orvion/handler"
 	"github.com/racio/orvion/limiter"
 	"github.com/racio/orvion/models"
 	"github.com/racio/orvion/pkg/logutil"
@@ -83,6 +86,9 @@ func resolveLogWriter() io.Writer {
 
 func main() {
 	token := os.Getenv("TOKEN")
+	if strings.TrimSpace(token) == "" {
+		slog.Warn("TOKEN 未配置: /api/* 管理接口将完全跳过鉴权,生产环境请务必设置")
+	}
 	router := buildRouter(token)
 
 	port := os.Getenv("ORVION_SERVER_PORT")
@@ -100,10 +106,19 @@ func main() {
 	rootCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
+	// 让 service 层内的 fire-and-forget goroutine 感知进程退出。
+	service.SetRootContext(rootCtx)
+
 	startBackgroundWorkers(rootCtx)
 
 	serverErrCh := make(chan error, 1)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("server goroutine panic", "recover", r, "stack", string(debug.Stack()))
+				serverErrCh <- fmt.Errorf("server panic: %v", r)
+			}
+		}()
 		serverErrCh <- server.ListenAndServe()
 	}()
 
@@ -127,6 +142,12 @@ func main() {
 			slog.Warn("Force close failed", "error", closeErr)
 		}
 	}
+
+	// server.Shutdown 已返回,所有在途请求都结束了——此时触发 AuthKey 聚合 flusher
+	// 做最后一次落库,并等其退出。这样即使 Shutdown 期间产生的记账也不会丢失。
+	service.ShutdownAuthKeyFlusher()
+	service.WaitAuthKeyFlusher(shutdownTimeout)
+	handler.StopGitHubVMessProxy()
 
 	select {
 	case err := <-serverErrCh:
@@ -155,8 +176,11 @@ func resolveShutdownTimeout() time.Duration {
 }
 
 func startBackgroundWorkers(ctx context.Context) {
+	handler.StartGitHubVMessProxyWarmup()
+	service.StartAuthKeyFlusher(ctx)
 	service.StartPriceSync(ctx)
 	service.StartSystemLogCleanup(ctx)
 	service.StartModelProviderAutoRecovery(ctx)
 	service.StartTelegramCommandBot(ctx)
+	service.StartTelegramDailyUsageReport(ctx)
 }

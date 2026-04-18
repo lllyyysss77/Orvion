@@ -24,6 +24,14 @@ func CheckAuthKeyLimits(ctx context.Context, authKeyID uint, rpmLimit int) (bool
 	return globalLimiterManager.CheckAuthKeyLimits(ctx, authKeyID, rpmLimit)
 }
 
+// TryAcquireAuthKey 原子检查并记账 RPM,消除 Check/Record 两步的竞态。
+func TryAcquireAuthKey(ctx context.Context, authKeyID uint, rpmLimit int) (bool, string, error) {
+	if globalLimiterManager == nil {
+		return true, "", nil
+	}
+	return globalLimiterManager.TryAcquireAuthKey(ctx, authKeyID, rpmLimit)
+}
+
 // RecordAuthKeyAccess 记录 API Key 访问
 func RecordAuthKeyAccess(ctx context.Context, authKeyID uint, rpmLimit int) error {
 	if globalLimiterManager == nil {

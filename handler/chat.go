@@ -17,7 +17,9 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/racio/orvion/common"
 	"github.com/racio/orvion/consts"
+	"github.com/racio/orvion/middleware"
 	"github.com/racio/orvion/models"
+	"github.com/racio/orvion/pkg"
 	"github.com/racio/orvion/service"
 	runtimesvc "github.com/racio/orvion/service/runtime"
 )
@@ -31,7 +33,6 @@ func ResponsesHandler(c *gin.Context) {
 }
 
 func Messages(c *gin.Context) {
-	slog.Info("Request headers captured", "path", c.FullPath(), "headers", formatHeadersJSON(c.Request.Header))
 	chatHandler(c, service.BeforerAnthropic, service.ProcesserAnthropic, consts.StyleAnthropic, consts.StyleAnthropic, "messages")
 }
 
@@ -79,6 +80,10 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 	// 读取原始请求体
 	reqBody, err := io.ReadAll(c.Request.Body)
 	if err != nil {
+		if middleware.IsRequestBodyTooLarge(err) {
+			common.ErrorWithHttpStatus(c, http.StatusRequestEntityTooLarge, http.StatusRequestEntityTooLarge, "request body too large")
+			return
+		}
 		common.InternalServerError(c, err.Error())
 		return
 	}
@@ -89,14 +94,17 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 		common.InternalServerError(c, err.Error())
 		return
 	}
-	slog.Info("接收到客户端消息",
-		"path", c.FullPath(),
-		"endpoint", endpoint,
-		"model", before.Model,
-		"stream", before.Stream,
-		"payload_bytes", len(reqBody),
-		"payload_preview", formatBodyPreview(reqBody),
-	)
+	shouldLogDialogueIO := !isDialogueEndpoint(endpoint)
+	if shouldLogDialogueIO {
+		slog.Info("接收到客户端消息",
+			"path", c.FullPath(),
+			"endpoint", endpoint,
+			"model", before.Model,
+			"stream", before.Stream,
+			"payload_bytes", len(reqBody),
+			"payload_preview", formatBodyPreview(reqBody),
+		)
+	}
 
 	ctx := c.Request.Context()
 	if endpoint != "" {
@@ -141,9 +149,14 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 		return
 	}
 
-	pr, pw := io.Pipe()
+	pr, pipeWriter := io.Pipe()
+	// 用 asyncMirrorWriter 把 pw 写入解耦:RecordLog 消费慢或 io.Pipe 32KiB
+	// 缓冲吃满时,Write 不阻塞,保证上游响应读链不被拖死。
+	pw := newAsyncMirrorWriter(pipeWriter, 256)
 	// 异步处理输出并记录 tokens
-	go service.RecordLog(context.Background(), startReq, pr, postProcessor, logId, log.AuthKeyID, *before, providersWithMeta.IOLog, logStyle)
+	pkg.GoSafe("handler.record_log", func() {
+		service.RecordLog(context.Background(), startReq, pr, postProcessor, logId, log.AuthKeyID, *before, providersWithMeta.IOLog, logStyle)
+	})
 
 	writeHeader(c, before.Stream, res.Header, logStyle)
 	clientWriter := &countingWriter{writer: c.Writer}
@@ -155,13 +168,16 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 				logStreamCopyError("stream copy", err)
 				return
 			}
-			slog.Info("已发送响应消息",
-				"path", c.FullPath(),
-				"endpoint", endpoint,
-				"model", before.Model,
-				"stream", true,
-				"response_bytes", clientWriter.written,
-			)
+			if shouldLogDialogueIO {
+				slog.Info("已发送响应消息",
+					"path", c.FullPath(),
+					"endpoint", endpoint,
+					"model", before.Model,
+					"stream", true,
+					"response_bytes", clientWriter.written,
+					"mirror_dropped_bytes", pw.Dropped(),
+				)
+			}
 		} else {
 			body, readErr := io.ReadAll(res.Body)
 			if readErr != nil {
@@ -175,14 +191,17 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 				slog.Error("write response body", "err", writeErr)
 				return
 			}
-			slog.Info("已发送响应消息",
-				"path", c.FullPath(),
-				"endpoint", endpoint,
-				"model", before.Model,
-				"stream", false,
-				"response_bytes", clientWriter.written,
-				"response_preview", formatBodyPreview(normalized),
-			)
+			if shouldLogDialogueIO {
+				slog.Info("已发送响应消息",
+					"path", c.FullPath(),
+					"endpoint", endpoint,
+					"model", before.Model,
+					"stream", false,
+					"response_bytes", clientWriter.written,
+					"response_preview", formatBodyPreview(normalized),
+					"mirror_dropped_bytes", pw.Dropped(),
+				)
+			}
 		}
 		_ = pw.Close()
 		return
@@ -194,13 +213,16 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 		logStreamCopyError("io copy", err)
 		return
 	}
-	slog.Info("已发送响应消息",
-		"path", c.FullPath(),
-		"endpoint", endpoint,
-		"model", before.Model,
-		"stream", before.Stream,
-		"response_bytes", clientWriter.written,
-	)
+	if shouldLogDialogueIO {
+		slog.Info("已发送响应消息",
+			"path", c.FullPath(),
+			"endpoint", endpoint,
+			"model", before.Model,
+			"stream", before.Stream,
+			"response_bytes", clientWriter.written,
+			"mirror_dropped_bytes", pw.Dropped(),
+		)
+	}
 
 	_ = pw.Close()
 }
@@ -251,6 +273,15 @@ func isExpectedClientDisconnect(err error) bool {
 	return strings.Contains(errText, "closed pipe") ||
 		strings.Contains(errText, "broken pipe") ||
 		strings.Contains(errText, "client disconnected")
+}
+
+func isDialogueEndpoint(endpoint string) bool {
+	switch strings.ToLower(strings.TrimSpace(endpoint)) {
+	case "chat", "responses", "messages":
+		return true
+	default:
+		return false
+	}
 }
 
 type countingWriter struct {
