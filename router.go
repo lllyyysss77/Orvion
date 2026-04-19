@@ -29,9 +29,10 @@ func buildRouter(token string) *gin.Engine {
 	registerPublicRoutes(router)
 
 	authOpenAI := middleware.AuthOpenAI(token)
+	authOpenAIOptional := middleware.AuthOpenAIOptional(token)
 	authAnthropic := middleware.AuthAnthropic(token)
 
-	registerUnifiedRoutes(router, authOpenAI, authAnthropic)
+	registerUnifiedRoutes(router, authOpenAI, authOpenAIOptional, authAnthropic)
 	registerAuthKeySummaryRoutes(router, authOpenAI)
 	registerAdminAPIRoutes(router, token)
 	setWebUIRoutes(router)
@@ -106,11 +107,13 @@ func registerPublicRoutes(router *gin.Engine) {
 
 }
 
-func registerUnifiedRoutes(router *gin.Engine, authOpenAI gin.HandlerFunc, authAnthropic gin.HandlerFunc) {
+func registerUnifiedRoutes(router *gin.Engine, authOpenAI gin.HandlerFunc, authOpenAIOptional gin.HandlerFunc, authAnthropic gin.HandlerFunc) {
 	// 统一接口
 	v1 := router.Group("/v1")
 	v1.Use(middleware.LimitRequestBody(middleware.ResolveMaxRequestBodyBytes()))
-	v1.GET("/models", authOpenAI, handler.OpenAIModelsHandler)
+	v1.GET("/models", authOpenAIOptional, handler.OpenAIModelsHandler)
+	// 兼容历史访问路径：/v1models
+	router.GET("/v1models", authOpenAIOptional, handler.OpenAIModelsHandler)
 	v1.POST("/chat/completions", authOpenAI, handler.ChatCompletionsHandler)
 	v1.POST("/responses", authOpenAI, handler.ResponsesHandler)
 	v1.POST("/embeddings", authOpenAI, handler.EmbeddingsHandler)

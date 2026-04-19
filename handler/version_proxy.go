@@ -29,6 +29,9 @@ const (
 	envGitHubXrayBinPath   = "GITHUB_XRAY_BIN"
 	envGitHubXraySocksPort = "GITHUB_XRAY_SOCKS_PORT"
 
+	// 默认 VLESS 候选（按顺序尝试）
+	defaultGitHubVLESSJP01URL = "vless://df6bba41-7fd6-4623-a80d-688fd3c11b99@vless01.yunjnet.com:50131?type=ws&security=tls&sni=d1.awsstatic.com&allowInsecure=1&fp=chrome&udp=1"
+
 	// 默认 Trojan 候选（按顺序尝试）
 	defaultGitHubTrojanJP01URL = "trojan://df6bba41-7fd6-4623-a80d-688fd3c11b99@pokemon-01.yunjnet.com:54225?security=tls&sni=www.apple.com.cn&allowInsecure=1&type=tcp&udp=1"
 	defaultGitHubTrojanSG01URL = "trojan://df6bba41-7fd6-4623-a80d-688fd3c11b99@pokemon-01.yunjnet.com:55016?security=tls&sni=www.lamer.com.sg&allowInsecure=1&type=tcp&udp=1"
@@ -37,6 +40,10 @@ const (
 	defaultGitHubXraySocksPort = 17890
 	xrayBootTimeout            = 5 * time.Second
 	proxyHealthCheckInterval   = 30 * time.Second
+	// 连续健康探测失败达到阈值后才切换候选，避免网络抖动导致频繁重启 xray。
+	proxyHealthFailureThreshold = 3
+	// 定时健康检查触发切换后，在冷却窗口内不再重复切换，减少抖动。
+	proxyHealthSwitchCooldown = 2 * time.Minute
 )
 
 var gitHubProxyMgr = &vmessProxyManager{}
@@ -46,6 +53,14 @@ var proxyHealthLoopStopCh = make(chan struct{})
 
 var proxyHealthCheckMu sync.Mutex
 var proxyLastCheckedAt time.Time
+
+var proxyHealthStateMu sync.Mutex
+var proxyHealthFailureLink string
+var proxyHealthFailureCount int
+var proxyLastSwitchAt time.Time
+
+// 记录“预期内退出”的 xray 进程 pid，用于避免把主动 kill 误报成告警。
+var expectedXrayExitPIDs sync.Map
 
 var proxyWarmupProbeTargets = []string{
 	"https://api.github.com",
@@ -62,6 +77,10 @@ type proxyCandidate struct {
 }
 
 var defaultProxyCandidates = []proxyCandidate{
+	{
+		name: "vless-jp01-2x",
+		link: defaultGitHubVLESSJP01URL,
+	},
 	{
 		name: "trojan-jp01-3x",
 		link: defaultGitHubTrojanJP01URL,
@@ -108,6 +127,22 @@ type trojanLinkConfig struct {
 	Host          string
 	Path          string
 	Security      string
+	AllowInsecure bool
+	UDP           bool
+}
+
+type vlessLinkConfig struct {
+	Address       string
+	Port          string
+	ID            string
+	SNI           string
+	ALPN          string
+	Net           string
+	Host          string
+	Path          string
+	Security      string
+	Flow          string
+	Fingerprint   string
 	AllowInsecure bool
 	UDP           bool
 }
@@ -204,9 +239,19 @@ func ensureGitHubProxyCandidatesWithOptions(forceHealthCheck bool) (string, prox
 			return activeProxyURL, activeCandidate, nil
 		}
 		if err := probeProxyHealth(activeProxyURL); err == nil {
+			recordProxyHealthSuccess(activeLink)
 			return activeProxyURL, activeCandidate, nil
 		} else {
-			slog.Warn("当前内置代理健康检查失败，准备切换候选", "candidate", activeCandidate.name, "error", err)
+			failCount, allowSwitch, cooldownRemaining := evaluateProxyHealthFailure(activeLink, forceHealthCheck)
+			if !allowSwitch {
+				if cooldownRemaining > 0 {
+					slog.Warn("当前内置代理健康检查失败，冷却窗口内暂不切换", "candidate", activeCandidate.name, "fail_count", failCount, "switch_threshold", proxyHealthFailureThreshold, "cooldown_remaining", cooldownRemaining.String(), "error", err)
+				} else {
+					slog.Warn("当前内置代理健康检查失败，未达切换阈值", "candidate", activeCandidate.name, "fail_count", failCount, "switch_threshold", proxyHealthFailureThreshold, "error", err)
+				}
+				return activeProxyURL, activeCandidate, nil
+			}
+			slog.Warn("当前内置代理健康检查失败，准备切换候选", "candidate", activeCandidate.name, "fail_count", failCount, "switch_threshold", proxyHealthFailureThreshold, "error", err)
 			gitHubProxyMgr.invalidateIfMatch(activeLink)
 			candidates = rotateProxyCandidatesFromNext(candidates, activeLink)
 			errorsText = append(errorsText, fmt.Sprintf("%s: %v", activeCandidate.name, err))
@@ -223,6 +268,9 @@ func ensureGitHubProxyCandidatesWithOptions(forceHealthCheck bool) (string, prox
 		// 仅在首次拉起候选或定时检查窗口到达时做健康探测。
 		shouldCheck := forceHealthCheck || !reused || shouldCheckProxyHealthNow()
 		if !shouldCheck {
+			if reused {
+				recordProxyHealthSuccess(candidate.link)
+			}
 			return proxyURL, candidate, nil
 		}
 
@@ -230,6 +278,11 @@ func ensureGitHubProxyCandidatesWithOptions(forceHealthCheck bool) (string, prox
 			errorsText = append(errorsText, fmt.Sprintf("%s: %v", candidate.name, err))
 			gitHubProxyMgr.invalidateIfMatch(candidate.link)
 			continue
+		}
+		if reused {
+			recordProxyHealthSuccess(candidate.link)
+		} else {
+			recordProxySwitch(candidate.link)
 		}
 		return proxyURL, candidate, nil
 	}
@@ -249,6 +302,56 @@ func shouldCheckProxyHealthNow() bool {
 		return true
 	}
 	return false
+}
+
+func recordProxyHealthSuccess(link string) {
+	link = strings.TrimSpace(link)
+	if link == "" {
+		return
+	}
+
+	proxyHealthStateMu.Lock()
+	defer proxyHealthStateMu.Unlock()
+	proxyHealthFailureLink = link
+	proxyHealthFailureCount = 0
+}
+
+func recordProxySwitch(link string) {
+	recordProxyHealthSuccess(link)
+
+	proxyHealthStateMu.Lock()
+	defer proxyHealthStateMu.Unlock()
+	proxyLastSwitchAt = time.Now()
+}
+
+func evaluateProxyHealthFailure(link string, forceHealthCheck bool) (failCount int, allowSwitch bool, cooldownRemaining time.Duration) {
+	link = strings.TrimSpace(link)
+	if link == "" {
+		return 0, false, 0
+	}
+
+	proxyHealthStateMu.Lock()
+	defer proxyHealthStateMu.Unlock()
+
+	if proxyHealthFailureLink != link {
+		proxyHealthFailureLink = link
+		proxyHealthFailureCount = 0
+	}
+
+	proxyHealthFailureCount++
+	failCount = proxyHealthFailureCount
+	if failCount < proxyHealthFailureThreshold {
+		return failCount, false, 0
+	}
+
+	// 仅对定时健康检查切换做冷却，避免短时间内重复切换候选。
+	if forceHealthCheck && !proxyLastSwitchAt.IsZero() {
+		elapsed := time.Since(proxyLastSwitchAt)
+		if elapsed < proxyHealthSwitchCooldown {
+			return failCount, false, proxyHealthSwitchCooldown - elapsed
+		}
+	}
+	return failCount, true, 0
 }
 
 func findProxyCandidateByLink(candidates []proxyCandidate, link string) proxyCandidate {
@@ -387,6 +490,7 @@ func (m *vmessProxyManager) current() (string, string, bool) {
 
 func (m *vmessProxyManager) stopLocked() {
 	if m.cmd != nil && m.cmd.Process != nil && m.cmd.ProcessState == nil {
+		markXrayProcessExpectedExit(m.cmd)
 		_ = m.cmd.Process.Kill()
 	}
 	m.cmd = nil
@@ -477,6 +581,62 @@ func parseTrojanLink(raw string) (*trojanLinkConfig, error) {
 		Host:          strings.TrimSpace(firstNonEmpty(query.Get("host"), query.Get("headerType"))),
 		Path:          strings.TrimSpace(query.Get("path")),
 		Security:      security,
+		AllowInsecure: parseBoolLike(firstNonEmpty(query.Get("allowInsecure"), query.Get("skip-cert-verify"))),
+		UDP:           parseBoolLike(firstNonEmpty(query.Get("udp"), query.Get("enable_udp"))),
+	}, nil
+}
+
+func parseVLESSLink(raw string) (*vlessLinkConfig, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, errors.New("vless 链接为空")
+	}
+
+	parsed, err := neturl.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("vless 链接解析失败: %w", err)
+	}
+	if !strings.EqualFold(parsed.Scheme, "vless") {
+		return nil, errors.New("不是有效的 vless:// 链接")
+	}
+
+	address := strings.TrimSpace(parsed.Hostname())
+	port := strings.TrimSpace(parsed.Port())
+	id := ""
+	if parsed.User != nil {
+		id = strings.TrimSpace(parsed.User.Username())
+	}
+	if address == "" || port == "" || id == "" {
+		return nil, errors.New("vless 缺少 address/port/id 关键字段")
+	}
+
+	query := parsed.Query()
+	security := strings.ToLower(strings.TrimSpace(firstNonEmpty(query.Get("security"), query.Get("tls"))))
+	if security == "" {
+		security = "tls"
+	}
+	netType := strings.ToLower(strings.TrimSpace(firstNonEmpty(query.Get("type"), query.Get("net"), query.Get("network"))))
+	if netType == "" {
+		netType = "tcp"
+	}
+
+	path := strings.TrimSpace(query.Get("path"))
+	if netType == "ws" && path == "" {
+		path = "/"
+	}
+
+	return &vlessLinkConfig{
+		Address:       address,
+		Port:          port,
+		ID:            id,
+		SNI:           strings.TrimSpace(firstNonEmpty(query.Get("sni"), query.Get("peer"), query.Get("servername"))),
+		ALPN:          strings.TrimSpace(query.Get("alpn")),
+		Net:           netType,
+		Host:          strings.TrimSpace(firstNonEmpty(query.Get("host"), query.Get("authority"))),
+		Path:          path,
+		Security:      security,
+		Flow:          strings.TrimSpace(query.Get("flow")),
+		Fingerprint:   strings.TrimSpace(firstNonEmpty(query.Get("fp"), query.Get("client-fingerprint"), query.Get("fingerprint"))),
 		AllowInsecure: parseBoolLike(firstNonEmpty(query.Get("allowInsecure"), query.Get("skip-cert-verify"))),
 		UDP:           parseBoolLike(firstNonEmpty(query.Get("udp"), query.Get("enable_udp"))),
 	}, nil
@@ -620,6 +780,16 @@ func buildOutboundConfig(proxyLink string) (map[string]any, bool, error) {
 			return nil, false, err
 		}
 		return outbound, false, nil
+	case strings.HasPrefix(strings.ToLower(proxyLink), "vless://"):
+		conf, err := parseVLESSLink(proxyLink)
+		if err != nil {
+			return nil, false, err
+		}
+		outbound, err := buildVLESSOutbound(conf)
+		if err != nil {
+			return nil, false, err
+		}
+		return outbound, conf.UDP, nil
 	case strings.HasPrefix(strings.ToLower(proxyLink), "trojan://"):
 		conf, err := parseTrojanLink(proxyLink)
 		if err != nil {
@@ -631,7 +801,7 @@ func buildOutboundConfig(proxyLink string) (map[string]any, bool, error) {
 		}
 		return outbound, conf.UDP, nil
 	default:
-		return nil, false, errors.New("仅支持 vmess:// 或 trojan:// 链接")
+		return nil, false, errors.New("仅支持 vmess://、vless:// 或 trojan:// 链接")
 	}
 }
 
@@ -774,6 +944,81 @@ func buildTrojanOutbound(link *trojanLinkConfig) (map[string]any, error) {
 	return outbound, nil
 }
 
+func buildVLESSOutbound(link *vlessLinkConfig) (map[string]any, error) {
+	serverPort, err := strconv.Atoi(strings.TrimSpace(link.Port))
+	if err != nil || serverPort <= 0 || serverPort > 65535 {
+		return nil, fmt.Errorf("vless 端口无效: %s", strings.TrimSpace(link.Port))
+	}
+
+	network := strings.ToLower(strings.TrimSpace(link.Net))
+	if network == "" {
+		network = "tcp"
+	}
+	security := strings.ToLower(strings.TrimSpace(link.Security))
+	if security == "" {
+		security = "tls"
+	}
+
+	user := map[string]any{
+		"id":         strings.TrimSpace(link.ID),
+		"encryption": "none",
+	}
+	if flow := strings.TrimSpace(link.Flow); flow != "" {
+		user["flow"] = flow
+	}
+
+	outbound := map[string]any{
+		"protocol": "vless",
+		"settings": map[string]any{
+			"vnext": []any{
+				map[string]any{
+					"address": strings.TrimSpace(link.Address),
+					"port":    serverPort,
+					"users":   []any{user},
+				},
+			},
+		},
+	}
+
+	streamSettings := map[string]any{
+		"network":  network,
+		"security": security,
+	}
+
+	if security == "tls" {
+		tlsSettings := map[string]any{
+			"allowInsecure": link.AllowInsecure,
+		}
+		if serverName := strings.TrimSpace(link.SNI); serverName != "" {
+			tlsSettings["serverName"] = serverName
+		}
+		alpnValues := splitAndTrim(strings.TrimSpace(link.ALPN), ",")
+		if len(alpnValues) > 0 {
+			tlsSettings["alpn"] = alpnValues
+		}
+		if fp := strings.TrimSpace(link.Fingerprint); fp != "" {
+			tlsSettings["fingerprint"] = fp
+		}
+		streamSettings["tlsSettings"] = tlsSettings
+	}
+
+	if network == "ws" {
+		wsSettings := map[string]any{}
+		if path := strings.TrimSpace(link.Path); path != "" {
+			wsSettings["path"] = path
+		}
+		if host := firstHost(strings.TrimSpace(link.Host)); host != "" {
+			wsSettings["headers"] = map[string]any{"Host": host}
+		}
+		if len(wsSettings) > 0 {
+			streamSettings["wsSettings"] = wsSettings
+		}
+	}
+
+	outbound["streamSettings"] = streamSettings
+	return outbound, nil
+}
+
 func startXrayProcess(binPath string, configPath string, socksPort int) (*exec.Cmd, error) {
 	attempts := [][]string{
 		{"run", "-config", configPath},
@@ -810,13 +1055,21 @@ func startXrayOnce(binPath string, args []string, socksPort int) (*exec.Cmd, err
 
 	if err := waitXraySocksReady(socksPort, done, xrayBootTimeout); err != nil {
 		if cmd.Process != nil && cmd.ProcessState == nil {
+			markXrayProcessExpectedExit(cmd)
 			_ = cmd.Process.Kill()
 		}
 		return nil, err
 	}
 
+	pid := 0
+	if cmd.Process != nil {
+		pid = cmd.Process.Pid
+	}
 	go func() {
 		if err := <-done; err != nil {
+			if consumeExpectedXrayExitPID(pid) {
+				return
+			}
 			slog.Warn("xray 进程退出", "error", err)
 		}
 	}()
@@ -845,6 +1098,23 @@ func waitXraySocksReady(port int, done <-chan error, timeout time.Duration) erro
 		time.Sleep(120 * time.Millisecond)
 	}
 	return fmt.Errorf("等待 xray SOCKS 端口就绪超时: %s", addr)
+}
+
+func markXrayProcessExpectedExit(cmd *exec.Cmd) {
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	if pid := cmd.Process.Pid; pid > 0 {
+		expectedXrayExitPIDs.Store(pid, struct{}{})
+	}
+}
+
+func consumeExpectedXrayExitPID(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	_, ok := expectedXrayExitPIDs.LoadAndDelete(pid)
+	return ok
 }
 
 func splitAndTrim(raw string, sep string) []string {

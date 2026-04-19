@@ -11,15 +11,7 @@ import (
 )
 
 func ModelsByTypes(ctx context.Context, modelTypes ...string) ([]models.Model, error) {
-	var (
-		llmproviders []models.Provider
-		err          error
-	)
-	if len(modelTypes) > 0 {
-		llmproviders, err = gorm.G[models.Provider](models.DB).Where("type IN ?", modelTypes).Find(ctx)
-	} else {
-		llmproviders, err = gorm.G[models.Provider](models.DB).Find(ctx)
-	}
+	llmproviders, err := gorm.G[models.Provider](models.DB).Find(ctx)
 	if err != nil {
 		return nil, err
 	}

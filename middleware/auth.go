@@ -54,7 +54,22 @@ func AuthOpenAI(adminToken string) gin.HandlerFunc {
 		if len(parts) == 2 && parts[0] == "Bearer" {
 			tokenString = parts[1]
 		}
-		checkAuthKey(c, tokenString, adminToken, true)
+		checkAuthKey(c, tokenString, adminToken, true, false)
+	}
+}
+
+// AuthOpenAIOptional 用于 OpenAI 兼容接口中的“可选鉴权”场景（如模型列表）。
+// 当未携带 Authorization 时，允许通过并返回全量可用模型。
+func AuthOpenAIOptional(adminToken string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		authHeader := c.GetHeader("Authorization")
+		parts := strings.SplitN(authHeader, " ", 2)
+
+		var tokenString string
+		if len(parts) == 2 && parts[0] == "Bearer" {
+			tokenString = parts[1]
+		}
+		checkAuthKey(c, tokenString, adminToken, true, true)
 	}
 }
 
@@ -69,11 +84,11 @@ func AuthAnthropic(adminToken string) gin.HandlerFunc {
 				key = parts[1]
 			}
 		}
-		checkAuthKey(c, key, adminToken, true)
+		checkAuthKey(c, key, adminToken, true, false)
 	}
 }
 
-func checkAuthKey(c *gin.Context, key string, adminToken string, allowAdminBypass bool) {
+func checkAuthKey(c *gin.Context, key string, adminToken string, allowAdminBypass bool, allowMissingKey bool) {
 	ctx := c.Request.Context()
 	// 如果系统中未配置Token 或者使用的是最高权限的token 则允许访问所有模型
 	if allowAdminBypass && (adminToken == "" || key == adminToken) {
@@ -83,6 +98,11 @@ func checkAuthKey(c *gin.Context, key string, adminToken string, allowAdminBypas
 	}
 	// 如果key为空 则拒绝访问
 	if key == "" {
+		if allowMissingKey {
+			ctx = context.WithValue(ctx, consts.ContextKeyAllowAllModel, true)
+			c.Request = c.Request.WithContext(ctx)
+			return
+		}
 		common.ErrorWithHttpStatus(c, http.StatusUnauthorized, http.StatusUnauthorized, "Authorization key is missing")
 		c.Abort()
 		return
