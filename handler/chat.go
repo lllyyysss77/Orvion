@@ -32,6 +32,15 @@ func ResponsesHandler(c *gin.Context) {
 	chatHandler(c, service.BeforerOpenAIRes, service.ProcesserOpenAiRes, consts.StyleOpenAIRes, consts.StyleOpenAIRes, "responses")
 }
 
+// ResponsesCompactHandler 转发 OpenAI 兼容 responses/compact 接口:
+// POST /v1/responses/compact
+func ResponsesCompactHandler(c *gin.Context) {
+	ctx := context.WithValue(c.Request.Context(), consts.ContextKeyOpenAIEndpoint, "responses/compact")
+	c.Request = c.Request.WithContext(ctx)
+	// 上下文压缩接口沿用 responses 能力校验规则
+	chatHandler(c, service.BeforerOpenAIRes, service.ProcesserOpenAiRes, consts.StyleOpenAIRes, consts.StyleOpenAIRes, "responses")
+}
+
 func Messages(c *gin.Context) {
 	chatHandler(c, service.BeforerAnthropic, service.ProcesserAnthropic, consts.StyleAnthropic, consts.StyleAnthropic, "messages")
 }

@@ -32,10 +32,13 @@ const (
 )
 
 type versionUpdateCheckResp struct {
-	CurrentVersion string                  `json:"currentVersion"`
-	LatestVersion  string                  `json:"latestVersion,omitempty"`
-	HasUpdate      bool                    `json:"hasUpdate"`
-	Release        *versionReleaseOverview `json:"release,omitempty"`
+	CurrentVersion      string                  `json:"currentVersion"`
+	LatestVersion       string                  `json:"latestVersion,omitempty"`
+	HasUpdate           bool                    `json:"hasUpdate"`
+	Release             *versionReleaseOverview `json:"release,omitempty"`
+	BackendFetchSuccess bool                    `json:"backendFetchSuccess"`
+	SuggestBrowserFetch bool                    `json:"suggestBrowserFetch"`
+	FetchSource         string                  `json:"fetchSource"`
 }
 
 type versionReleaseOverview struct {
@@ -81,13 +84,17 @@ func GetVersionUpdateCheck(c *gin.Context) {
 		currentVersion = "dev"
 	}
 	resp := versionUpdateCheckResp{
-		CurrentVersion: currentVersion,
-		HasUpdate:      false,
+		CurrentVersion:      currentVersion,
+		HasUpdate:           false,
+		BackendFetchSuccess: false,
+		SuggestBrowserFetch: false,
+		FetchSource:         "backend",
 	}
 
 	latestTag, err := fetchLatestTagFromGitHub()
 	if err != nil {
 		slog.Warn("检查 GitHub 最新标签失败", "error", err)
+		resp.SuggestBrowserFetch = true
 		// 本地开发场景常见网络不可达；当前为 dev 时保留更新提示，
 		// 避免因为 GitHub API 短暂失败导致黄点完全消失。
 		if strings.EqualFold(strings.TrimSpace(currentVersion), "dev") {
@@ -104,6 +111,8 @@ func GetVersionUpdateCheck(c *gin.Context) {
 		common.Success(c, resp)
 		return
 	}
+
+	resp.BackendFetchSuccess = true
 
 	if latestTag == nil || strings.TrimSpace(latestTag.TagName) == "" {
 		common.Success(c, resp)

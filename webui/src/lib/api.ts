@@ -1226,8 +1226,246 @@ export interface VersionUpdateCheck {
   latestVersion?: string;
   hasUpdate: boolean;
   release?: VersionReleaseInfo;
+  backendFetchSuccess?: boolean;
+  suggestBrowserFetch?: boolean;
+  fetchSource?: "backend" | "browser";
+}
+
+const GITHUB_TAGS_API_URL = "https://api.github.com/repos/raciott/llmio/tags?per_page=1";
+const GITHUB_COMMIT_API_URL_PATTERN = "https://api.github.com/repos/raciott/llmio/commits/%s";
+const GITHUB_TAGS_PAGE_URL = "https://github.com/raciott/llmio/tags";
+
+interface GithubTagItemResp {
+  name?: string;
+  commit?: {
+    sha?: string;
+  };
+}
+
+interface GithubCommitResp {
+  html_url?: string;
+  commit?: {
+    message?: string;
+  };
+}
+
+interface NormalizedVersion {
+  major: number;
+  minor: number;
+  patch: number;
+  pre: string;
+  valid: boolean;
 }
 
 export async function checkVersionUpdate(): Promise<VersionUpdateCheck> {
-  return apiRequest<VersionUpdateCheck>("/version/update-check");
+  const info = await apiRequest<VersionUpdateCheck>("/version/update-check");
+  if (!info.suggestBrowserFetch) {
+    return info;
+  }
+
+  try {
+    return await checkVersionUpdateViaBrowser(info.currentVersion);
+  } catch (error) {
+    console.warn("浏览器直连 GitHub 版本检查失败，回退后端结果:", error);
+    return info;
+  }
+}
+
+async function checkVersionUpdateViaBrowser(currentVersion: string): Promise<VersionUpdateCheck> {
+  const latest = await fetchLatestTagFromGitHubByBrowser();
+  if (!latest) {
+    return {
+      currentVersion: currentVersion?.trim() || "dev",
+      hasUpdate: false,
+      backendFetchSuccess: false,
+      suggestBrowserFetch: false,
+      fetchSource: "browser",
+    };
+  }
+
+  const tagName = latest.tagName.trim();
+  return {
+    currentVersion: currentVersion?.trim() || "dev",
+    latestVersion: tagName,
+    hasUpdate: isLatestVersionGreater(tagName, currentVersion),
+    release: latest,
+    backendFetchSuccess: false,
+    suggestBrowserFetch: false,
+    fetchSource: "browser",
+  };
+}
+
+async function fetchLatestTagFromGitHubByBrowser(): Promise<VersionReleaseInfo | null> {
+  const res = await fetch(GITHUB_TAGS_API_URL, {
+    headers: {
+      Accept: "application/vnd.github+json",
+    },
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    throw new Error(`github status=${res.status}`);
+  }
+
+  const payload = (await res.json()) as GithubTagItemResp[];
+  if (!Array.isArray(payload) || payload.length === 0) {
+    return null;
+  }
+
+  const tagName = (payload[0]?.name || "").trim();
+  const commitSHA = (payload[0]?.commit?.sha || "").trim();
+  if (!tagName) {
+    return null;
+  }
+
+  let commitMessage = "";
+  let commitHTMLURL = "";
+  if (commitSHA) {
+    const endpoint = GITHUB_COMMIT_API_URL_PATTERN.replace("%s", encodeURIComponent(commitSHA));
+    try {
+      const commitRes = await fetch(endpoint, {
+        headers: {
+          Accept: "application/vnd.github+json",
+        },
+        cache: "no-store",
+      });
+      if (commitRes.ok) {
+        const commitPayload = (await commitRes.json()) as GithubCommitResp;
+        commitMessage = (commitPayload.commit?.message || "").trim();
+        commitHTMLURL = (commitPayload.html_url || "").trim();
+      }
+    } catch {
+      // commit 详情失败时不影响主流程，继续使用 tag 信息。
+    }
+  }
+
+  return {
+    tagName,
+    name: `最新标签 ${tagName}`,
+    publishedAt: "",
+    htmlUrl: commitHTMLURL || buildTagDetailURL(tagName),
+    body: buildTagUpdateBody(tagName, commitSHA, commitMessage),
+  };
+}
+
+function buildTagDetailURL(tagName: string): string {
+  const trimmed = tagName.trim();
+  if (!trimmed) {
+    return GITHUB_TAGS_PAGE_URL;
+  }
+  return `https://github.com/raciott/llmio/tree/${encodeURIComponent(trimmed)}`;
+}
+
+function buildTagUpdateBody(tagName: string, commitSHA: string, commitMessage: string): string {
+  const safeTag = tagName.trim();
+  const safeSHA = commitSHA.trim();
+  const safeMsg = commitMessage.trim();
+  if (safeMsg) {
+    return safeMsg;
+  }
+  if (!safeTag) {
+    return "检测到新标签（当前仓库未发布 Release，版本检查基于 Tags）。";
+  }
+  if (safeSHA) {
+    const shortSHA = safeSHA.length > 12 ? safeSHA.slice(0, 12) : safeSHA;
+    return `检测到新标签：${safeTag}\n提交：${shortSHA}\n（当前仓库未发布 Release，版本检查基于 Tags）`;
+  }
+  return `检测到新标签：${safeTag}\n（当前仓库未发布 Release，版本检查基于 Tags）`;
+}
+
+function isLatestVersionGreater(latest: string, current: string): boolean {
+  if (current.trim().toLowerCase() === "dev") {
+    return latest.trim() !== "";
+  }
+
+  const latestVer = parseNormalizedVersion(latest);
+  const currentVer = parseNormalizedVersion(current);
+
+  if (!currentVer.valid) {
+    return latestVer.valid;
+  }
+  if (!latestVer.valid) {
+    return false;
+  }
+
+  if (latestVer.major !== currentVer.major) {
+    return latestVer.major > currentVer.major;
+  }
+  if (latestVer.minor !== currentVer.minor) {
+    return latestVer.minor > currentVer.minor;
+  }
+  if (latestVer.patch !== currentVer.patch) {
+    return latestVer.patch > currentVer.patch;
+  }
+
+  const latestHasPre = latestVer.pre !== "";
+  const currentHasPre = currentVer.pre !== "";
+  if (latestHasPre !== currentHasPre) {
+    return !latestHasPre;
+  }
+  if (latestHasPre && currentHasPre) {
+    return latestVer.pre > currentVer.pre;
+  }
+  return false;
+}
+
+function parseNormalizedVersion(raw: string): NormalizedVersion {
+  let value = (raw || "").trim();
+  if (!value) {
+    return invalidNormalizedVersion();
+  }
+  if (value.startsWith("v") || value.startsWith("V")) {
+    value = value.slice(1);
+  }
+  if (!value) {
+    return invalidNormalizedVersion();
+  }
+
+  const plusParts = value.split("+", 2);
+  const mainPart = (plusParts[0] || "").trim();
+  if (!mainPart) {
+    return invalidNormalizedVersion();
+  }
+
+  const mainAndPre = mainPart.split("-", 2);
+  const core = (mainAndPre[0] || "").trim();
+  const pre = (mainAndPre[1] || "").trim().toLowerCase();
+  if (!core) {
+    return invalidNormalizedVersion();
+  }
+
+  const nums = core.split(".");
+  if (nums.length < 2 || nums.length > 3) {
+    return invalidNormalizedVersion();
+  }
+  if (nums.length === 2) {
+    nums.push("0");
+  }
+
+  const major = Number.parseInt(nums[0], 10);
+  const minor = Number.parseInt(nums[1], 10);
+  const patch = Number.parseInt(nums[2], 10);
+  if (Number.isNaN(major) || Number.isNaN(minor) || Number.isNaN(patch)) {
+    return invalidNormalizedVersion();
+  }
+  if (major < 0 || minor < 0 || patch < 0) {
+    return invalidNormalizedVersion();
+  }
+
+  return {
+    major,
+    minor,
+    patch,
+    pre,
+    valid: true,
+  };
+}
+
+function invalidNormalizedVersion(): NormalizedVersion {
+  return {
+    major: 0,
+    minor: 0,
+    patch: 0,
+    pre: "",
+    valid: false,
+  };
 }

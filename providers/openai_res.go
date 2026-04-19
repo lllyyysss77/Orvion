@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 
+	"github.com/racio/orvion/consts"
 	"github.com/tidwall/sjson"
 )
 
@@ -21,7 +23,17 @@ func (o *OpenAIRes) BuildReq(ctx context.Context, header http.Header, model stri
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("%s/responses", o.BaseURL), bytes.NewReader(body))
+
+	path := "responses"
+	if endpoint, ok := ctx.Value(consts.ContextKeyOpenAIEndpoint).(string); ok {
+		normalizedEndpoint := strings.ToLower(strings.TrimSpace(endpoint))
+		if normalizedEndpoint != "" {
+			path = normalizedEndpoint
+		}
+	}
+
+	base := strings.TrimRight(o.BaseURL, "/")
+	req, err := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("%s/%s", base, path), bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}

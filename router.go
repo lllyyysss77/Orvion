@@ -116,6 +116,7 @@ func registerUnifiedRoutes(router *gin.Engine, authOpenAI gin.HandlerFunc, authO
 	router.GET("/v1models", authOpenAIOptional, handler.OpenAIModelsHandler)
 	v1.POST("/chat/completions", authOpenAI, handler.ChatCompletionsHandler)
 	v1.POST("/responses", authOpenAI, handler.ResponsesHandler)
+	v1.POST("/responses/compact", authOpenAI, handler.ResponsesCompactHandler)
 	v1.POST("/embeddings", authOpenAI, handler.EmbeddingsHandler)
 	v1.POST("/rerank", authOpenAI, handler.RerankHandler)
 	v1.POST("/images/generations", authOpenAI, handler.ImagesGenerationsHandler)
