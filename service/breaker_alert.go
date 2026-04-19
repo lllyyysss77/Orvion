@@ -13,9 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/racio/orvion/balancers"
@@ -28,22 +26,15 @@ const (
 	envTelegramChatID   = "BREAKER_ALERT_TG_CHAT_ID"
 	envTelegramAPIBase  = "BREAKER_ALERT_TG_API_BASE"
 	envTelegramProxyURL = "BREAKER_ALERT_TG_PROXY_URL"
-	// TG 未显式配置代理时，复用内置代理配置。
-	envGitHubHTTPProxyForTG     = "GITHUB_HTTP_PROXY"
-	envGitHubXraySocksPortForTG = "GITHUB_XRAY_SOCKS_PORT"
 
-	telegramDefaultAPIBase          = "https://api.telegram.org"
-	telegramHTTPTimeout             = 25 * time.Second
-	telegramPhotoHTTPTimeout        = 35 * time.Second
-	telegramRequestRetryMaxAttempt  = 3
-	telegramRequestRetryDelay       = 800 * time.Millisecond
-	telegramProxyCheckInterval      = 30 * time.Second
-	telegramProxyProbeTimeout       = 6 * time.Second
-	defaultTelegramBuiltinSocksPort = 17890
+	telegramDefaultAPIBase         = "https://api.telegram.org"
+	telegramHTTPTimeout            = 25 * time.Second
+	telegramPhotoHTTPTimeout       = 35 * time.Second
+	telegramRequestRetryMaxAttempt = 3
+	telegramRequestRetryDelay      = 800 * time.Millisecond
 )
 
 var ErrTelegramNotifierNotConfigured = errors.New("telegram 告警未启用或配置不完整")
-var telegramProxyProbeFunc = probeTelegramProxy
 
 type telegramNotifier struct {
 	endpoint string
@@ -92,13 +83,6 @@ type telegramSendMessageResponse struct {
 	Description string `json:"description"`
 }
 
-type telegramProxySelector struct {
-	mu          sync.Mutex
-	candidates  []string
-	activeIndex int
-	lastChecked time.Time
-}
-
 // InitBreakerAlertNotifier 初始化熔断告警通知（Telegram）。
 // 优先读取系统配置（configs.key=breaker_alert_tg），未配置时回退环境变量。
 func InitBreakerAlertNotifier() {
@@ -132,10 +116,8 @@ func resolveTelegramNotifier(ctx context.Context) (*telegramNotifier, bool, erro
 		return nil, false, err
 	}
 	if found {
-		// 当数据库中存在 TG 配置时，不自动回退内置代理，遵循数据库配置。
-		return buildTelegramNotifier(cfg.BotToken, cfg.ChatID, cfg.APIBase, cfg.ProxyURL, cfg.Enabled, false)
+		return buildTelegramNotifier(cfg.BotToken, cfg.ChatID, cfg.APIBase, cfg.ProxyURL, cfg.Enabled)
 	}
-	// 仅在数据库未配置时，才允许环境变量为空时回退内置代理。
 	return buildTelegramNotifierFromEnv()
 }
 
@@ -165,10 +147,10 @@ func buildTelegramNotifierFromEnv() (*telegramNotifier, bool, error) {
 	chatID := strings.TrimSpace(os.Getenv(envTelegramChatID))
 	apiBase := strings.TrimSpace(os.Getenv(envTelegramAPIBase))
 	proxyURL := strings.TrimSpace(os.Getenv(envTelegramProxyURL))
-	return buildTelegramNotifier(botToken, chatID, apiBase, proxyURL, true, true)
+	return buildTelegramNotifier(botToken, chatID, apiBase, proxyURL, true)
 }
 
-func buildTelegramNotifier(botToken string, chatID string, apiBase string, proxyURL string, enabled bool, allowBuiltinFallback bool) (*telegramNotifier, bool, error) {
+func buildTelegramNotifier(botToken string, chatID string, apiBase string, proxyURL string, enabled bool) (*telegramNotifier, bool, error) {
 	if !enabled {
 		return nil, false, nil
 	}
@@ -184,7 +166,7 @@ func buildTelegramNotifier(botToken string, chatID string, apiBase string, proxy
 	}
 	apiBase = strings.TrimRight(apiBase, "/")
 
-	httpClient, err := buildTelegramHTTPClient(proxyURL, allowBuiltinFallback)
+	httpClient, err := buildTelegramHTTPClient(proxyURL)
 	if err != nil {
 		return nil, false, err
 	}
@@ -197,13 +179,17 @@ func buildTelegramNotifier(botToken string, chatID string, apiBase string, proxy
 	}, true, nil
 }
 
-func buildTelegramHTTPClient(proxyURL string, allowBuiltinFallback bool) (*http.Client, error) {
-	selector, err := newTelegramProxySelector(proxyURL, allowBuiltinFallback)
-	if err != nil {
+func buildTelegramHTTPClient(proxyURL string) (*http.Client, error) {
+	proxyURL = strings.TrimSpace(proxyURL)
+	if proxyURL == "" {
+		return &http.Client{Timeout: telegramHTTPTimeout}, nil
+	}
+	if err := validateTelegramProxyURL(proxyURL); err != nil {
 		return nil, err
 	}
-	if selector == nil {
-		return &http.Client{Timeout: telegramHTTPTimeout}, nil
+	parsedProxyURL, err := url.Parse(proxyURL)
+	if err != nil {
+		return nil, fmt.Errorf("代理 URL 无效: %w", err)
 	}
 
 	defaultTransport, ok := http.DefaultTransport.(*http.Transport)
@@ -211,54 +197,12 @@ func buildTelegramHTTPClient(proxyURL string, allowBuiltinFallback bool) (*http.
 		return nil, fmt.Errorf("默认 HTTP transport 类型不受支持")
 	}
 	transport := defaultTransport.Clone()
-	transport.Proxy = selector.proxyFunc
+	transport.Proxy = http.ProxyURL(parsedProxyURL)
 
 	return &http.Client{
 		Timeout:   telegramHTTPTimeout,
 		Transport: transport,
 	}, nil
-}
-
-func newTelegramProxySelector(proxyURL string, allowBuiltinFallback bool) (*telegramProxySelector, error) {
-	candidates, err := resolveTelegramProxyCandidates(proxyURL, allowBuiltinFallback)
-	if err != nil {
-		return nil, err
-	}
-	if len(candidates) == 0 {
-		return nil, nil
-	}
-	return &telegramProxySelector{
-		candidates:  candidates,
-		activeIndex: 0,
-	}, nil
-}
-
-func resolveTelegramProxyCandidates(proxyURL string, allowBuiltinFallback bool) ([]string, error) {
-	proxyURL = strings.TrimSpace(proxyURL)
-	if proxyURL != "" {
-		if err := validateTelegramProxyURL(proxyURL); err != nil {
-			return nil, err
-		}
-		return []string{proxyURL}, nil
-	}
-	if !allowBuiltinFallback {
-		return nil, nil
-	}
-
-	candidates := make([]string, 0, 2)
-	if sharedProxy := strings.TrimSpace(os.Getenv(envGitHubHTTPProxyForTG)); sharedProxy != "" {
-		if err := validateTelegramProxyURL(sharedProxy); err != nil {
-			return nil, fmt.Errorf("GITHUB_HTTP_PROXY 无效: %w", err)
-		}
-		candidates = append(candidates, sharedProxy)
-	}
-
-	builtinSocks := fmt.Sprintf("socks5://127.0.0.1:%d", parseTelegramBuiltinSocksPort())
-	if err := validateTelegramProxyURL(builtinSocks); err != nil {
-		return nil, fmt.Errorf("内置 SOCKS 代理无效: %w", err)
-	}
-	candidates = append(candidates, builtinSocks)
-	return deduplicateProxyCandidates(candidates), nil
 }
 
 func validateTelegramProxyURL(proxyURL string) error {
@@ -270,138 +214,6 @@ func validateTelegramProxyURL(proxyURL string) error {
 		return fmt.Errorf("代理 URL 缺少 scheme 或 host")
 	}
 	return nil
-}
-
-func deduplicateProxyCandidates(candidates []string) []string {
-	seen := make(map[string]struct{}, len(candidates))
-	out := make([]string, 0, len(candidates))
-	for _, item := range candidates {
-		normalized := strings.TrimSpace(item)
-		if normalized == "" {
-			continue
-		}
-		if _, exists := seen[normalized]; exists {
-			continue
-		}
-		seen[normalized] = struct{}{}
-		out = append(out, normalized)
-	}
-	return out
-}
-
-func (s *telegramProxySelector) proxyFunc(*http.Request) (*url.URL, error) {
-	if s == nil {
-		return nil, nil
-	}
-	proxyRaw := s.pickProxyURL()
-	if strings.TrimSpace(proxyRaw) == "" {
-		return nil, nil
-	}
-	return url.Parse(proxyRaw)
-}
-
-func (s *telegramProxySelector) pickProxyURL() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if len(s.candidates) == 0 {
-		return ""
-	}
-	if s.activeIndex < 0 || s.activeIndex >= len(s.candidates) {
-		s.activeIndex = 0
-	}
-
-	now := time.Now()
-	if s.lastChecked.IsZero() || now.Sub(s.lastChecked) >= telegramProxyCheckInterval {
-		s.refreshActiveCandidateLocked()
-		s.lastChecked = now
-	}
-	return s.candidates[s.activeIndex]
-}
-
-func (s *telegramProxySelector) refreshActiveCandidateLocked() {
-	if len(s.candidates) == 0 {
-		return
-	}
-	if s.activeIndex < 0 || s.activeIndex >= len(s.candidates) {
-		s.activeIndex = 0
-	}
-
-	current := s.activeIndex
-	for i := 0; i < len(s.candidates); i++ {
-		idx := (current + i) % len(s.candidates)
-		candidate := s.candidates[idx]
-		if telegramProxyProbeFunc(candidate) {
-			if idx != current {
-				slog.Warn("TG 代理自动切换成功", "from", s.candidates[current], "to", candidate)
-			}
-			s.activeIndex = idx
-			return
-		}
-	}
-	// 所有候选都探测失败时，保留当前候选，避免直接失联。
-	if len(s.candidates) > 0 {
-		slog.Warn("TG 代理探测全部失败，将继续使用当前候选", "current", s.candidates[s.activeIndex])
-	}
-}
-
-func probeTelegramProxy(proxyURL string) bool {
-	proxyURL = strings.TrimSpace(proxyURL)
-	if proxyURL == "" {
-		return false
-	}
-
-	proxyParsed, err := url.Parse(proxyURL)
-	if err != nil {
-		return false
-	}
-	if strings.TrimSpace(proxyParsed.Scheme) == "" || strings.TrimSpace(proxyParsed.Host) == "" {
-		return false
-	}
-
-	defaultTransport, ok := http.DefaultTransport.(*http.Transport)
-	if !ok {
-		return false
-	}
-	transport := defaultTransport.Clone()
-	transport.Proxy = http.ProxyURL(proxyParsed)
-	transport.DisableKeepAlives = true
-	transport.ResponseHeaderTimeout = telegramProxyProbeTimeout
-	transport.TLSHandshakeTimeout = telegramProxyProbeTimeout
-
-	client := &http.Client{
-		Timeout:   telegramProxyProbeTimeout,
-		Transport: transport,
-	}
-
-	req, err := http.NewRequest(http.MethodGet, telegramDefaultAPIBase, nil)
-	if err != nil {
-		return false
-	}
-	req.Header.Set("User-Agent", "orvion-tg-proxy-check")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return false
-	}
-	_ = resp.Body.Close()
-
-	if resp.StatusCode == http.StatusProxyAuthRequired {
-		return false
-	}
-	return resp.StatusCode < 500
-}
-
-func parseTelegramBuiltinSocksPort() int {
-	raw := strings.TrimSpace(os.Getenv(envGitHubXraySocksPortForTG))
-	if raw == "" {
-		return defaultTelegramBuiltinSocksPort
-	}
-	value, err := strconv.Atoi(raw)
-	if err != nil || value <= 0 || value > 65535 {
-		return defaultTelegramBuiltinSocksPort
-	}
-	return value
 }
 
 // SendTelegramBreakerAlertTest 发送 TG 熔断告警测试消息。

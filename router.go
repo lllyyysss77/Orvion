@@ -157,7 +157,6 @@ func registerMetricsRoutes(api *gin.RouterGroup) {
 	api.GET("/metrics/request-amount", handler.RequestAmountTrend)
 	api.GET("/metrics/model-usage", handler.ModelUsageSummary)
 	api.GET("/metrics/daily-model-cost", handler.DailyModelCostTrend)
-	api.GET("/stream/requests", handler.StreamRequests)
 }
 
 func registerProviderRoutes(api *gin.RouterGroup) {

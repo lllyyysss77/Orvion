@@ -48,3 +48,105 @@ func TestBuildTagUpdateBodyPreferCommitMessage(t *testing.T) {
 		t.Fatalf("unexpected body: %q", got)
 	}
 }
+
+func TestBuildVersionUpdateCheckRespSuccess(t *testing.T) {
+	latest := &githubLatestTagInfo{
+		TagName:       "v1.2.3",
+		CommitSHA:     "93c279e0d6e3",
+		CommitMessage: "feat: add cache",
+		HTMLURL:       "https://github.com/raciott/llmio/commit/93c279e0d6e3",
+	}
+
+	resp := buildVersionUpdateCheckResp("1.2.2", latest, nil)
+	if !resp.BackendFetchSuccess {
+		t.Fatalf("expected backendFetchSuccess=true")
+	}
+	if resp.SuggestBrowserFetch {
+		t.Fatalf("expected suggestBrowserFetch=false")
+	}
+	if !resp.HasUpdate {
+		t.Fatalf("expected hasUpdate=true")
+	}
+	if resp.LatestVersion != "v1.2.3" {
+		t.Fatalf("unexpected latestVersion: %q", resp.LatestVersion)
+	}
+	if resp.Release == nil || resp.Release.Body != "feat: add cache" {
+		t.Fatalf("unexpected release body: %+v", resp.Release)
+	}
+}
+
+func TestBuildVersionUpdateCheckRespErrorForDev(t *testing.T) {
+	resp := buildVersionUpdateCheckResp("dev", nil, errTestDummy)
+	if resp.BackendFetchSuccess {
+		t.Fatalf("expected backendFetchSuccess=false")
+	}
+	if !resp.SuggestBrowserFetch {
+		t.Fatalf("expected suggestBrowserFetch=true")
+	}
+	if !resp.HasUpdate {
+		t.Fatalf("expected hasUpdate=true for dev")
+	}
+	if resp.Release == nil || resp.Release.TagName != "latest" {
+		t.Fatalf("unexpected release fallback: %+v", resp.Release)
+	}
+}
+
+func TestBuildVersionUpdateCheckRespErrorForStableVersion(t *testing.T) {
+	resp := buildVersionUpdateCheckResp("1.2.3", nil, errTestDummy)
+	if resp.BackendFetchSuccess {
+		t.Fatalf("expected backendFetchSuccess=false")
+	}
+	if !resp.SuggestBrowserFetch {
+		t.Fatalf("expected suggestBrowserFetch=true")
+	}
+	if resp.HasUpdate {
+		t.Fatalf("expected hasUpdate=false for stable version on fetch error")
+	}
+	if resp.Release != nil {
+		t.Fatalf("expected release=nil, got %+v", resp.Release)
+	}
+}
+
+func TestShouldForceHTTP11ForGitHubEndpoint(t *testing.T) {
+	cases := []struct {
+		name     string
+		endpoint string
+		want     bool
+	}{
+		{
+			name:     "Orvion commit 接口强制 HTTP1.1",
+			endpoint: "https://api.github.com/repos/raciott/Orvion/commits/0258f8d1e1a57234528b7503fb0884df07e441d3",
+			want:     true,
+		},
+		{
+			name:     "llmio commit 接口强制 HTTP1.1",
+			endpoint: "https://api.github.com/repos/raciott/llmio/commits/93c279e0d6e3",
+			want:     true,
+		},
+		{
+			name:     "tags 接口不强制",
+			endpoint: "https://api.github.com/repos/raciott/llmio/tags?per_page=1",
+			want:     false,
+		},
+		{
+			name:     "非 github host 不强制",
+			endpoint: "https://example.com/repos/raciott/Orvion/commits/0258f8d1e1a57234528b7503fb0884df07e441d3",
+			want:     false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := shouldForceHTTP11ForGitHubEndpoint(tc.endpoint)
+			if got != tc.want {
+				t.Fatalf("endpoint=%q got=%v want=%v", tc.endpoint, got, tc.want)
+			}
+		})
+	}
+}
+
+var errTestDummy = testDummyError("dummy")
+
+type testDummyError string
+
+func (e testDummyError) Error() string { return string(e) }

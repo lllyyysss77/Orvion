@@ -84,6 +84,7 @@ docker run -d \
 - `ORVION_SHUTDOWN_TIMEOUT_SECONDS`：优雅停机超时秒数，默认 `10`
 - `TRUSTED_PROXIES`：可信代理列表，逗号分隔
 - `GEMINI_COMPAT_ENABLED`：Gemini 兼容降级开关，默认开启
+- `GITHUB_HTTP_PROXY`：GitHub 版本检查代理（可选）
 
 ### Telegram（可选）
 
@@ -92,7 +93,7 @@ docker run -d \
 - `BREAKER_ALERT_TG_BOT_TOKEN`
 - `BREAKER_ALERT_TG_CHAT_ID`
 - `BREAKER_ALERT_TG_API_BASE`（默认 `https://api.telegram.org`）
-- `BREAKER_ALERT_TG_PROXY_URL`（可选；仅当数据库未配置 TG 代理且该变量为空时，自动复用内置代理：优先 `GITHUB_HTTP_PROXY`，否则 `socks5://127.0.0.1:${GITHUB_XRAY_SOCKS_PORT|17890}`）
+- `BREAKER_ALERT_TG_PROXY_URL`（可选；显式指定 TG 请求代理）
 
 ## 认证与鉴权
 

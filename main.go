@@ -147,7 +147,6 @@ func main() {
 	// 做最后一次落库,并等其退出。这样即使 Shutdown 期间产生的记账也不会丢失。
 	service.ShutdownAuthKeyFlusher()
 	service.WaitAuthKeyFlusher(shutdownTimeout)
-	handler.StopGitHubVMessProxy()
 
 	select {
 	case err := <-serverErrCh:
@@ -176,7 +175,7 @@ func resolveShutdownTimeout() time.Duration {
 }
 
 func startBackgroundWorkers(ctx context.Context) {
-	handler.StartGitHubVMessProxyWarmup()
+	handler.StartGitHubVersionUpdateRefresher(ctx)
 	service.StartAuthKeyFlusher(ctx)
 	service.StartPriceSync(ctx)
 	service.StartSystemLogCleanup(ctx)

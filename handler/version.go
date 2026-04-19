@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,8 +14,10 @@ import (
 	"net"
 	"net/http"
 	neturl "net/url"
+	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -27,8 +30,15 @@ const (
 	githubCommitAPIURLPattern = "https://api.github.com/repos/raciott/llmio/commits/%s"
 	githubTagsPageURL         = "https://github.com/raciott/llmio/tags"
 	githubReleaseTimeout      = 6 * time.Second
+	githubReleaseRefreshEvery = 1 * time.Minute
 	githubRequestRetryMax     = 3
 	githubRequestRetryBase    = 350 * time.Millisecond
+)
+
+var (
+	githubVersionCacheMu     sync.RWMutex
+	githubVersionCacheResp   = defaultVersionUpdateCheckResp()
+	githubVersionRefreshOnce sync.Once
 )
 
 type versionUpdateCheckResp struct {
@@ -79,10 +89,63 @@ type normalizedVersion struct {
 }
 
 func GetVersionUpdateCheck(c *gin.Context) {
+	resp := getVersionUpdateCacheSnapshot()
+	common.Success(c, resp)
+}
+
+// StartGitHubVersionUpdateRefresher 启动 GitHub 版本检查后台刷新任务。
+// 行为：启动时先拉取一次，随后每分钟刷新一次；接口只返回内存缓存。
+func StartGitHubVersionUpdateRefresher(ctx context.Context) {
+	githubVersionRefreshOnce.Do(func() {
+		go func() {
+			refreshGitHubVersionCache()
+			ticker := time.NewTicker(githubReleaseRefreshEvery)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					refreshGitHubVersionCache()
+				}
+			}
+		}()
+	})
+}
+
+func refreshGitHubVersionCache() {
+	currentVersion := resolveCurrentVersion()
+	latestTag, err := fetchLatestTagFromGitHub()
+	next := buildVersionUpdateCheckResp(currentVersion, latestTag, err)
+
+	githubVersionCacheMu.Lock()
+	githubVersionCacheResp = next
+	githubVersionCacheMu.Unlock()
+
+	if err != nil {
+		slog.Warn("刷新 GitHub 版本缓存失败", "error", err)
+	}
+}
+
+func getVersionUpdateCacheSnapshot() versionUpdateCheckResp {
+	githubVersionCacheMu.RLock()
+	defer githubVersionCacheMu.RUnlock()
+	return githubVersionCacheResp
+}
+
+func defaultVersionUpdateCheckResp() versionUpdateCheckResp {
+	return buildVersionUpdateCheckResp(resolveCurrentVersion(), nil, errors.New("github version cache not ready"))
+}
+
+func resolveCurrentVersion() string {
 	currentVersion := strings.TrimSpace(consts.Version)
 	if currentVersion == "" {
-		currentVersion = "dev"
+		return "dev"
 	}
+	return currentVersion
+}
+
+func buildVersionUpdateCheckResp(currentVersion string, latestTag *githubLatestTagInfo, fetchErr error) versionUpdateCheckResp {
 	resp := versionUpdateCheckResp{
 		CurrentVersion:      currentVersion,
 		HasUpdate:           false,
@@ -91,9 +154,7 @@ func GetVersionUpdateCheck(c *gin.Context) {
 		FetchSource:         "backend",
 	}
 
-	latestTag, err := fetchLatestTagFromGitHub()
-	if err != nil {
-		slog.Warn("检查 GitHub 最新标签失败", "error", err)
+	if fetchErr != nil {
 		resp.SuggestBrowserFetch = true
 		// 本地开发场景常见网络不可达；当前为 dev 时保留更新提示，
 		// 避免因为 GitHub API 短暂失败导致黄点完全消失。
@@ -108,15 +169,12 @@ func GetVersionUpdateCheck(c *gin.Context) {
 				Body:        "当前为 dev 版本，本次未能连接 GitHub API。你可以先点击“查看标签页”确认是否有新版本。",
 			}
 		}
-		common.Success(c, resp)
-		return
+		return resp
 	}
 
 	resp.BackendFetchSuccess = true
-
 	if latestTag == nil || strings.TrimSpace(latestTag.TagName) == "" {
-		common.Success(c, resp)
-		return
+		return resp
 	}
 
 	tagName := strings.TrimSpace(latestTag.TagName)
@@ -129,8 +187,7 @@ func GetVersionUpdateCheck(c *gin.Context) {
 		Body:        buildTagUpdateBody(tagName, latestTag.CommitSHA, latestTag.CommitMessage),
 	}
 	resp.HasUpdate = isLatestVersionGreater(tagName, currentVersion)
-
-	common.Success(c, resp)
+	return resp
 }
 
 func fetchLatestTagFromGitHub() (*githubLatestTagInfo, error) {
@@ -180,9 +237,40 @@ func fetchCommitMessageFromGitHub(commitSHA string) (string, string, error) {
 	return strings.TrimSpace(payload.Commit.Message), strings.TrimSpace(payload.HTMLURL), nil
 }
 
+func buildGitHubHTTPClient(timeout time.Duration, forceHTTP11 bool) *http.Client {
+	if timeout <= 0 {
+		timeout = githubReleaseTimeout
+	}
+	client := &http.Client{Timeout: timeout}
+
+	defaultTransport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return client
+	}
+	transport := defaultTransport.Clone()
+	if forceHTTP11 {
+		// 显式禁用 HTTP/2，确保该请求使用 HTTP/1.1。
+		transport.ForceAttemptHTTP2 = false
+		transport.TLSNextProto = make(map[string]func(string, *tls.Conn) http.RoundTripper)
+	}
+
+	proxyURL := strings.TrimSpace(os.Getenv("GITHUB_HTTP_PROXY"))
+	if proxyURL != "" {
+		proxyParsed, err := neturl.Parse(proxyURL)
+		if err != nil {
+			slog.Warn("解析 GitHub 代理地址失败", "error", err)
+		} else {
+			transport.Proxy = http.ProxyURL(proxyParsed)
+		}
+	}
+
+	client.Transport = transport
+	return client
+}
+
 func getGitHubJSONWithRetry(endpoint string, target any) error {
 	var lastErr error
-	client := buildGitHubHTTPClient(githubReleaseTimeout)
+	client := buildGitHubHTTPClient(githubReleaseTimeout, shouldForceHTTP11ForGitHubEndpoint(endpoint))
 	for attempt := 1; attempt <= githubRequestRetryMax; attempt++ {
 		req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 		if err != nil {
@@ -227,6 +315,18 @@ func getGitHubJSONWithRetry(endpoint string, target any) error {
 		lastErr = errors.New("unknown github request error")
 	}
 	return lastErr
+}
+
+func shouldForceHTTP11ForGitHubEndpoint(endpoint string) bool {
+	parsed, err := neturl.Parse(strings.TrimSpace(endpoint))
+	if err != nil {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(parsed.Host), "api.github.com") {
+		return false
+	}
+	// 仅对 commits 详情接口强制 HTTP/1.1。
+	return strings.Contains(strings.ToLower(strings.TrimSpace(parsed.Path)), "/commits/")
 }
 
 func shouldRetryGitHubStatus(statusCode int) bool {

@@ -174,7 +174,7 @@ func telegramCommandLoop(ctx context.Context) {
 		default:
 		}
 
-		botToken, chatID, apiBase, proxyURL, enabled, allowBuiltinFallback, err := resolveTelegramRuntimeConfig(ctx)
+		botToken, chatID, apiBase, proxyURL, enabled, err := resolveTelegramRuntimeConfig(ctx)
 		if err != nil {
 			slog.Warn("读取 TG 命令配置失败", "error", err)
 			if !waitWithContext(ctx, telegramCommandErrorInterval) {
@@ -189,9 +189,9 @@ func telegramCommandLoop(ctx context.Context) {
 			continue
 		}
 
-		nextSign := strings.Join([]string{botToken, chatID, apiBase, proxyURL, strconv.FormatBool(allowBuiltinFallback)}, "|")
+		nextSign := strings.Join([]string{botToken, chatID, apiBase, proxyURL}, "|")
 		if nextSign != configSign || notifier == nil {
-			notifier, _, err = buildTelegramNotifier(botToken, chatID, apiBase, proxyURL, true, allowBuiltinFallback)
+			notifier, _, err = buildTelegramNotifier(botToken, chatID, apiBase, proxyURL, true)
 			if err != nil {
 				slog.Warn("初始化 TG 命令发送器失败", "error", err)
 				if !waitWithContext(ctx, telegramCommandErrorInterval) {
@@ -203,7 +203,7 @@ func telegramCommandLoop(ctx context.Context) {
 				slog.Warn("同步 TG 命令列表失败", "error", err)
 			}
 			primeTelegramStatusImageWindow(ctx)
-			pollClient, err = buildTelegramCommandPollClient(proxyURL, allowBuiltinFallback)
+			pollClient, err = buildTelegramCommandPollClient(proxyURL)
 			if err != nil {
 				slog.Warn("初始化 TG 命令轮询客户端失败", "error", err)
 				if !waitWithContext(ctx, telegramCommandErrorInterval) {
@@ -382,8 +382,8 @@ func saveTelegramDailyUsageReportLastSentDate(ctx context.Context, scheduleDate 
 		}).Error
 }
 
-func buildTelegramCommandPollClient(proxyURL string, allowBuiltinFallback bool) (*http.Client, error) {
-	client, err := buildTelegramHTTPClient(proxyURL, allowBuiltinFallback)
+func buildTelegramCommandPollClient(proxyURL string) (*http.Client, error) {
+	client, err := buildTelegramHTTPClient(proxyURL)
 	if err != nil {
 		return nil, err
 	}
@@ -392,10 +392,10 @@ func buildTelegramCommandPollClient(proxyURL string, allowBuiltinFallback bool) 
 	return client, nil
 }
 
-func resolveTelegramRuntimeConfig(ctx context.Context) (botToken, chatID, apiBase, proxyURL string, enabled bool, allowBuiltinFallback bool, err error) {
+func resolveTelegramRuntimeConfig(ctx context.Context) (botToken, chatID, apiBase, proxyURL string, enabled bool, err error) {
 	cfg, found, loadErr := loadTelegramBreakerAlertConfig(ctx)
 	if loadErr != nil {
-		return "", "", "", "", false, false, loadErr
+		return "", "", "", "", false, loadErr
 	}
 	if found {
 		botToken = strings.TrimSpace(cfg.BotToken)
@@ -403,11 +403,10 @@ func resolveTelegramRuntimeConfig(ctx context.Context) (botToken, chatID, apiBas
 		apiBase = strings.TrimSpace(cfg.APIBase)
 		proxyURL = strings.TrimSpace(cfg.ProxyURL)
 		enabled = cfg.Enabled && botToken != "" && chatID != ""
-		allowBuiltinFallback = false
 		if apiBase == "" {
 			apiBase = telegramDefaultAPIBase
 		}
-		return botToken, chatID, apiBase, proxyURL, enabled, allowBuiltinFallback, nil
+		return botToken, chatID, apiBase, proxyURL, enabled, nil
 	}
 
 	botToken = strings.TrimSpace(os.Getenv(envTelegramBotToken))
@@ -418,8 +417,7 @@ func resolveTelegramRuntimeConfig(ctx context.Context) (botToken, chatID, apiBas
 		apiBase = telegramDefaultAPIBase
 	}
 	enabled = botToken != "" && chatID != ""
-	allowBuiltinFallback = true
-	return botToken, chatID, apiBase, proxyURL, enabled, allowBuiltinFallback, nil
+	return botToken, chatID, apiBase, proxyURL, enabled, nil
 }
 
 func fetchTelegramLatestOffset(ctx context.Context, client *http.Client, endpoint string) (int64, error) {
