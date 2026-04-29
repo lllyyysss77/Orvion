@@ -55,6 +55,9 @@ const formatTokenCompact = (value: number | null | undefined) => {
     const normalized = value / divisor;
     const normalizedAbs = Math.abs(normalized);
     const digits = normalizedAbs >= 100 ? 0 : normalizedAbs >= 10 ? 1 : 2;
+    if (digits === 0) {
+      return `${normalized.toFixed(0)}${suffix}`;
+    }
     return `${normalized.toFixed(digits).replace(/\.?0+$/, "")}${suffix}`;
   };
   if (abs >= 1_000_000_000_000) return compact(1_000_000_000_000, "T");

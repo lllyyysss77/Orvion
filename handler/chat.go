@@ -133,7 +133,7 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 		return
 	}
 	// 按模型获取可用 provider
-	providersWithMeta, err := service.ProvidersWithMetaBymodelsName(ctx, logStyle, *before)
+	providersWithMeta, err := service.ProvidersWithMetaBymodelsName(ctx, logStyle, endpoint, *before)
 	if err != nil {
 		common.InternalServerError(c, err.Error())
 		return

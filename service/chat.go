@@ -384,7 +384,7 @@ type ProvidersWithMeta struct {
 	Breaker              bool   // 是否开启熔断
 }
 
-func ProvidersWithMetaBymodelsName(ctx context.Context, logStyle string, before Before) (*ProvidersWithMeta, error) {
+func ProvidersWithMetaBymodelsName(ctx context.Context, logStyle string, endpoint string, before Before) (*ProvidersWithMeta, error) {
 	if err := RestoreExpiredAutoDisabledModelProviders(ctx); err != nil {
 		slog.Warn("恢复已到期的模型关联提供商失败", "error", err)
 	}
@@ -441,10 +441,18 @@ func ProvidersWithMetaBymodelsName(ctx context.Context, logStyle string, before 
 
 	weightItems := make(map[uint]int)
 	for _, mp := range modelWithProviders {
-		if _, ok := providerMap[mp.ProviderID]; !ok {
+		provider, ok := providerMap[mp.ProviderID]
+		if !ok {
+			continue
+		}
+		if !models.ProviderSupportsEndpoint([]string(provider.Capabilities), endpoint) {
 			continue
 		}
 		weightItems[mp.ID] = mp.Weight
+	}
+
+	if len(weightItems) == 0 {
+		return nil, errors.New("not provider for model " + before.Model)
 	}
 
 	// IOLog 和 Breaker 现在是 int 类型(0/1)

@@ -38,11 +38,12 @@ type AnthropicProxyIPConfig struct {
 }
 
 type TelegramBreakerAlertConfig struct {
-	Enabled  bool   `json:"enabled"`
-	BotToken string `json:"bot_token"`
-	ChatID   string `json:"chat_id"`
-	APIBase  string `json:"api_base"`
-	ProxyURL string `json:"proxy_url"`
+	Enabled        bool   `json:"enabled"`
+	BotToken       string `json:"bot_token"`
+	ChatID         string `json:"chat_id"`
+	APIBase        string `json:"api_base"`
+	ProxyURL       string `json:"proxy_url"`
+	StatusImageURL string `json:"status_image_url"`
 }
 
 type ModelPriceSyncConfig struct {

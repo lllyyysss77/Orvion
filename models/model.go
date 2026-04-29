@@ -13,6 +13,7 @@ type Provider struct {
 	Config          string
 	Console         string // 控制台地址
 	ModelsFetchMode string `gorm:"column:models_fetch_mode"` // 模型获取方式：v1_models/api_pricing
+	Capabilities    ProviderCapabilities
 }
 
 type AnthropicConfig struct {

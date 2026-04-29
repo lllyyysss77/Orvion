@@ -26,14 +26,14 @@ import (
 )
 
 const (
-	telegramCommandPollTimeoutSeconds = 25
-	telegramCommandIdleInterval       = 10 * time.Second
-	telegramCommandErrorInterval      = 3 * time.Second
-	telegramStatusCoverImageURL       = "https://i.mukyu.ru/random?wtf_gender=girls"
-	telegramStatusImageWindowSize     = 3
-	telegramStatusImageRefillMaxRetry = 5
-	telegramStatusImageRefillBaseWait = 1500 * time.Millisecond
-	telegramStatusImageDownloadRetry  = 4
+	telegramCommandPollTimeoutSeconds  = 25
+	telegramCommandIdleInterval        = 10 * time.Second
+	telegramCommandErrorInterval       = 3 * time.Second
+	telegramDefaultStatusCoverImageURL = "https://i.mukyu.ru/random?wtf_gender=girls"
+	telegramStatusImageWindowSize      = 3
+	telegramStatusImageRefillMaxRetry  = 5
+	telegramStatusImageRefillBaseWait  = 1500 * time.Millisecond
+	telegramStatusImageDownloadRetry   = 4
 	// Telegram sendPhoto 单图上限 10MB。
 	telegramStatusImageTGMaxBytes = 10 << 20
 
@@ -118,6 +118,11 @@ type telegramDailyUsageTopModelRow struct {
 	ReqCount int64  `gorm:"column:req_count"`
 }
 
+type telegramDailyUsageTopAuthKeyRow struct {
+	AuthKeyID uint  `gorm:"column:auth_key_id"`
+	ReqCount  int64 `gorm:"column:req_count"`
+}
+
 type telegramDailyUsageSlowRow struct {
 	ID        uint      `gorm:"column:id"`
 	Name      string    `gorm:"column:name"`
@@ -144,6 +149,8 @@ type telegramDailyUsageSummary struct {
 	SuccessRequests int64
 	TopModelName    string
 	TopModelReqs    int64
+	TopAuthKeyName  string
+	TopAuthKeyReqs  int64
 	SlowestRequest  *telegramDailySlowRequest
 }
 
@@ -781,8 +788,8 @@ func prefetchTelegramStatusImageIntoWindowWithRetry(ctx context.Context, trigger
 }
 
 func prefetchTelegramStatusImageIntoWindow(ctx context.Context, trigger string) error {
-	photoURL := buildTelegramStatusCoverImageURL()
-	binary, fileName, sourceURL, err := downloadTelegramStatusCoverImage(ctx, photoURL)
+	baseURL := resolveTelegramStatusCoverImageBaseURL(ctx)
+	binary, fileName, sourceURL, err := downloadTelegramStatusCoverImage(ctx, baseURL)
 	if err != nil {
 		return err
 	}
@@ -835,10 +842,10 @@ func sendTelegramCaptionWithStatusImage(ctx context.Context, notifier *telegramN
 
 	item, ok := popTelegramStatusImageWindowItem(ctx)
 	if !ok {
-		photoURL := buildTelegramStatusCoverImageURL()
-		photoBinary, fileName, sourceURL, err := downloadTelegramStatusCoverImage(ctx, photoURL)
+		baseURL := resolveTelegramStatusCoverImageBaseURL(ctx)
+		photoBinary, fileName, sourceURL, err := downloadTelegramStatusCoverImage(ctx, baseURL)
 		if err != nil {
-			slog.Error("下载 TG 状态图片失败", "url", photoURL, "error", err)
+			slog.Error("下载 TG 状态图片失败", "base_url", baseURL, "error", err)
 			// 下载图片失败时回退到纯文本，避免关键消息丢失。
 			if fallbackErr := notifier.sendTextWithMarkupToChat(chatID, content, nil); fallbackErr != nil {
 				return fmt.Errorf("下载状态图片失败: %v, 文本回退也失败: %w", err, fallbackErr)
@@ -881,6 +888,11 @@ func buildTelegramYesterdayUsageReportMessage(ctx context.Context, now time.Time
 		lines = append(lines, fmt.Sprintf("🔥 最活跃模型：%s（%d 次）", summary.TopModelName, summary.TopModelReqs))
 	} else {
 		lines = append(lines, "🔥 最活跃模型：昨天还没有请求，先攒攒能量~")
+	}
+	if summary.TopAuthKeyName != "" && summary.TopAuthKeyReqs > 0 {
+		lines = append(lines, fmt.Sprintf("🔑 最常用 API Key：%s（%d 次）", summary.TopAuthKeyName, summary.TopAuthKeyReqs))
+	} else {
+		lines = append(lines, "🔑 最常用 API Key：昨天没有 API Key 请求记录")
 	}
 
 	if summary.SlowestRequest != nil {
@@ -945,6 +957,29 @@ func collectTelegramDailyUsageSummary(ctx context.Context, start time.Time, end 
 		summary.TopModelReqs = topModel.ReqCount
 	}
 
+	var topAuthKey telegramDailyUsageTopAuthKeyRow
+	if err := buildBase().
+		Select("auth_key_id, COUNT(*) AS req_count").
+		Where("auth_key_id > ?", 0).
+		Group("auth_key_id").
+		Order("req_count DESC").
+		Order("auth_key_id ASC").
+		Take(&topAuthKey).Error; err == nil {
+		summary.TopAuthKeyReqs = topAuthKey.ReqCount
+		summary.TopAuthKeyName = fmt.Sprintf("ID:%d", topAuthKey.AuthKeyID)
+
+		var authKey models.AuthKey
+		if findErr := models.DB.WithContext(ctx).
+			Unscoped().
+			Where("id = ?", topAuthKey.AuthKeyID).
+			First(&authKey).Error; findErr == nil {
+			name := strings.TrimSpace(authKey.Name)
+			if name != "" {
+				summary.TopAuthKeyName = name
+			}
+		}
+	}
+
 	var slowRow telegramDailyUsageSlowRow
 	if err := buildBase().
 		Select("id, name, provider_name, status, created_at, (proxy_time_ms + first_chunk_time_ms + chunk_time_ms) AS latency_ms").
@@ -987,10 +1022,54 @@ func telegramReadableStatus(status string) string {
 	}
 }
 
-func buildTelegramStatusCoverImageURL() string {
-	parsed, err := url.Parse(telegramStatusCoverImageURL)
+func resolveTelegramStatusCoverImageBaseURL(ctx context.Context) string {
+	fallbackURL := strings.TrimSpace(telegramDefaultStatusCoverImageURL)
+	envURL := strings.TrimSpace(os.Getenv(envTelegramStatusImageURL))
+	if normalizedEnvURL, ok := normalizeTelegramStatusImageURL(envURL); ok {
+		fallbackURL = normalizedEnvURL
+	} else if envURL != "" {
+		slog.Warn("TG 状态图片环境变量无效，回退默认地址", "env", envTelegramStatusImageURL, "value", envURL)
+	}
+
+	cfg, found, err := loadTelegramBreakerAlertConfig(ctx)
 	if err != nil {
-		return telegramStatusCoverImageURL
+		slog.Warn("读取 TG 状态图片配置失败，回退默认地址", "error", err)
+		return fallbackURL
+	}
+	if !found {
+		return fallbackURL
+	}
+
+	configURL := strings.TrimSpace(cfg.StatusImageURL)
+	if normalizedConfigURL, ok := normalizeTelegramStatusImageURL(configURL); ok {
+		return normalizedConfigURL
+	}
+	if configURL != "" {
+		slog.Warn("TG 状态图片配置无效，回退默认地址", "value", configURL)
+	}
+	return fallbackURL
+}
+
+func normalizeTelegramStatusImageURL(raw string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", false
+	}
+
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return "", false
+	}
+	if strings.TrimSpace(parsed.Scheme) == "" || strings.TrimSpace(parsed.Host) == "" {
+		return "", false
+	}
+	return raw, true
+}
+
+func buildTelegramStatusCoverImageURL(baseURL string) string {
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil {
+		return strings.TrimSpace(baseURL)
 	}
 	query := parsed.Query()
 	query.Set("_ts", strconv.FormatInt(time.Now().UnixNano(), 10))
@@ -998,18 +1077,15 @@ func buildTelegramStatusCoverImageURL() string {
 	return parsed.String()
 }
 
-func downloadTelegramStatusCoverImage(ctx context.Context, rawURL string) ([]byte, string, string, error) {
-	rawURL = strings.TrimSpace(rawURL)
-	if rawURL == "" {
+func downloadTelegramStatusCoverImage(ctx context.Context, baseURL string) ([]byte, string, string, error) {
+	baseURL = strings.TrimSpace(baseURL)
+	if baseURL == "" {
 		return nil, "", "", fmt.Errorf("状态图片地址为空")
 	}
 
 	var lastErr error
 	for attempt := 1; attempt <= telegramStatusImageDownloadRetry; attempt++ {
-		urlToDownload := rawURL
-		if attempt > 1 {
-			urlToDownload = buildTelegramStatusCoverImageURL()
-		}
+		urlToDownload := buildTelegramStatusCoverImageURL(baseURL)
 
 		binary, fileName, err := downloadTelegramStatusCoverImageOnce(ctx, urlToDownload)
 		if err == nil {

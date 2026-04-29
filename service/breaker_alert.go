@@ -26,6 +26,8 @@ const (
 	envTelegramChatID   = "BREAKER_ALERT_TG_CHAT_ID"
 	envTelegramAPIBase  = "BREAKER_ALERT_TG_API_BASE"
 	envTelegramProxyURL = "BREAKER_ALERT_TG_PROXY_URL"
+	// TG /status 图片拉取地址（可选，支持通过系统配置 breaker_alert_tg.status_image_url 覆盖）。
+	envTelegramStatusImageURL = "BREAKER_ALERT_TG_STATUS_IMAGE_URL"
 
 	telegramDefaultAPIBase         = "https://api.telegram.org"
 	telegramHTTPTimeout            = 25 * time.Second

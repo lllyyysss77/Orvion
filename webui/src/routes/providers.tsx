@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Form,
   FormControl,
@@ -53,6 +54,24 @@ import { openExternalUrl } from "@/lib/utils";
 import { toast } from "sonner";
 import { ExternalLink, Pencil, Trash2, Boxes, Plus, Copy } from "lucide-react";
 
+type ProviderCapability = "chat" | "openai" | "claude";
+
+const providerCapabilityOptions: { value: ProviderCapability; label: string }[] = [
+  { value: "chat", label: "chat" },
+  { value: "openai", label: "openai" },
+  { value: "claude", label: "claude" },
+];
+
+const defaultProviderCapabilities: ProviderCapability[] = providerCapabilityOptions.map((item) => item.value);
+
+const normalizeProviderCapabilities = (value?: string[] | null): ProviderCapability[] => {
+  const raw = Array.isArray(value) ? value : [];
+  const next = raw
+    .map((item) => String(item).trim().toLowerCase())
+    .filter((item): item is ProviderCapability => item === "chat" || item === "openai" || item === "claude");
+  return next.length > 0 ? Array.from(new Set(next)) : [...defaultProviderCapabilities];
+};
+
 const parseConfigJson = (raw?: string | null): Record<string, unknown> | null => {
   if (!raw) return null;
   try {
@@ -70,6 +89,7 @@ const formSchema = z.object({
   models_fetch_mode: z.enum(["v1_models", "api_pricing"]),
   config: z.string().min(1, { message: "配置不能为空" }),
   console: z.string().optional(),
+  capabilities: z.array(z.enum(["chat", "openai", "claude"])).min(1, { message: "至少选择一个接口支持能力" }),
 });
 
 export default function ProvidersPage() {
@@ -95,7 +115,13 @@ export default function ProvidersPage() {
   // 初始化表单
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
-    defaultValues: { name: "", models_fetch_mode: "v1_models", config: "", console: "" },
+    defaultValues: {
+      name: "",
+      models_fetch_mode: "v1_models",
+      config: "",
+      console: "",
+      capabilities: [...defaultProviderCapabilities],
+    },
   });
   const getFetchModeBadgeLabel = (mode?: string) => (
     mode === "api_pricing" ? "newapi" : "通用"
@@ -225,10 +251,17 @@ export default function ProvidersPage() {
         config: values.config,
         console: values.console || "",
         models_fetch_mode: values.models_fetch_mode,
+        capabilities: values.capabilities,
       });
       setOpen(false);
       toast.success(`提供商 ${values.name} 创建成功`);
-      form.reset({ name: "", models_fetch_mode: "v1_models", config: "", console: "" });
+      form.reset({
+        name: "",
+        models_fetch_mode: "v1_models",
+        config: "",
+        console: "",
+        capabilities: [...defaultProviderCapabilities],
+      });
       fetchProviders();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -245,11 +278,18 @@ export default function ProvidersPage() {
         config: values.config,
         console: values.console || "",
         models_fetch_mode: values.models_fetch_mode,
+        capabilities: values.capabilities,
       });
       setOpen(false);
       toast.success(`提供商 ${values.name} 更新成功`);
       setEditingProvider(null);
-      form.reset({ name: "", models_fetch_mode: "v1_models", config: "", console: "" });
+      form.reset({
+        name: "",
+        models_fetch_mode: "v1_models",
+        config: "",
+        console: "",
+        capabilities: [...defaultProviderCapabilities],
+      });
       fetchProviders();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -281,6 +321,7 @@ export default function ProvidersPage() {
       models_fetch_mode: provider.ModelsFetchMode === "api_pricing" ? "api_pricing" : "v1_models",
       config: provider.Config,
       console: provider.Console || "",
+      capabilities: normalizeProviderCapabilities(provider.Capabilities),
     });
     setOpen(true);
   };
@@ -306,6 +347,7 @@ export default function ProvidersPage() {
       models_fetch_mode: "v1_models",
       config: defaultConfig,
       console: "",
+      capabilities: [...defaultProviderCapabilities],
     });
     setOpen(true);
   };
@@ -522,6 +564,48 @@ export default function ProvidersPage() {
                     <FormMessage />
                   </FormItem>
                 )}
+              />
+
+              <FormField
+                control={form.control}
+                name="capabilities"
+                render={({ field }) => {
+                  const currentValues = Array.isArray(field.value) ? field.value : [];
+                  return (
+                    <FormItem>
+                      <FormLabel>接口支持能力（可多选）</FormLabel>
+                      <div className="grid gap-2 sm:grid-cols-3">
+                        {providerCapabilityOptions.map((option) => {
+                          const checked = currentValues.includes(option.value);
+                          return (
+                            <label
+                              key={option.value}
+                              className="flex cursor-pointer items-start gap-2 rounded-lg border border-border/70 px-3 py-2"
+                            >
+                              <Checkbox
+                                checked={checked}
+                                onCheckedChange={(next) => {
+                                  const shouldCheck = next === true;
+                                  const valueSet = new Set(currentValues);
+                                  if (shouldCheck) {
+                                    valueSet.add(option.value);
+                                  } else {
+                                    valueSet.delete(option.value);
+                                  }
+                                  field.onChange(Array.from(valueSet));
+                                }}
+                              />
+                              <span className="min-w-0">
+                                <span className="block text-sm font-medium leading-none">{option.label}</span>
+                              </span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                      <FormMessage />
+                    </FormItem>
+                  );
+                }}
               />
 
               <DialogFooter>

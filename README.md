@@ -94,6 +94,7 @@ docker run -d \
 - `BREAKER_ALERT_TG_CHAT_ID`
 - `BREAKER_ALERT_TG_API_BASE`（默认 `https://api.telegram.org`）
 - `BREAKER_ALERT_TG_PROXY_URL`（可选；显式指定 TG 请求代理）
+- `BREAKER_ALERT_TG_STATUS_IMAGE_URL`（可选；`/status` 与日报配图拉取地址）
 
 ## 认证与鉴权
 

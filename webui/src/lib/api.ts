@@ -9,6 +9,7 @@ export interface Provider {
   Config: string;
   Console: string;
   ModelsFetchMode?: "v1_models" | "api_pricing" | string;
+  Capabilities?: string[] | null;
 }
 
 export interface Model {
@@ -274,6 +275,7 @@ export async function createProvider(provider: {
   config: string;
   console: string;
   models_fetch_mode?: "v1_models" | "api_pricing";
+  capabilities?: string[];
 }): Promise<Provider> {
   return apiRequest<Provider>('/providers', {
     method: 'POST',
@@ -286,6 +288,7 @@ export async function updateProvider(id: number, provider: {
   config?: string;
   console?: string;
   models_fetch_mode?: "v1_models" | "api_pricing";
+  capabilities?: string[];
 }): Promise<Provider> {
   return apiRequest<Provider>(`/providers/${id}`, {
     method: 'PUT',
@@ -694,6 +697,7 @@ export interface TelegramBreakerAlertConfig {
   chat_id: string;
   api_base: string;
   proxy_url: string;
+  status_image_url: string;
 }
 
 export interface ModelPriceSyncConfig {

@@ -42,6 +42,14 @@ func BeforerOpenAI(data []byte) (*Before, error) {
 	if model == "" {
 		return nil, errors.New("model is empty")
 	}
+	// 单工具调用兜底：若 tool 消息缺失 tool_call_id，且上下文里能唯一确定 ID，则自动补全。
+	{
+		next, err := autofillSingleToolCallID(data)
+		if err != nil {
+			return nil, err
+		}
+		data = next
+	}
 	// Gemini 兼容层（可通过 GEMINI_COMPAT_ENABLED 开关）：
 	// 1) 移除 patternProperties
 	// 2) 降级 tool/function 历史，规避部分网关的 function_response.name 空值错误
@@ -221,6 +229,89 @@ func normalizeContentToText(v any) string {
 		}
 		return string(b)
 	}
+}
+
+func autofillSingleToolCallID(data []byte) ([]byte, error) {
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		// 非法 JSON 交给后续链路处理，这里不额外放大错误面。
+		return data, nil
+	}
+
+	rawMessages, ok := payload["messages"].([]any)
+	if !ok || len(rawMessages) == 0 {
+		return data, nil
+	}
+
+	candidates := make(map[string]struct{})
+	for _, raw := range rawMessages {
+		msg, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		role := strings.ToLower(strings.TrimSpace(asString(msg["role"])))
+		switch role {
+		case "assistant":
+			toolCalls, ok := msg["tool_calls"].([]any)
+			if !ok {
+				continue
+			}
+			for _, toolCallRaw := range toolCalls {
+				toolCall, ok := toolCallRaw.(map[string]any)
+				if !ok {
+					continue
+				}
+				id := strings.TrimSpace(asString(toolCall["id"]))
+				if id == "" {
+					continue
+				}
+				candidates[id] = struct{}{}
+			}
+		case "tool":
+			id := strings.TrimSpace(asString(msg["tool_call_id"]))
+			if id == "" {
+				continue
+			}
+			candidates[id] = struct{}{}
+		}
+	}
+
+	if len(candidates) != 1 {
+		return data, nil
+	}
+
+	var resolvedID string
+	for id := range candidates {
+		resolvedID = id
+	}
+	if resolvedID == "" {
+		return data, nil
+	}
+
+	changed := false
+	for _, raw := range rawMessages {
+		msg, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		role := strings.ToLower(strings.TrimSpace(asString(msg["role"])))
+		if role != "tool" {
+			continue
+		}
+		existing := strings.TrimSpace(asString(msg["tool_call_id"]))
+		if existing != "" {
+			continue
+		}
+		msg["tool_call_id"] = resolvedID
+		changed = true
+	}
+
+	if !changed {
+		return data, nil
+	}
+	payload["messages"] = rawMessages
+	return json.Marshal(payload)
 }
 
 func BeforerOpenAIRes(data []byte) (*Before, error) {

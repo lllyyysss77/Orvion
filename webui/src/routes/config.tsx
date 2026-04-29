@@ -13,6 +13,15 @@ import {
   FormLabel,
   FormMessage,
 } from '@/components/ui/form';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from '@/components/ui/dialog';
 import Loading from '@/components/loading';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Switch } from '@/components/ui/switch';
@@ -46,6 +55,7 @@ const telegramBreakerAlertSchema = z.object({
   chat_id: z.string().trim(),
   api_base: z.string().trim(),
   proxy_url: z.string().trim(),
+  status_image_url: z.string().trim(),
 }).refine((data) => !data.enabled || data.bot_token.length > 0, {
   message: '启用 TG 告警时必须填写 Bot Token',
   path: ['bot_token'],
@@ -58,6 +68,9 @@ const telegramBreakerAlertSchema = z.object({
 }).refine((data) => data.proxy_url.length === 0 || isValidURL(data.proxy_url), {
   message: '代理 URL 格式不正确',
   path: ['proxy_url'],
+}).refine((data) => data.status_image_url.length === 0 || isValidURL(data.status_image_url), {
+  message: '状态图片 URL 格式不正确',
+  path: ['status_image_url'],
 });
 
 const systemLogCleanupSchema = z.object({
@@ -107,6 +120,7 @@ export default function ConfigPage() {
   const [loading, setLoading] = useState(true);
   const [priceSyncing, setPriceSyncing] = useState(false);
   const [tgTesting, setTgTesting] = useState(false);
+  const [tgOptionalDialogOpen, setTgOptionalDialogOpen] = useState(false);
   const proxyForm = useForm<AnthropicProxyForm>({
     resolver: zodResolver(anthropicProxySchema),
     defaultValues: {
@@ -132,6 +146,7 @@ export default function ConfigPage() {
       chat_id: '',
       api_base: 'https://api.telegram.org',
       proxy_url: '',
+      status_image_url: 'https://i.mukyu.ru/random?wtf_gender=girls',
     },
   });
 
@@ -177,6 +192,7 @@ export default function ConfigPage() {
           chat_id: tgCfg.chat_id || '',
           api_base: tgCfg.api_base || 'https://api.telegram.org',
           proxy_url: tgCfg.proxy_url || '',
+          status_image_url: tgCfg.status_image_url || 'https://i.mukyu.ru/random?wtf_gender=girls',
         };
         telegramBreakerAlertForm.reset(nextTGConfig);
       }
@@ -256,6 +272,7 @@ export default function ConfigPage() {
   const onTelegramBreakerAlertSubmit = async (values: TelegramBreakerAlertForm) => {
     try {
       await configAPI.updateConfig('breaker_alert_tg', values);
+      setTgOptionalDialogOpen(false);
       toast.success('TG 告警配置已保存');
     } catch (error) {
       console.error('Failed to save telegram breaker alert config:', error);
@@ -436,35 +453,73 @@ export default function ConfigPage() {
                       </FormItem>
                     )}
                   />
-
-                  <FormField
-                    control={telegramBreakerAlertForm.control}
-                    name="api_base"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>TG API 地址</FormLabel>
-                        <FormControl>
-                          <Input placeholder="https://api.telegram.org" {...field} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-
-                  <FormField
-                    control={telegramBreakerAlertForm.control}
-                    name="proxy_url"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>发送代理 URL（可选）</FormLabel>
-                        <FormControl>
-                          <Input placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080" {...field} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
                 </form>
+
+                <Dialog open={tgOptionalDialogOpen} onOpenChange={setTgOptionalDialogOpen}>
+                  <DialogTrigger asChild>
+                    <Button type="button" variant="outline" className="w-full">
+                      编辑 TG 可选配置
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent className="sm:max-w-xl">
+                    <DialogHeader>
+                      <DialogTitle>TG 可选配置</DialogTitle>
+                      <DialogDescription>
+                        这些配置是可选项，不填写时系统会使用默认值。
+                      </DialogDescription>
+                    </DialogHeader>
+
+                    <div className="space-y-4">
+                      <FormField
+                        control={telegramBreakerAlertForm.control}
+                        name="api_base"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>TG API 地址</FormLabel>
+                            <FormControl>
+                              <Input placeholder="https://api.telegram.org" {...field} />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+
+                      <FormField
+                        control={telegramBreakerAlertForm.control}
+                        name="proxy_url"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>发送代理 URL（可选）</FormLabel>
+                            <FormControl>
+                              <Input placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080" {...field} />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+
+                      <FormField
+                        control={telegramBreakerAlertForm.control}
+                        name="status_image_url"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>/status 图片 URL（可选）</FormLabel>
+                            <FormControl>
+                              <Input placeholder="https://i.mukyu.ru/random?wtf_gender=girls" {...field} />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                    </div>
+
+                    <DialogFooter>
+                      <Button type="button" variant="outline" onClick={() => setTgOptionalDialogOpen(false)}>
+                        完成
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
               </Form>
             </CardContent>
             <CardFooter className="flex justify-between">

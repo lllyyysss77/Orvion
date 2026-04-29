@@ -26,10 +26,11 @@ import (
 
 // ProviderRequest represents the request body for creating/updating a provider
 type ProviderRequest struct {
-	Name            string `json:"name"`
-	Config          string `json:"config"`
-	Console         string `json:"console"`
-	ModelsFetchMode string `json:"models_fetch_mode"`
+	Name            string   `json:"name"`
+	Config          string   `json:"config"`
+	Console         string   `json:"console"`
+	ModelsFetchMode string   `json:"models_fetch_mode"`
+	Capabilities    []string `json:"capabilities"`
 }
 
 const (
@@ -159,6 +160,10 @@ func normalizeModelsFetchMode(raw string) string {
 	}
 }
 
+func normalizeProviderCapabilities(values []string) models.ProviderCapabilities {
+	return models.NormalizeProviderCapabilities(values)
+}
+
 func listProviderModelsWithMode(ctx context.Context, provider models.Provider) ([]providers.Model, error) {
 	mode := normalizeModelsFetchMode(provider.ModelsFetchMode)
 	if mode == modelsFetchModePricing {
@@ -283,6 +288,7 @@ func CreateProvider(c *gin.Context) {
 		Config:          req.Config,
 		Console:         req.Console,
 		ModelsFetchMode: normalizeModelsFetchMode(req.ModelsFetchMode),
+		Capabilities:    normalizeProviderCapabilities(req.Capabilities),
 	}
 
 	if err := gorm.G[models.Provider](models.DB).Create(c.Request.Context(), &provider); err != nil {
@@ -324,6 +330,7 @@ func UpdateProvider(c *gin.Context) {
 		Config:          req.Config,
 		Console:         req.Console,
 		ModelsFetchMode: normalizeModelsFetchMode(req.ModelsFetchMode),
+		Capabilities:    normalizeProviderCapabilities(req.Capabilities),
 	}
 
 	if _, err := gorm.G[models.Provider](models.DB).Where("id = ?", id).Updates(c.Request.Context(), updates); err != nil {
