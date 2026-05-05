@@ -711,6 +711,14 @@ export interface SystemLogCleanupConfig {
   interval_minutes: number;
 }
 
+export interface GitHubVersionCheckConfig {
+  enabled: boolean;
+}
+
+export interface LoadingUIConfig {
+  style: "rocket_trail" | "star_dash" | "jelly_wave" | "candy_slide";
+}
+
 export const configAPI = {
   getConfig: (key: string) =>
     apiRequest<ConfigResponse>(`/config/${key}`),
@@ -807,6 +815,7 @@ export interface SystemLogSnapshot {
   process?: {
     memory_bytes: number;
     cpu_percent: number;
+    goroutines: number;
   };
 }
 
@@ -1081,7 +1090,8 @@ export interface VersionUpdateCheck {
   release?: VersionReleaseInfo;
   backendFetchSuccess?: boolean;
   suggestBrowserFetch?: boolean;
-  fetchSource?: "backend" | "browser";
+  disabled?: boolean;
+  fetchSource?: "backend" | "browser" | "disabled";
 }
 
 const GITHUB_TAGS_API_URL = "https://api.github.com/repos/raciott/llmio/tags?per_page=1";

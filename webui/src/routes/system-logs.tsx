@@ -15,7 +15,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { clearSystemLogs, getSystemLogs, type SystemLogSnapshot } from "@/lib/api";
-import { Copy, Cpu, Download, FileTerminal, HardDrive, Pause, Play, RefreshCw, Trash2 } from "lucide-react";
+import { Cpu, Download, FileTerminal, GitBranch, HardDrive, RefreshCw, Trash2 } from "lucide-react";
 
 const POLL_INTERVAL_MS = 3_000;
 const DEFAULT_LINE_LIMIT = 200;
@@ -38,6 +38,13 @@ const formatCpuPercent = (value?: number) => {
     return "--";
   }
   return `${value.toFixed(2)}%`;
+};
+
+const formatCount = (value?: number) => {
+  if (!Number.isFinite(value as number) || value == null || value < 0) {
+    return "--";
+  }
+  return Math.round(value).toLocaleString();
 };
 
 const getLineTone = (line: string) => {
@@ -67,7 +74,6 @@ export default function SystemLogsPage() {
   const [snapshot, setSnapshot] = useState<SystemLogSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [autoRefresh, setAutoRefresh] = useState(true);
   const [clearDialogOpen, setClearDialogOpen] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [keyword, setKeyword] = useState("");
@@ -108,16 +114,12 @@ export default function SystemLogsPage() {
   }, [fetchSnapshot]);
 
   useEffect(() => {
-    if (!autoRefresh) {
-      return undefined;
-    }
-
     const timer = window.setInterval(() => {
       void fetchSnapshot(false);
     }, POLL_INTERVAL_MS);
 
     return () => window.clearInterval(timer);
-  }, [autoRefresh, fetchSnapshot]);
+  }, [fetchSnapshot]);
 
   const lines = useMemo(() => {
     const content = snapshot?.content ?? "";
@@ -152,15 +154,6 @@ export default function SystemLogsPage() {
     }
     const distanceToBottom = viewer.scrollHeight - viewer.scrollTop - viewer.clientHeight;
     stickToBottomRef.current = distanceToBottom < 80;
-  };
-
-  const handleCopy = async () => {
-    if (!snapshot?.content) {
-      toast.warning("当前没有可复制的日志内容");
-      return;
-    }
-    await navigator.clipboard.writeText(snapshot.content);
-    toast.success("系统日志已复制");
   };
 
   const handleClearLogs = async () => {
@@ -214,28 +207,10 @@ export default function SystemLogsPage() {
             variant="outline"
             size="sm"
             className="rounded-full"
-            onClick={() => setAutoRefresh((value) => !value)}
-          >
-            {autoRefresh ? <Pause className="size-4" /> : <Play className="size-4" />}
-            {autoRefresh ? "暂停刷新" : "恢复刷新"}
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            className="rounded-full"
             onClick={() => void fetchSnapshot(false)}
           >
             <RefreshCw className={cn("size-4", refreshing && "animate-spin")} />
             刷新
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            className="rounded-full"
-            onClick={() => void handleCopy()}
-          >
-            <Copy className="size-4" />
-            复制
           </Button>
           <Button
             variant="outline"
@@ -258,7 +233,7 @@ export default function SystemLogsPage() {
         </div>
       </div>
 
-      <div className="grid gap-3 md:grid-cols-2">
+      <div className="grid gap-3 md:grid-cols-3">
         <div className="rounded-2xl border border-border/60 bg-card/90 px-4 py-3 shadow-sm">
           <div className="text-xs text-muted-foreground">当前进程内存</div>
           <div className="mt-1 inline-flex items-center gap-1 text-sm font-medium">
@@ -271,6 +246,13 @@ export default function SystemLogsPage() {
           <div className="mt-1 inline-flex items-center gap-1 text-sm font-medium">
             <Cpu className="size-3.5 text-muted-foreground" />
             {formatCpuPercent(snapshot?.process?.cpu_percent)}
+          </div>
+        </div>
+        <div className="rounded-2xl border border-border/60 bg-card/90 px-4 py-3 shadow-sm">
+          <div className="text-xs text-muted-foreground">当前协程数</div>
+          <div className="mt-1 inline-flex items-center gap-1 text-sm font-medium">
+            <GitBranch className="size-3.5 text-muted-foreground" />
+            {formatCount(snapshot?.process?.goroutines)}
           </div>
         </div>
       </div>

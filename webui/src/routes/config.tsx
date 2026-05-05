@@ -13,15 +13,6 @@ import {
   FormLabel,
   FormMessage,
 } from '@/components/ui/form';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from '@/components/ui/dialog';
 import Loading from '@/components/loading';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Switch } from '@/components/ui/switch';
@@ -31,9 +22,17 @@ import {
   type TelegramBreakerAlertConfig,
   type ModelPriceSyncConfig,
   type SystemLogCleanupConfig,
+  type GitHubVersionCheckConfig,
+  type LoadingUIConfig,
 } from '@/lib/api';
 import { toast } from 'sonner';
-import { Settings, Network, Coins, FileClock, Type, Send } from 'lucide-react';
+import { Settings, Network, Coins, FileClock, Type, Send, Github, Sparkles } from 'lucide-react';
+import {
+  applyLoadingUIStyleSetting,
+  loadingUIValues,
+  resolveLoadingUIStyle,
+  type LoadingUIStyle,
+} from '@/lib/loading-ui';
 
 const anthropicProxySchema = z.object({
   enabled: z.boolean(),
@@ -82,11 +81,21 @@ const uiFontSchema = z.object({
   font: z.enum(['default', 'kunming_seagull', 'fenyuan', 'lxgw_wenkai']),
 });
 
+const githubVersionCheckSchema = z.object({
+  enabled: z.boolean(),
+});
+
+const loadingUISchema = z.object({
+  style: z.enum(loadingUIValues),
+});
+
 type AnthropicProxyForm = z.infer<typeof anthropicProxySchema>;
 type TelegramBreakerAlertForm = z.infer<typeof telegramBreakerAlertSchema>;
 type PriceSyncForm = z.infer<typeof priceSyncSchema>;
 type SystemLogCleanupForm = z.infer<typeof systemLogCleanupSchema>;
 type UIFontForm = z.infer<typeof uiFontSchema>;
+type GitHubVersionCheckForm = z.infer<typeof githubVersionCheckSchema>;
+type LoadingUIForm = z.infer<typeof loadingUISchema>;
 
 const UI_FONT_STORAGE_KEY = "orvion_ui_font";
 
@@ -96,6 +105,13 @@ const resolveUIFont = (font?: string): UIFontForm['font'] => {
   }
   return 'default';
 };
+
+const loadingUIOptions: { value: LoadingUIStyle; label: string; description: string }[] = [
+  { value: 'rocket_trail', label: '火箭轨道', description: '轻快的火箭往返滑动效果' },
+  { value: 'star_dash', label: '星星疾行', description: '闪亮星星沿虚线轨道穿梭' },
+  { value: 'jelly_wave', label: '果冻波浪', description: '柔和果冻条上下弹跳律动' },
+  { value: 'candy_slide', label: '糖果滑轨', description: '糖果色滑块和爱心跳跃动效' },
+];
 
 const isValidURL = (raw: string): boolean => {
   try {
@@ -120,7 +136,8 @@ export default function ConfigPage() {
   const [loading, setLoading] = useState(true);
   const [priceSyncing, setPriceSyncing] = useState(false);
   const [tgTesting, setTgTesting] = useState(false);
-  const [tgOptionalDialogOpen, setTgOptionalDialogOpen] = useState(false);
+  const [displayConfigSaving, setDisplayConfigSaving] = useState(false);
+  const [coreConfigSaving, setCoreConfigSaving] = useState(false);
   const proxyForm = useForm<AnthropicProxyForm>({
     resolver: zodResolver(anthropicProxySchema),
     defaultValues: {
@@ -162,6 +179,20 @@ export default function ConfigPage() {
     resolver: zodResolver(uiFontSchema),
     defaultValues: {
       font: 'default',
+    },
+  });
+
+  const githubVersionCheckForm = useForm<GitHubVersionCheckForm>({
+    resolver: zodResolver(githubVersionCheckSchema),
+    defaultValues: {
+      enabled: true,
+    },
+  });
+
+  const loadingUIForm = useForm<LoadingUIForm>({
+    resolver: zodResolver(loadingUISchema),
+    defaultValues: {
+      style: 'rocket_trail',
     },
   });
 
@@ -242,37 +273,40 @@ export default function ConfigPage() {
       console.error('Failed to load ui font config:', error);
     }
 
+    try {
+      const githubVersionCheckResponse = await configAPI.getConfig('github_version_check');
+      if (githubVersionCheckResponse.value) {
+        const githubVersionCheckCfg = JSON.parse(githubVersionCheckResponse.value) as GitHubVersionCheckConfig;
+        githubVersionCheckForm.reset({
+          enabled: githubVersionCheckCfg.enabled !== false,
+        });
+      }
+    } catch (error) {
+      console.error('Failed to load github version check config:', error);
+    }
+
+    try {
+      const loadingUIResponse = await configAPI.getConfig('ui_loading_style');
+      if (loadingUIResponse.value) {
+        const loadingUICfg = JSON.parse(loadingUIResponse.value) as LoadingUIConfig;
+        const nextStyle = resolveLoadingUIStyle(loadingUICfg.style);
+        loadingUIForm.reset({ style: nextStyle });
+        applyLoadingUIStyleSetting(nextStyle);
+      }
+    } catch (error) {
+      console.error('Failed to load loading ui config:', error);
+    }
+
     setLoading(false);
-  }, [priceSyncForm, proxyForm, systemLogCleanupForm, telegramBreakerAlertForm, uiFontForm]);
+  }, [githubVersionCheckForm, loadingUIForm, priceSyncForm, proxyForm, systemLogCleanupForm, telegramBreakerAlertForm, uiFontForm]);
 
   useEffect(() => {
     void fetchConfig();
   }, [fetchConfig]);
 
-  const onProxySubmit = async (values: AnthropicProxyForm) => {
-    try {
-      await configAPI.updateConfig('anthropic_proxy_ip', values);
-      toast.success('全局代理 IP 配置已保存');
-    } catch (error) {
-      console.error('Failed to save anthropic proxy config:', error);
-      toast.error('保存全局代理 IP 配置失败');
-    }
-  };
-
-  const onPriceSyncSubmit = async (values: PriceSyncForm) => {
-    try {
-      await configAPI.updateConfig('model_price_sync', values);
-      toast.success('模型价格同步配置已保存');
-    } catch (error) {
-      console.error('Failed to save model price sync config:', error);
-      toast.error('保存模型价格同步配置失败');
-    }
-  };
-
   const onTelegramBreakerAlertSubmit = async (values: TelegramBreakerAlertForm) => {
     try {
       await configAPI.updateConfig('breaker_alert_tg', values);
-      setTgOptionalDialogOpen(false);
       toast.success('TG 告警配置已保存');
     } catch (error) {
       console.error('Failed to save telegram breaker alert config:', error);
@@ -294,24 +328,65 @@ export default function ConfigPage() {
     }
   };
 
-  const onSystemLogCleanupSubmit = async (values: SystemLogCleanupForm) => {
+  const onCoreConfigSubmit = async () => {
+    const [cleanupValid, priceSyncValid, proxyValid] = await Promise.all([
+      systemLogCleanupForm.trigger(),
+      priceSyncForm.trigger(),
+      proxyForm.trigger(),
+    ]);
+    if (!cleanupValid || !priceSyncValid || !proxyValid) {
+      return;
+    }
+
+    const cleanupValues = systemLogCleanupForm.getValues();
+    const priceSyncValues = priceSyncForm.getValues();
+    const proxyValues = proxyForm.getValues();
+
     try {
-      await configAPI.updateConfig('system_log_cleanup', values);
-      toast.success('系统日志自动清理配置已保存');
+      setCoreConfigSaving(true);
+      await Promise.all([
+        configAPI.updateConfig('system_log_cleanup', cleanupValues),
+        configAPI.updateConfig('model_price_sync', priceSyncValues),
+        configAPI.updateConfig('anthropic_proxy_ip', proxyValues),
+      ]);
+      toast.success('核心配置已保存');
     } catch (error) {
-      console.error('Failed to save system log cleanup config:', error);
-      toast.error('保存系统日志自动清理配置失败');
+      console.error('Failed to save core config:', error);
+      toast.error('保存核心配置失败');
+    } finally {
+      setCoreConfigSaving(false);
     }
   };
 
-  const onUIFontSubmit = async (values: UIFontForm) => {
+  const onDisplayConfigSubmit = async () => {
+    const [githubValid, fontValid, loadingUIValid] = await Promise.all([
+      githubVersionCheckForm.trigger(),
+      uiFontForm.trigger(),
+      loadingUIForm.trigger(),
+    ]);
+    if (!githubValid || !fontValid || !loadingUIValid) {
+      return;
+    }
+
+    const githubValues = githubVersionCheckForm.getValues();
+    const fontValues = uiFontForm.getValues();
+    const loadingUIValues = loadingUIForm.getValues();
+
     try {
-      await configAPI.updateConfig('ui_font', values);
-      applyUIFontSetting(values.font);
-      toast.success('界面字体配置已保存');
+      setDisplayConfigSaving(true);
+      await Promise.all([
+        configAPI.updateConfig('github_version_check', githubValues),
+        configAPI.updateConfig('ui_font', fontValues),
+        configAPI.updateConfig('ui_loading_style', loadingUIValues),
+      ]);
+      applyUIFontSetting(fontValues.font);
+      applyLoadingUIStyleSetting(loadingUIValues.style);
+      toast.success('系统显示配置已保存');
     } catch (error) {
-      console.error('Failed to save ui font config:', error);
-      toast.error('保存界面字体配置失败');
+      console.error('Failed to save display config:', error);
+      toast.error('保存系统显示配置失败');
+    } finally {
+      setDisplayConfigSaving(false);
     }
   };
 
@@ -329,7 +404,11 @@ export default function ConfigPage() {
   };
 
   if (loading) {
-    return <Loading />;
+    return (
+      <div className="flex h-full min-h-0 items-center justify-center">
+        <Loading />
+      </div>
+    );
   }
 
   return (
@@ -350,50 +429,142 @@ export default function ConfigPage() {
           <Card className="rounded-2xl border border-border/60 bg-card/90 shadow-[0_18px_45px_rgba(0,0,0,0.08)]">
             <CardHeader className="pb-2">
               <CardTitle className="flex items-center gap-2 text-sm font-semibold">
-                <Network className="size-4 text-emerald-600" />
-                全局代理 IP 配置
+                <Settings className="size-4 text-emerald-600" />
+                系统显示配置
               </CardTitle>
               <CardDescription className="text-xs">
-                用于覆盖所有接口转发请求的 X-Forwarded-For 与 X-Real-IP
+                控制后台版本检查、界面字体与加载动效样式
               </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-4">
-              <Form {...proxyForm}>
-                <form id="proxy-form" onSubmit={proxyForm.handleSubmit(onProxySubmit)} className="space-y-4">
-                  <FormField
-                    control={proxyForm.control}
-                    name="enabled"
-                    render={({ field }) => (
-                      <FormItem className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/50 px-3 py-2">
-                        <FormLabel className="text-xs text-muted-foreground">启用代理 IP</FormLabel>
-                        <FormControl>
-                          <Switch
-                            checked={field.value === true}
-                            onCheckedChange={(checked) => field.onChange(checked === true)}
-                          />
-                        </FormControl>
-                      </FormItem>
-                    )}
-                  />
+            <CardContent className="space-y-3">
+              <div className="space-y-3">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                    <Github className="size-4 text-emerald-600" />
+                    GitHub 更新检查
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    控制后台是否定时连接 GitHub 检查新版本
+                  </p>
+                </div>
+                <Form {...githubVersionCheckForm}>
+                  <div className="space-y-3">
+                    <FormField
+                      control={githubVersionCheckForm.control}
+                      name="enabled"
+                      render={({ field }) => (
+                        <FormItem className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/50 px-3 py-2">
+                          <FormLabel className="text-xs text-muted-foreground">启用更新检查</FormLabel>
+                          <FormControl>
+                            <Switch
+                              checked={field.value === true}
+                              onCheckedChange={(checked) => field.onChange(checked === true)}
+                            />
+                          </FormControl>
+                        </FormItem>
+                      )}
+                    />
+                  </div>
+                </Form>
+              </div>
 
-                  <FormField
-                    control={proxyForm.control}
-                    name="proxy_ip"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>代理 IP</FormLabel>
-                        <FormControl>
-                          <Input placeholder="203.0.113.10" {...field} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                </form>
-              </Form>
+              <div className="space-y-3 border-t border-border/60 pt-2">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                    <Type className="size-4 text-emerald-600" />
+                    界面字体配置
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    当前支持默认字体、昆明海鸥体、粉圆体和霞鹜文楷
+                  </p>
+                </div>
+                <Form {...uiFontForm}>
+                  <div className="space-y-3">
+                    <FormField
+                      control={uiFontForm.control}
+                      name="font"
+                      render={({ field }) => (
+                        <FormItem className="space-y-1">
+                          <div className="flex items-center gap-1.5">
+                            <FormLabel className="w-[3.75rem] shrink-0 text-xs text-muted-foreground">字体</FormLabel>
+                            <FormControl>
+                              <Select value={field.value} onValueChange={(value) => field.onChange(value as UIFontForm['font'])}>
+                                <SelectTrigger className="h-9 w-full bg-white">
+                                  <SelectValue placeholder="选择字体" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="default">默认字体</SelectItem>
+                                  <SelectItem value="kunming_seagull">昆明海鸥体</SelectItem>
+                                  <SelectItem value="fenyuan">粉圆体</SelectItem>
+                                  <SelectItem value="lxgw_wenkai">霞鹜文楷</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </FormControl>
+                          </div>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  </div>
+                </Form>
+              </div>
+
+              <div className="space-y-3 border-t border-border/60 pt-2">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                    <Sparkles className="size-4 text-emerald-600" />
+                    加载 UI 切换
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    选择全局加载动画样式，支持多套可爱风动效
+                  </p>
+                </div>
+                <Form {...loadingUIForm}>
+                  <div className="space-y-3">
+                    <FormField
+                      control={loadingUIForm.control}
+                      name="style"
+                      render={({ field }) => (
+                        <FormItem className="space-y-1">
+                          <div className="flex items-center gap-1.5">
+                            <FormLabel className="w-[3.75rem] shrink-0 text-xs text-muted-foreground">加载样式</FormLabel>
+                            <FormControl>
+                              <Select
+                                value={field.value}
+                                onValueChange={(value) => {
+                                  const nextValue = resolveLoadingUIStyle(value);
+                                  field.onChange(nextValue);
+                                  applyLoadingUIStyleSetting(nextValue);
+                                }}
+                              >
+                                <SelectTrigger className="h-9 w-full bg-white">
+                                  <SelectValue placeholder="选择加载样式" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {loadingUIOptions.map((option) => (
+                                    <SelectItem key={option.value} value={option.value}>
+                                      {option.label}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </FormControl>
+                          </div>
+                          <p className="text-[11px] text-muted-foreground">
+                            {loadingUIOptions.find((option) => option.value === field.value)?.description ?? ''}
+                          </p>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  </div>
+                </Form>
+              </div>
             </CardContent>
-            <CardFooter className="flex justify-between">
-              <Button type="submit" form="proxy-form">保存配置</Button>
+            <CardFooter className="justify-end">
+              <Button type="button" onClick={() => void onDisplayConfigSubmit()} disabled={displayConfigSaving}>
+                {displayConfigSaving ? '保存中...' : '保存配置'}
+              </Button>
             </CardFooter>
           </Card>
 
@@ -404,7 +575,7 @@ export default function ConfigPage() {
                 TG 告警配置
               </CardTitle>
               <CardDescription className="text-xs">
-                配置熔断告警发送到 Telegram 的 Bot 参数与发送代理。保存后可在 TG 对话中发送 /status 或 /help。
+                配置熔断告警发送到 Telegram 的 Bot 参数与发送代理。
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -430,11 +601,13 @@ export default function ConfigPage() {
                     control={telegramBreakerAlertForm.control}
                     name="bot_token"
                     render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Bot Token</FormLabel>
-                        <FormControl>
-                          <Input type="password" placeholder="123456789:AA..." {...field} />
-                        </FormControl>
+                      <FormItem className="space-y-1">
+                        <div className="flex items-center gap-1.5">
+                          <FormLabel className="w-[3.75rem] shrink-0 text-xs text-muted-foreground">Bot Token</FormLabel>
+                          <FormControl>
+                            <Input type="password" placeholder="123456789:AA..." {...field} />
+                          </FormControl>
+                        </div>
                         <FormMessage />
                       </FormItem>
                     )}
@@ -444,41 +617,30 @@ export default function ConfigPage() {
                     control={telegramBreakerAlertForm.control}
                     name="chat_id"
                     render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Chat ID</FormLabel>
-                        <FormControl>
-                          <Input placeholder="-1001234567890" {...field} />
-                        </FormControl>
+                      <FormItem className="space-y-1">
+                        <div className="flex items-center gap-1.5">
+                          <FormLabel className="w-[3.75rem] shrink-0 text-xs text-muted-foreground">Chat ID</FormLabel>
+                          <FormControl>
+                            <Input placeholder="-1001234567890" {...field} />
+                          </FormControl>
+                        </div>
                         <FormMessage />
                       </FormItem>
                     )}
                   />
-                </form>
 
-                <Dialog open={tgOptionalDialogOpen} onOpenChange={setTgOptionalDialogOpen}>
-                  <DialogTrigger asChild>
-                    <Button type="button" variant="outline" className="w-full">
-                      编辑 TG 可选配置
-                    </Button>
-                  </DialogTrigger>
-                  <DialogContent className="sm:max-w-xl">
-                    <DialogHeader>
-                      <DialogTitle>TG 可选配置</DialogTitle>
-                      <DialogDescription>
-                        这些配置是可选项，不填写时系统会使用默认值。
-                      </DialogDescription>
-                    </DialogHeader>
-
-                    <div className="space-y-4">
+                  <div className="space-y-3">
                       <FormField
                         control={telegramBreakerAlertForm.control}
                         name="api_base"
                         render={({ field }) => (
-                          <FormItem>
-                            <FormLabel>TG API 地址</FormLabel>
-                            <FormControl>
-                              <Input placeholder="https://api.telegram.org" {...field} />
-                            </FormControl>
+                          <FormItem className="space-y-1">
+                            <div className="flex items-center gap-1.5">
+                              <FormLabel className="w-[3.75rem] shrink-0 text-xs text-muted-foreground">TG API</FormLabel>
+                              <FormControl>
+                                <Input placeholder="https://api.telegram.org" {...field} />
+                              </FormControl>
+                            </div>
                             <FormMessage />
                           </FormItem>
                         )}
@@ -488,11 +650,13 @@ export default function ConfigPage() {
                         control={telegramBreakerAlertForm.control}
                         name="proxy_url"
                         render={({ field }) => (
-                          <FormItem>
-                            <FormLabel>发送代理 URL（可选）</FormLabel>
-                            <FormControl>
-                              <Input placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080" {...field} />
-                            </FormControl>
+                          <FormItem className="space-y-1">
+                            <div className="flex items-center gap-1.5">
+                              <FormLabel className="w-[3.75rem] shrink-0 text-xs text-muted-foreground">代理 URL</FormLabel>
+                              <FormControl>
+                                <Input placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080" {...field} />
+                              </FormControl>
+                            </div>
                             <FormMessage />
                           </FormItem>
                         )}
@@ -502,24 +666,19 @@ export default function ConfigPage() {
                         control={telegramBreakerAlertForm.control}
                         name="status_image_url"
                         render={({ field }) => (
-                          <FormItem>
-                            <FormLabel>/status 图片 URL（可选）</FormLabel>
-                            <FormControl>
-                              <Input placeholder="https://i.mukyu.ru/random?wtf_gender=girls" {...field} />
-                            </FormControl>
+                          <FormItem className="space-y-1">
+                            <div className="flex items-center gap-1.5">
+                              <FormLabel className="w-[3.75rem] shrink-0 text-xs text-muted-foreground">图片 URL</FormLabel>
+                              <FormControl>
+                                <Input placeholder="https://i.mukyu.ru/random?wtf_gender=girls" {...field} />
+                              </FormControl>
+                            </div>
                             <FormMessage />
                           </FormItem>
                         )}
                       />
-                    </div>
-
-                    <DialogFooter>
-                      <Button type="button" variant="outline" onClick={() => setTgOptionalDialogOpen(false)}>
-                        完成
-                      </Button>
-                    </DialogFooter>
-                  </DialogContent>
-                </Dialog>
+                  </div>
+                </form>
               </Form>
             </CardContent>
             <CardFooter className="flex justify-between">
@@ -534,172 +693,193 @@ export default function ConfigPage() {
             <CardHeader className="pb-2">
               <CardTitle className="flex items-center gap-2 text-sm font-semibold">
                 <Coins className="size-4 text-emerald-600" />
-                模型价格同步配置
+                核心配置
               </CardTitle>
               <CardDescription className="text-xs">
-                配置模型价格表的定时同步间隔
+                核心运行能力配置：系统日志清理、模型价格同步、全局代理 IP
               </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-4">
-              <Form {...priceSyncForm}>
-                <form id="price-sync-form" onSubmit={priceSyncForm.handleSubmit(onPriceSyncSubmit)} className="space-y-4">
-                  <FormField
-                    control={priceSyncForm.control}
-                    name="enabled"
-                    render={({ field }) => (
-                      <FormItem className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/50 px-3 py-2">
-                        <FormLabel className="text-xs text-muted-foreground">启用同步</FormLabel>
-                        <FormControl>
-                          <Switch
-                            checked={field.value === true}
-                            onCheckedChange={(checked) => field.onChange(checked === true)}
-                          />
-                        </FormControl>
-                      </FormItem>
-                    )}
-                  />
-
-                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <CardContent className="space-y-3">
+              <div className="space-y-2">
+                <div className="space-y-0.5">
+                  <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                    <FileClock className="size-4 text-emerald-600" />
+                    系统日志自动清理
+                  </div>
+                </div>
+                <Form {...systemLogCleanupForm}>
+                  <div className="grid grid-cols-[minmax(0,1fr)_140px] items-start gap-3">
                     <FormField
-                      control={priceSyncForm.control}
-                      name="interval_minutes"
+                      control={systemLogCleanupForm.control}
+                      name="enabled"
                       render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>执行间隔（分钟）</FormLabel>
+                        <FormItem className="flex h-9 items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/50 px-3">
+                          <FormLabel className="text-xs text-muted-foreground">启用自动清理</FormLabel>
                           <FormControl>
-                            <Input
-                              type="number"
-                              min={1}
-                              value={field.value}
-                              onChange={(event) => field.onChange(Number(event.target.value))}
+                            <Switch
+                              checked={field.value === true}
+                              onCheckedChange={(checked) => field.onChange(checked === true)}
                             />
                           </FormControl>
-                          <FormMessage />
                         </FormItem>
                       )}
                     />
 
                     <FormField
-                      control={priceSyncForm.control}
-                      name="source_url"
+                      control={systemLogCleanupForm.control}
+                      name="interval_minutes"
                       render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>数据源</FormLabel>
+                        <FormItem className="space-y-0">
+                          <FormLabel className="sr-only">清理间隔（分钟）</FormLabel>
                           <FormControl>
-                            <Input placeholder="https://models.dev/api.json" {...field} />
+                            <div className="relative">
+                              <Input
+                                className="h-9 pr-10"
+                                type="number"
+                                min={1}
+                                placeholder="清理间隔"
+                                value={field.value}
+                                onChange={(event) => field.onChange(Number(event.target.value))}
+                              />
+                              <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">
+                                分钟
+                              </span>
+                            </div>
                           </FormControl>
                           <FormMessage />
                         </FormItem>
                       )}
                     />
                   </div>
-                </form>
-              </Form>
+                </Form>
+              </div>
+
+              <div className="space-y-2 border-t border-border/60 pt-2">
+                <div className="space-y-0.5">
+                  <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                    <Coins className="size-4 text-emerald-600" />
+                    模型价格同步配置
+                  </div>
+                </div>
+                <Form {...priceSyncForm}>
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-[minmax(0,1fr)_140px] items-start gap-3">
+                      <FormField
+                        control={priceSyncForm.control}
+                        name="enabled"
+                        render={({ field }) => (
+                          <FormItem className="flex h-9 items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/50 px-3">
+                            <FormLabel className="text-xs text-muted-foreground">启用同步</FormLabel>
+                            <FormControl>
+                              <Switch
+                                checked={field.value === true}
+                                onCheckedChange={(checked) => field.onChange(checked === true)}
+                              />
+                            </FormControl>
+                          </FormItem>
+                        )}
+                      />
+
+                      <FormField
+                        control={priceSyncForm.control}
+                        name="interval_minutes"
+                        render={({ field }) => (
+                          <FormItem className="space-y-0">
+                            <FormLabel className="sr-only">执行间隔（分钟）</FormLabel>
+                            <FormControl>
+                              <div className="relative">
+                                <Input
+                                  className="h-9 pr-10"
+                                  type="number"
+                                  min={1}
+                                  placeholder="执行间隔"
+                                  value={field.value}
+                                  onChange={(event) => field.onChange(Number(event.target.value))}
+                                />
+                                <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">
+                                  分钟
+                                </span>
+                              </div>
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-1">
+                      <FormField
+                        control={priceSyncForm.control}
+                        name="source_url"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>数据源</FormLabel>
+                            <FormControl>
+                              <Input placeholder="https://models.dev/api.json" {...field} />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                    </div>
+                  </div>
+                </Form>
+              </div>
+
+              <div className="space-y-3 border-t border-border/60 pt-2">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                    <Network className="size-4 text-emerald-600" />
+                    全局 IP 覆盖配置
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    用于覆盖所有接口转发请求的 X-Forwarded-For 与 X-Real-IP
+                  </p>
+                </div>
+                <Form {...proxyForm}>
+                  <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)] items-end gap-3">
+                    <FormField
+                      control={proxyForm.control}
+                      name="enabled"
+                      render={({ field }) => (
+                        <FormItem className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/50 px-3 py-2">
+                          <FormLabel className="text-xs text-muted-foreground">启用代理 IP</FormLabel>
+                          <FormControl>
+                            <Switch
+                              checked={field.value === true}
+                              onCheckedChange={(checked) => field.onChange(checked === true)}
+                            />
+                          </FormControl>
+                        </FormItem>
+                      )}
+                    />
+
+                    <FormField
+                      control={proxyForm.control}
+                      name="proxy_ip"
+                      render={({ field }) => (
+                        <FormItem className="space-y-1">
+                          <div className="flex items-center gap-1.5">
+                            <FormLabel className="shrink-0 text-xs text-muted-foreground">代理 IP</FormLabel>
+                            <FormControl>
+                              <Input className="h-9" placeholder="203.0.113.10" {...field} />
+                            </FormControl>
+                          </div>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  </div>
+                </Form>
+              </div>
             </CardContent>
             <CardFooter className="flex justify-between">
               <Button type="button" variant="outline" onClick={handleRunPriceSync} disabled={priceSyncing}>
                 {priceSyncing ? '正在拉取...' : '立刻拉取'}
               </Button>
-              <Button type="submit" form="price-sync-form">保存配置</Button>
-            </CardFooter>
-          </Card>
-
-          <Card className="rounded-2xl border border-border/60 bg-card/90 shadow-[0_18px_45px_rgba(0,0,0,0.08)]">
-            <CardHeader className="pb-2">
-              <CardTitle className="flex items-center gap-2 text-sm font-semibold">
-                <FileClock className="size-4 text-emerald-600" />
-                系统日志自动清理
-              </CardTitle>
-              <CardDescription className="text-xs">
-                定时清空系统日志文件内容，避免日志文件持续增大
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <Form {...systemLogCleanupForm}>
-                <form id="system-log-cleanup-form" onSubmit={systemLogCleanupForm.handleSubmit(onSystemLogCleanupSubmit)} className="space-y-4">
-                  <FormField
-                    control={systemLogCleanupForm.control}
-                    name="enabled"
-                    render={({ field }) => (
-                      <FormItem className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/50 px-3 py-2">
-                        <FormLabel className="text-xs text-muted-foreground">启用自动清理</FormLabel>
-                        <FormControl>
-                          <Switch
-                            checked={field.value === true}
-                            onCheckedChange={(checked) => field.onChange(checked === true)}
-                          />
-                        </FormControl>
-                      </FormItem>
-                    )}
-                  />
-
-                  <FormField
-                    control={systemLogCleanupForm.control}
-                    name="interval_minutes"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>清理间隔（分钟）</FormLabel>
-                        <FormControl>
-                          <Input
-                            type="number"
-                            min={1}
-                            value={field.value}
-                            onChange={(event) => field.onChange(Number(event.target.value))}
-                          />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                </form>
-              </Form>
-            </CardContent>
-            <CardFooter className="justify-end">
-              <Button type="submit" form="system-log-cleanup-form">保存配置</Button>
-            </CardFooter>
-          </Card>
-
-          <Card className="rounded-2xl border border-border/60 bg-card/90 shadow-[0_18px_45px_rgba(0,0,0,0.08)]">
-            <CardHeader className="pb-2">
-              <CardTitle className="flex items-center gap-2 text-sm font-semibold">
-                <Type className="size-4 text-emerald-600" />
-                界面字体配置
-              </CardTitle>
-              <CardDescription className="text-xs">
-                当前支持默认字体、昆明海鸥体、粉圆体和霞鹜文楷。选择昆明海鸥体后，正文会略微放大。
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <Form {...uiFontForm}>
-                <form id="ui-font-form" onSubmit={uiFontForm.handleSubmit(onUIFontSubmit)} className="space-y-4">
-                  <FormField
-                    control={uiFontForm.control}
-                    name="font"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>字体</FormLabel>
-                        <FormControl>
-                          <Select value={field.value} onValueChange={(value) => field.onChange(value as UIFontForm['font'])}>
-                            <SelectTrigger className="h-9 w-full bg-white">
-                              <SelectValue placeholder="选择字体" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="default">默认字体</SelectItem>
-                              <SelectItem value="kunming_seagull">昆明海鸥体</SelectItem>
-                              <SelectItem value="fenyuan">粉圆体</SelectItem>
-                              <SelectItem value="lxgw_wenkai">霞鹜文楷</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                </form>
-              </Form>
-            </CardContent>
-            <CardFooter className="justify-end">
-              <Button type="submit" form="ui-font-form">保存配置</Button>
+              <Button type="button" onClick={() => void onCoreConfigSubmit()} disabled={coreConfigSaving}>
+                {coreConfigSaving ? '保存中...' : '保存配置'}
+              </Button>
             </CardFooter>
           </Card>
         </div>

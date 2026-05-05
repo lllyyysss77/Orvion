@@ -6,7 +6,7 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 export function openExternalUrl(rawUrl: string | null | undefined): boolean {
-  if (typeof window === "undefined") {
+  if (typeof window === "undefined" || typeof document === "undefined") {
     return false
   }
   const value = (rawUrl ?? "").trim()
@@ -25,9 +25,13 @@ export function openExternalUrl(rawUrl: string | null | undefined): boolean {
     return false
   }
 
-  const popup = window.open(parsed.toString(), "_blank", "noopener,noreferrer")
-  if (popup) {
-    popup.opener = null
-  }
-  return popup !== null
+  const link = document.createElement("a")
+  link.href = parsed.toString()
+  link.target = "_blank"
+  link.rel = "noopener noreferrer"
+  link.style.display = "none"
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  return true
 }

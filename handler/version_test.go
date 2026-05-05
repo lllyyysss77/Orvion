@@ -107,6 +107,22 @@ func TestBuildVersionUpdateCheckRespErrorForStableVersion(t *testing.T) {
 	}
 }
 
+func TestDisabledVersionUpdateCheckResp(t *testing.T) {
+	resp := disabledVersionUpdateCheckResp()
+	if !resp.Disabled {
+		t.Fatalf("expected disabled=true")
+	}
+	if resp.HasUpdate {
+		t.Fatalf("expected hasUpdate=false")
+	}
+	if resp.SuggestBrowserFetch {
+		t.Fatalf("expected suggestBrowserFetch=false")
+	}
+	if resp.FetchSource != "disabled" {
+		t.Fatalf("unexpected fetchSource: %q", resp.FetchSource)
+	}
+}
+
 func TestShouldForceHTTP11ForGitHubEndpoint(t *testing.T) {
 	cases := []struct {
 		name     string

@@ -202,71 +202,104 @@
   @apply px-3 py-2 border border-gray-300 rounded-md shadow-sm;
 }
 
-/* Loading animation */
-.loading-dots {
-  display: inline-block;
-  position: relative;
-  width: 80px;
-  height: 20px;
+/* Cute loading animation */
+.loader-cute-rocket {
+  animation: loader-cute-slide 1.9s cubic-bezier(0.42, 0, 0.2, 1) infinite;
 }
 
-.loading-dots div {
-  position: absolute;
-  top: 5px;
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: #007bff;
-  animation-timing-function: cubic-bezier(0, 1, 1, 0);
+.loader-cute-star {
+  animation: loader-cute-slide 1.8s cubic-bezier(0.42, 0, 0.2, 1) infinite;
 }
 
-.loading-dots div:nth-child(1) {
-  left: 8px;
-  animation: loading-dots1 0.6s infinite;
+.loader-cute-sparkle-left {
+  animation: loader-cute-sparkle 1.2s ease-in-out infinite;
 }
 
-.loading-dots div:nth-child(2) {
-  left: 8px;
-  animation: loading-dots2 0.6s infinite;
+.loader-cute-sparkle-right {
+  animation: loader-cute-sparkle 1.2s ease-in-out infinite 0.4s;
 }
 
-.loading-dots div:nth-child(3) {
-  left: 32px;
-  animation: loading-dots2 0.6s infinite;
+.loader-cute-jelly-1 {
+  animation: loader-cute-jelly 1.35s ease-in-out infinite;
 }
 
-.loading-dots div:nth-child(4) {
-  left: 56px;
-  animation: loading-dots3 0.6s infinite;
+.loader-cute-jelly-2 {
+  animation: loader-cute-jelly 1.35s ease-in-out infinite 0.18s;
 }
 
-@keyframes loading-dots1 {
+.loader-cute-jelly-3 {
+  animation: loader-cute-jelly 1.35s ease-in-out infinite 0.36s;
+}
+
+.loader-cute-candy {
+  animation: loader-cute-candy-slide 1.8s ease-in-out infinite;
+}
+
+.loader-cute-heart {
+  animation: loader-cute-heart-bounce 1.8s ease-in-out infinite;
+}
+
+@keyframes loader-cute-slide {
   0% {
-    transform: scale(0);
+    transform: translateX(0) scale(0.92);
+  }
+
+  50% {
+    transform: translateX(156px) scale(1.06);
   }
 
   100% {
-    transform: scale(1);
+    transform: translateX(0) scale(0.92);
   }
 }
 
-@keyframes loading-dots3 {
-  0% {
-    transform: scale(1);
+@keyframes loader-cute-sparkle {
+  0%,
+  100% {
+    transform: scale(0.8);
+    opacity: 0.45;
   }
 
-  100% {
-    transform: scale(0);
+  50% {
+    transform: scale(1.2);
+    opacity: 1;
   }
 }
 
-@keyframes loading-dots2 {
-  0% {
-    transform: translate(0, 0);
+@keyframes loader-cute-jelly {
+  0%,
+  100% {
+    transform: translateY(0) scaleX(1);
+    opacity: 0.88;
   }
 
+  50% {
+    transform: translateY(-2px) scaleX(1.08);
+    opacity: 1;
+  }
+}
+
+@keyframes loader-cute-candy-slide {
+  0%,
   100% {
-    transform: translate(24px, 0);
+    transform: translateX(8px);
+    opacity: 0.78;
+  }
+
+  50% {
+    transform: translateX(136px);
+    opacity: 1;
+  }
+}
+
+@keyframes loader-cute-heart-bounce {
+  0%,
+  100% {
+    transform: translateX(0) scale(0.92);
+  }
+
+  50% {
+    transform: translateX(156px) scale(1.08);
   }
 }
 

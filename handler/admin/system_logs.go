@@ -31,6 +31,7 @@ type SystemLogSnapshot struct {
 	Process   struct {
 		MemoryBytes uint64  `json:"memory_bytes"`
 		CPUPercent  float64 `json:"cpu_percent"`
+		Goroutines  int     `json:"goroutines"`
 	} `json:"process"`
 }
 
@@ -151,15 +152,18 @@ func readSystemLogTail(path string, lineLimit int) (string, int, error) {
 func collectProcessStats() struct {
 	MemoryBytes uint64  `json:"memory_bytes"`
 	CPUPercent  float64 `json:"cpu_percent"`
+	Goroutines  int     `json:"goroutines"`
 } {
 	stats := struct {
 		MemoryBytes uint64  `json:"memory_bytes"`
 		CPUPercent  float64 `json:"cpu_percent"`
+		Goroutines  int     `json:"goroutines"`
 	}{}
 
 	var mem runtime.MemStats
 	runtime.ReadMemStats(&mem)
 	stats.MemoryBytes = mem.Sys
+	stats.Goroutines = runtime.NumGoroutine()
 
 	now := time.Now()
 	var usage syscall.Rusage

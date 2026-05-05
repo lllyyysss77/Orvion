@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
@@ -50,6 +50,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { toast } from "sonner";
 import {
   Boxes,
@@ -116,23 +117,63 @@ const capabilityOptions: {
   },
 ];
 
-const ModelIcon = ({ name }: { name: string }) => {
+const ModelIcon = ({ name, size = "md" }: { name: string; size?: "md" | "sm" }) => {
   const config = resolveModelIcon(name);
   const fallback = (name || "M").slice(0, 2).toUpperCase();
+  const compact = size === "sm";
+
+  const wrapperClass = compact
+    ? "inline-flex size-7 shrink-0 items-center justify-center rounded-xl bg-muted/60 leading-none"
+    : "inline-flex size-10 shrink-0 items-center justify-center rounded-2xl bg-muted/60 leading-none";
+  const fallbackClass = compact
+    ? "inline-flex size-7 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary font-semibold text-[10px] leading-none"
+    : "inline-flex size-10 shrink-0 items-center justify-center rounded-2xl bg-primary/10 text-primary font-semibold text-sm leading-none";
 
   if (!config) {
     return (
-      <div className="inline-flex size-10 shrink-0 items-center justify-center rounded-2xl bg-primary/10 text-primary font-semibold text-sm leading-none">
+      <div className={fallbackClass}>
         {fallback}
       </div>
     );
   }
 
   return (
-    <div className="inline-flex size-10 shrink-0 items-center justify-center rounded-2xl bg-muted/60 leading-none">
-      <img src={config.src} alt={config.alt} className="block size-5 object-contain" />
+    <div className={wrapperClass}>
+      <img src={config.src} alt={config.alt} className={cn("block object-contain", compact ? "size-4" : "size-5")} />
     </div>
   );
+};
+
+type ModelFamily = {
+  key: string;
+  label: string;
+  iconName: string;
+  count: number;
+};
+
+const resolveModelFamily = (modelName: string) => {
+  const iconConfig = resolveModelIcon(modelName);
+  if (iconConfig) {
+    const family = iconConfig.key.trim().toLowerCase();
+    return {
+      key: family,
+      label: family,
+      iconName: iconConfig.key,
+    };
+  }
+
+  const normalized = (modelName ?? "")
+    .trim()
+    .toLowerCase()
+    .split(/[^a-z0-9]+/g)
+    .filter(Boolean)[0];
+  const family = normalized && normalized.length > 0 ? normalized : "other";
+
+  return {
+    key: family,
+    label: family,
+    iconName: family,
+  };
 };
 
 const formatPrice = (value?: number | null) => {
@@ -150,6 +191,15 @@ const isValidNonNegativePrice = (value: string) => {
   const parsed = Number(trimmed);
   return Number.isFinite(parsed) && parsed >= 0;
 };
+
+const sortModelsByName = (items: Model[]) => (
+  [...items].sort((left, right) =>
+    left.Name.localeCompare(right.Name, "zh-Hans-CN", {
+      numeric: true,
+      sensitivity: "base",
+    })
+  )
+);
 
 // 定义表单验证模式
 const formSchema = z.object({
@@ -174,10 +224,10 @@ export default function ModelsPage() {
   const [deleteId, setDeleteId] = useState<number | null>(null);
   const [page, setPage] = useState(1);
   const [pageSize] = useState(12);
-  const [pages, setPages] = useState(0);
   const [searchInput, setSearchInput] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
   const [capabilityFilter, setCapabilityFilter] = useState<string>("all");
+  const [familyFilter, setFamilyFilter] = useState<string>("all");
   const [providerPanelOpen, setProviderPanelOpen] = useState(false);
   const [providerPanelModel, setProviderPanelModel] = useState<Model | null>(null);
   const [statusUpdatingIds, setStatusUpdatingIds] = useState<number[]>([]);
@@ -211,27 +261,28 @@ export default function ModelsPage() {
   const fetchModels = useCallback(async () => {
     try {
       setLoading(true);
-      const response = await getModels({
-        page,
-        page_size: pageSize,
+      const queryParams = {
+        page: 1,
+        page_size: 100,
         search: searchTerm || undefined,
         capability: capabilityFilter !== "all" ? capabilityFilter : undefined,
-      });
-      setModels(
-        [...response.data].sort((left, right) =>
-          left.Name.localeCompare(right.Name, "zh-Hans-CN", {
-            numeric: true,
-            sensitivity: "base",
-          })
-        )
-      );
-      setPages(response.pages);
-      const totalPages = response.pages || 0;
-      if (totalPages > 0 && page > totalPages) {
-        setPage(totalPages);
-      } else if (totalPages === 0 && page !== 1) {
-        setPage(1);
+      };
+      const firstPage = await getModels(queryParams);
+      const totalPages = Math.max(firstPage.pages || 1, 1);
+      const allModels = [...firstPage.data];
+
+      if (totalPages > 1) {
+        const remainRequests: Promise<{ data: Model[] }>[] = [];
+        for (let currentPage = 2; currentPage <= totalPages; currentPage += 1) {
+          remainRequests.push(getModels({ ...queryParams, page: currentPage }));
+        }
+        const remainPages = await Promise.all(remainRequests);
+        for (const pageData of remainPages) {
+          allModels.push(...pageData.data);
+        }
       }
+
+      setModels(sortModelsByName(allModels));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       toast.error(`获取模型列表失败: ${message}`);
@@ -239,11 +290,77 @@ export default function ModelsPage() {
     } finally {
       setLoading(false);
     }
-  }, [capabilityFilter, page, pageSize, searchTerm]);
+  }, [capabilityFilter, searchTerm]);
 
   useEffect(() => {
     void fetchModels();
   }, [fetchModels]);
+
+  const modelsWithFamily = useMemo(() => (
+    models.map((model) => ({
+      model,
+      family: resolveModelFamily(model.Name),
+    }))
+  ), [models]);
+
+  const familyOptions = useMemo<ModelFamily[]>(() => {
+    const familyMap = new Map<string, ModelFamily>();
+
+    for (const item of modelsWithFamily) {
+      const current = familyMap.get(item.family.key);
+      if (current) {
+        current.count += 1;
+        continue;
+      }
+
+      familyMap.set(item.family.key, {
+        key: item.family.key,
+        label: item.family.label,
+        iconName: item.family.iconName,
+        count: 1,
+      });
+    }
+
+    return Array.from(familyMap.values()).sort((left, right) => {
+      if (left.count !== right.count) {
+        return right.count - left.count;
+      }
+      return left.label.localeCompare(right.label, "zh-Hans-CN", {
+        sensitivity: "base",
+      });
+    });
+  }, [modelsWithFamily]);
+
+  useEffect(() => {
+    if (familyFilter === "all") return;
+    const exists = familyOptions.some((item) => item.key === familyFilter);
+    if (!exists) {
+      setFamilyFilter("all");
+    }
+  }, [familyFilter, familyOptions]);
+
+  const filteredModels = useMemo(() => {
+    if (familyFilter === "all") {
+      return modelsWithFamily.map((item) => item.model);
+    }
+    return modelsWithFamily
+      .filter((item) => item.family.key === familyFilter)
+      .map((item) => item.model);
+  }, [familyFilter, modelsWithFamily]);
+
+  const pages = useMemo(() => Math.ceil(filteredModels.length / pageSize), [filteredModels.length, pageSize]);
+
+  useEffect(() => {
+    const maxPage = Math.max(pages, 1);
+    if (page > maxPage) {
+      setPage(maxPage);
+    }
+  }, [page, pages]);
+
+  const visibleModels = useMemo(() => {
+    const start = (page - 1) * pageSize;
+    return filteredModels.slice(start, start + pageSize);
+  }, [filteredModels, page, pageSize]);
 
   const handleCreate = async (values: z.infer<typeof formSchema>) => {
     try {
@@ -485,15 +602,60 @@ export default function ModelsPage() {
             </div>
           </div>
         </div>
+        <div className="flex items-center gap-2 overflow-x-auto pb-1">
+          <button
+            type="button"
+            onClick={() => {
+              setFamilyFilter("all");
+              setPage(1);
+            }}
+            className={cn(
+              "inline-flex h-9 shrink-0 items-center gap-2 rounded-full border px-3 text-xs font-semibold transition",
+              familyFilter === "all"
+                ? "border-primary/30 bg-primary/10 text-primary"
+                : "border-border/60 bg-muted/40 text-muted-foreground hover:bg-muted/60"
+            )}
+          >
+            <span className="inline-flex size-7 items-center justify-center rounded-xl bg-background/70 text-muted-foreground">
+              <Boxes className="size-4" />
+            </span>
+            <span>全部</span>
+            <span className="rounded-full bg-background/70 px-1.5 py-0.5 text-[10px] tabular-nums">
+              {models.length}
+            </span>
+          </button>
+          {familyOptions.map((family) => (
+            <button
+              key={family.key}
+              type="button"
+              onClick={() => {
+                setFamilyFilter(family.key);
+                setPage(1);
+              }}
+              className={cn(
+                "inline-flex h-9 shrink-0 items-center gap-2 rounded-full border px-3 text-xs font-semibold transition",
+                familyFilter === family.key
+                  ? "border-primary/30 bg-primary/10 text-primary"
+                  : "border-border/60 bg-muted/40 text-muted-foreground hover:bg-muted/60"
+              )}
+            >
+              <ModelIcon name={family.iconName} size="sm" />
+              <span>{family.label}</span>
+              <span className="rounded-full bg-background/70 px-1.5 py-0.5 text-[10px] tabular-nums">
+                {family.count}
+              </span>
+            </button>
+          ))}
+        </div>
       </div>
       <div className="flex-1 min-h-0 overflow-hidden">
         {loading ? (
           <div className="flex h-full items-center justify-center">
             <Loading message="加载模型列表" />
           </div>
-        ) : models.length === 0 ? (
+        ) : filteredModels.length === 0 ? (
           <div className="flex h-full items-center justify-center px-6 text-center text-sm text-muted-foreground">
-            暂无模型数据
+            {models.length === 0 ? "暂无模型数据" : "当前筛选条件下暂无模型"}
           </div>
         ) : (
           <div className="h-full flex flex-col">
@@ -507,7 +669,7 @@ export default function ModelsPage() {
                 <div className="text-right">操作</div>
               </div>
               <div className="flex-1 min-h-0 overflow-y-auto">
-                {models.map((model) => {
+                {visibleModels.map((model) => {
                   const enabled = isModelEnabled(model);
                   const statusUpdating = statusUpdatingIds.includes(model.ID);
                   return (
@@ -520,7 +682,16 @@ export default function ModelsPage() {
                         <div className="grid min-w-0 grid-cols-[2.5rem_minmax(0,1fr)] items-center gap-3">
                           <ModelIcon name={model.Name} />
                           <div className="min-w-0 leading-tight">
-                            <div className="truncate cursor-pointer text-base font-semibold leading-6" title={model.Name}>{model.Name}</div>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <div className="truncate cursor-pointer text-base font-semibold leading-6" title={model.Name}>
+                                  {model.Name}
+                                </div>
+                              </TooltipTrigger>
+                              <TooltipContent side="top" align="start">
+                                {model.Name}
+                              </TooltipContent>
+                            </Tooltip>
                             {model.Remark ? (
                               <div className="mt-1 text-[11px] text-muted-foreground truncate" title={model.Remark}>
                                 {model.Remark}

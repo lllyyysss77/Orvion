@@ -9,6 +9,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/racio/orvion/common"
 	"github.com/racio/orvion/consts"
+	"github.com/racio/orvion/models"
+	"gorm.io/gorm"
 	"io"
 	"log/slog"
 	"net"
@@ -48,6 +50,7 @@ type versionUpdateCheckResp struct {
 	Release             *versionReleaseOverview `json:"release,omitempty"`
 	BackendFetchSuccess bool                    `json:"backendFetchSuccess"`
 	SuggestBrowserFetch bool                    `json:"suggestBrowserFetch"`
+	Disabled            bool                    `json:"disabled"`
 	FetchSource         string                  `json:"fetchSource"`
 }
 
@@ -89,6 +92,16 @@ type normalizedVersion struct {
 }
 
 func GetVersionUpdateCheck(c *gin.Context) {
+	enabled, err := isGitHubVersionCheckEnabled(c.Request.Context())
+	if err != nil {
+		common.InternalServerError(c, "Failed to load github version check config: "+err.Error())
+		return
+	}
+	if !enabled {
+		common.Success(c, disabledVersionUpdateCheckResp())
+		return
+	}
+
 	resp := getVersionUpdateCacheSnapshot()
 	common.Success(c, resp)
 }
@@ -115,16 +128,29 @@ func StartGitHubVersionUpdateRefresher(ctx context.Context) {
 
 func refreshGitHubVersionCache() {
 	currentVersion := resolveCurrentVersion()
+	enabled, cfgErr := isGitHubVersionCheckEnabled(context.Background())
+	if cfgErr != nil {
+		slog.Warn("读取 GitHub 版本检查配置失败", "error", cfgErr)
+	}
+	if cfgErr == nil && !enabled {
+		setVersionUpdateCache(disabledVersionUpdateCheckResp())
+		return
+	}
+
 	latestTag, err := fetchLatestTagFromGitHub()
 	next := buildVersionUpdateCheckResp(currentVersion, latestTag, err)
 
-	githubVersionCacheMu.Lock()
-	githubVersionCacheResp = next
-	githubVersionCacheMu.Unlock()
+	setVersionUpdateCache(next)
 
 	if err != nil {
 		slog.Warn("刷新 GitHub 版本缓存失败", "error", err)
 	}
+}
+
+func setVersionUpdateCache(next versionUpdateCheckResp) {
+	githubVersionCacheMu.Lock()
+	githubVersionCacheResp = next
+	githubVersionCacheMu.Unlock()
 }
 
 func getVersionUpdateCacheSnapshot() versionUpdateCheckResp {
@@ -135,6 +161,44 @@ func getVersionUpdateCacheSnapshot() versionUpdateCheckResp {
 
 func defaultVersionUpdateCheckResp() versionUpdateCheckResp {
 	return buildVersionUpdateCheckResp(resolveCurrentVersion(), nil, errors.New("github version cache not ready"))
+}
+
+func disabledVersionUpdateCheckResp() versionUpdateCheckResp {
+	return versionUpdateCheckResp{
+		CurrentVersion:      resolveCurrentVersion(),
+		HasUpdate:           false,
+		BackendFetchSuccess: false,
+		SuggestBrowserFetch: false,
+		Disabled:            true,
+		FetchSource:         "disabled",
+	}
+}
+
+func isGitHubVersionCheckEnabled(ctx context.Context) (bool, error) {
+	if models.DB == nil {
+		return true, nil
+	}
+
+	config, err := gorm.G[models.Config](models.DB).
+		Where("key = ?", models.KeyGitHubVersionCheck).
+		First(ctx)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return true, nil
+		}
+		return true, err
+	}
+
+	raw := strings.TrimSpace(config.Value)
+	if raw == "" {
+		return true, nil
+	}
+
+	var cfg models.GitHubVersionCheckConfig
+	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+		return true, fmt.Errorf("解析 GitHub 更新检查配置失败: %w", err)
+	}
+	return cfg.Enabled, nil
 }
 
 func resolveCurrentVersion() string {
