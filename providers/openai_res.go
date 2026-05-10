@@ -14,8 +14,13 @@ import (
 
 // openai responses api
 type OpenAIRes struct {
-	BaseURL string `json:"base_url"`
-	APIKey  string `json:"api_key"`
+	BaseURL  string `json:"base_url"`
+	APIKey   string `json:"api_key"`
+	ProxyURL string `json:"-"`
+}
+
+func (o *OpenAIRes) SetProxyURL(proxyURL string) {
+	o.ProxyURL = strings.TrimSpace(proxyURL)
 }
 
 func (o *OpenAIRes) BuildReq(ctx context.Context, header http.Header, model string, rawBody []byte) (*http.Request, error) {
@@ -54,7 +59,11 @@ func (o *OpenAIRes) Models(ctx context.Context) ([]Model, error) {
 		return nil, err
 	}
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", o.APIKey))
-	res, err := GetClient(modelsListTimeout).Do(req)
+	client, err := GetClientWithProxy(modelsListTimeout, o.ProxyURL)
+	if err != nil {
+		return nil, err
+	}
+	res, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}

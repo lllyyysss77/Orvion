@@ -55,6 +55,10 @@ func Init(_ context.Context, dsn string) {
 	); err != nil {
 		panic(err)
 	}
+
+	if _, err := EnsureChatLogMonthlyTable(time.Now()); err != nil {
+		panic(err)
+	}
 }
 
 func newGormLogger() gormlogger.Interface {

@@ -107,10 +107,10 @@ const resolveUIFont = (font?: string): UIFontForm['font'] => {
 };
 
 const loadingUIOptions: { value: LoadingUIStyle; label: string; description: string }[] = [
-  { value: 'rocket_trail', label: '火箭轨道', description: '轻快的火箭往返滑动效果' },
-  { value: 'star_dash', label: '星星疾行', description: '闪亮星星沿虚线轨道穿梭' },
-  { value: 'jelly_wave', label: '果冻波浪', description: '柔和果冻条上下弹跳律动' },
-  { value: 'candy_slide', label: '糖果滑轨', description: '糖果色滑块和爱心跳跃动效' },
+  { value: 'line_pulse', label: '线条脉冲', description: '细线条有节奏起伏，简洁耐看' },
+  { value: 'orbit_ring', label: '环形轨道', description: '单点环绕旋转，科技感更克制' },
+  { value: 'slim_progress', label: '细条流动', description: '细进度条来回流动，低干扰' },
+  { value: 'ripple_focus', label: '涟漪聚焦', description: '中心扩散涟漪，适合深色浅色主题' },
 ];
 
 const isValidURL = (raw: string): boolean => {
@@ -192,7 +192,7 @@ export default function ConfigPage() {
   const loadingUIForm = useForm<LoadingUIForm>({
     resolver: zodResolver(loadingUISchema),
     defaultValues: {
-      style: 'rocket_trail',
+      style: 'line_pulse',
     },
   });
 
@@ -394,7 +394,7 @@ export default function ConfigPage() {
     try {
       setPriceSyncing(true);
       await configAPI.runModelPriceSync();
-      toast.success('模型价格已开始同步');
+      toast.success('模型价格拉取完成，已同步');
     } catch (error) {
       console.error('Failed to run model price sync:', error);
       toast.error('模型价格同步失败');
@@ -516,7 +516,7 @@ export default function ConfigPage() {
                     加载 UI 切换
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    选择全局加载动画样式，支持多套可爱风动效
+                    选择全局加载动画样式，支持简约风与 GIF 风格
                   </p>
                 </div>
                 <Form {...loadingUIForm}>

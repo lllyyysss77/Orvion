@@ -1,33 +1,74 @@
-import { useEffect, useState } from "react";
-import { useLocation, useNavigate, useParams } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import Loading from "@/components/loading";
 import { getChatIO, type ChatIO } from "@/lib/api";
-import { getStoredAuthToken } from "@/lib/auth";
-import { buildReplayCurlSnippet, inferGatewayEndpoint, maskAuthToken } from "@/lib/curl";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { duotoneLight } from "react-syntax-highlighter/dist/esm/styles/prism";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { toast } from "sonner";
-import { Copy } from "lucide-react";
+import { ArrowUpFromLine, Bot, Braces, Cog, Info, User, Wrench, Zap } from "lucide-react";
 
 type SyntaxStyle = typeof duotoneLight;
-
-interface JsonBlockProps {
-  title: string;
-  raw: string;
-  syntaxStyle: SyntaxStyle;
-}
+type ViewMode = "parsed" | "raw";
+type JsonRecord = Record<string, unknown>;
 
 interface FormattedJson {
   text: string;
   parsed: boolean;
   empty: boolean;
+  value: unknown;
+}
+
+interface RequestMetaItem {
+  label: string;
+  value: string;
+}
+
+interface RequestChunk {
+  label: string;
+  value: string;
+}
+
+type MessageRole = "system" | "developer" | "user" | "assistant" | "tool" | "other";
+
+interface RequestFieldItem {
+  key: string;
+  value: unknown;
+}
+
+type RequestTimelineKind = "system" | "developer" | "user" | "function_call" | "function_result";
+
+interface RequestTimelineItem {
+  id: string;
+  kind: RequestTimelineKind;
+  title: string;
+  role: "system" | "developer" | "user";
+  chunks: RequestChunk[];
+}
+
+interface ParsedRequestPayload {
+  meta: RequestMetaItem[];
+  timeline: RequestTimelineItem[];
+  extraFields: RequestFieldItem[];
+}
+
+interface ParsedOutputBlock {
+  id: string;
+  title: string;
+  body: string;
+}
+
+interface ParsedOutputPayload {
+  blocks: ParsedOutputBlock[];
+  extraFields: RequestFieldItem[];
 }
 
 function formatJson(raw: string): FormattedJson {
   if (!raw || raw.trim().length === 0) {
-    return { text: "(无内容)", parsed: false, empty: true };
+    return { text: "(无内容)", parsed: false, empty: true, value: null };
   }
 
   try {
@@ -35,71 +76,758 @@ function formatJson(raw: string): FormattedJson {
     return {
       text: JSON.stringify(parsedJson, null, 2),
       parsed: true,
-      empty: false
+      empty: false,
+      value: parsedJson,
     };
   } catch {
     return {
       text: raw,
       parsed: false,
-      empty: false
+      empty: false,
+      value: null,
     };
   }
 }
 
-function JsonBlock({ title, raw, syntaxStyle }: JsonBlockProps) {
-  const { text, parsed, empty } = formatJson(raw);
-
-  return (
-    <Card>
-      <CardHeader className="space-y-2">
-        <CardTitle className="text-base font-semibold">{title}</CardTitle>
-        <CardDescription>
-          {empty ? "暂无数据" : parsed ? "格式化 JSON 预览" : "原始数据（非 JSON 或解析失败）"}
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <JsonContent text={text} parsed={parsed} empty={empty} syntaxStyle={syntaxStyle} />
-      </CardContent>
-    </Card>
-  );
+function isRecord(value: unknown): value is JsonRecord {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-interface OutputPreviewProps {
-  index: number;
-  raw: string;
-  syntaxStyle: SyntaxStyle;
+function toReadableText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (value === null) return "null";
+  if (value === undefined) return "";
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
 }
 
-function OutputPreview({ index, raw, syntaxStyle }: OutputPreviewProps) {
-  const { text, parsed, empty } = formatJson(raw);
-
-  return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between">
-        <p className="text-sm font-medium text-muted-foreground">响应片段 {index + 1}</p>
-        {!parsed && !empty && <span className="text-xs text-muted-foreground">原始字符串</span>}
-        {empty && <span className="text-xs text-muted-foreground">暂无数据</span>}
-      </div>
-      <JsonContent text={text} parsed={parsed} empty={empty} syntaxStyle={syntaxStyle} />
-    </div>
-  );
+function pickFirstText(record: JsonRecord, keys: string[]): string {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim().length > 0) return value;
+    if (isRecord(value)) {
+      const nested = value.text ?? value.value ?? value.url;
+      if (typeof nested === "string" && nested.trim().length > 0) return nested;
+    }
+  }
+  return "";
 }
 
-interface DefaultOutputProps {
-  raw: string;
-  syntaxStyle: SyntaxStyle;
+function normalizeRole(raw: unknown): MessageRole {
+  const role = typeof raw === "string" ? raw.toLowerCase().trim() : "";
+  if (role === "system") return "system";
+  if (role === "developer") return "developer";
+  if (role === "user") return "user";
+  if (role === "assistant") return "assistant";
+  if (role === "tool") return "tool";
+  return "other";
 }
 
-function DefaultOutput({ raw, syntaxStyle }: DefaultOutputProps) {
-  const { text, parsed, empty } = formatJson(raw);
+function normalizeContentToChunks(content: unknown): RequestChunk[] {
+  if (typeof content === "string") {
+    return [{ label: "内容", value: content }];
+  }
 
-  return (
-    <div className="space-y-2">
-      {!parsed && !empty && <span className="text-xs text-muted-foreground">原始字符串</span>}
-      {empty && <span className="text-xs text-muted-foreground">暂无数据</span>}
-      <JsonContent text={text} parsed={parsed} empty={empty} syntaxStyle={syntaxStyle} />
-    </div>
-  );
+  if (typeof content === "number" || typeof content === "boolean") {
+    return [{ label: "内容", value: String(content) }];
+  }
+
+  if (Array.isArray(content)) {
+    const chunks: RequestChunk[] = [];
+    content.forEach((item, index) => {
+      if (typeof item === "string") {
+        chunks.push({ label: `片段 ${index + 1}`, value: item });
+        return;
+      }
+      if (isRecord(item)) {
+        const itemType = typeof item.type === "string" && item.type.trim() ? item.type : `片段 ${index + 1}`;
+        const textValue = pickFirstText(item, ["text", "input_text", "output_text", "reasoning"]);
+        if (textValue) {
+          chunks.push({ label: itemType, value: textValue });
+          return;
+        }
+        if (itemType.includes("image")) {
+          const imageURL = pickFirstText(item, ["image_url", "url", "image", "source"]);
+          if (imageURL) {
+            chunks.push({ label: itemType, value: imageURL });
+            return;
+          }
+        }
+        chunks.push({ label: itemType, value: toReadableText(item) });
+        return;
+      }
+      chunks.push({ label: `片段 ${index + 1}`, value: toReadableText(item) });
+    });
+    return chunks.length > 0 ? chunks : [{ label: "内容", value: "(空数组)" }];
+  }
+
+  if (isRecord(content)) {
+    const textValue = pickFirstText(content, ["text", "input_text", "output_text", "reasoning"]);
+    if (textValue) {
+      return [{ label: "内容", value: textValue }];
+    }
+    return [{ label: "内容", value: toReadableText(content) }];
+  }
+
+  return [{ label: "内容", value: "(空)" }];
+}
+
+
+function formatToolPayload(raw: unknown): string {
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (!trimmed) return "{}";
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+      const compact = JSON.stringify(parsed);
+      if (compact && compact.length <= 220) {
+        return compact;
+      }
+      return JSON.stringify(parsed, null, 2);
+    } catch {
+      return trimmed;
+    }
+  }
+  if (isRecord(raw) || Array.isArray(raw)) {
+    const compact = JSON.stringify(raw);
+    if (compact && compact.length <= 220) {
+      return compact;
+    }
+    return JSON.stringify(raw, null, 2);
+  }
+  if (raw === undefined) return "{}";
+  return String(raw);
+}
+
+function timelineTitle(kind: RequestTimelineKind): string {
+  switch (kind) {
+    case "system":
+      return "系统指令";
+    case "developer":
+      return "开发者指令";
+    case "user":
+      return "用户消息";
+    case "function_call":
+      return "函数调用";
+    case "function_result":
+      return "函数返回";
+    default:
+      return "用户消息";
+  }
+}
+
+function appendTimelineMessage(
+  timeline: RequestTimelineItem[],
+  role: "system" | "developer" | "user",
+  content: unknown,
+  extraChunks?: RequestChunk[]
+) {
+  const chunks = normalizeContentToChunks(content);
+  if (chunks.length === 0) return;
+  const allChunks = extraChunks && extraChunks.length > 0 ? [...extraChunks, ...chunks] : chunks;
+  timeline.push({
+    id: `timeline-${timeline.length + 1}`,
+    kind: role,
+    title: timelineTitle(role),
+    role,
+    chunks: allChunks,
+  });
+}
+
+function appendTimelineFunctionCall(timeline: RequestTimelineItem[], name: string, args: unknown, callId?: string) {
+  const normalizedName = name.trim() || "unknown_function";
+  const chunks: RequestChunk[] = [];
+  if (callId?.trim()) {
+    chunks.push({ label: "tool_call_id", value: callId.trim() });
+  }
+  chunks.push({ label: "调用", value: `${normalizedName}(${formatToolPayload(args)})` });
+  timeline.push({
+    id: `timeline-${timeline.length + 1}`,
+    kind: "function_call",
+    title: timelineTitle("function_call"),
+    role: "user",
+    chunks,
+  });
+}
+
+function appendTimelineFunctionResult(timeline: RequestTimelineItem[], name: string, result: unknown, callId?: string) {
+  const normalizedName = name.trim() || "unknown_function";
+  const chunks: RequestChunk[] = [];
+  chunks.push({ label: "函数", value: normalizedName });
+  if (callId?.trim()) {
+    chunks.push({ label: "tool_call_id", value: callId.trim() });
+  }
+  chunks.push({ label: "返回", value: formatToolPayload(result) });
+  timeline.push({
+    id: `timeline-${timeline.length + 1}`,
+    kind: "function_result",
+    title: timelineTitle("function_result"),
+    role: "user",
+    chunks,
+  });
+}
+
+function parseTimelineArrayEntries(entries: unknown, timeline: RequestTimelineItem[]) {
+  if (!Array.isArray(entries)) return;
+  entries.forEach((entry) => {
+    if (!isRecord(entry)) {
+      appendTimelineMessage(timeline, "user", entry);
+      return;
+    }
+
+    const role = normalizeRole(entry.role);
+    const type = typeof entry.type === "string" ? entry.type.toLowerCase().trim() : "";
+
+    if (Array.isArray(entry.tool_calls)) {
+      entry.tool_calls.forEach((toolCall) => {
+        if (!isRecord(toolCall)) return;
+        const fn = isRecord(toolCall.function) ? toolCall.function : null;
+        const name = typeof (fn?.name ?? toolCall.name) === "string" ? String(fn?.name ?? toolCall.name) : "";
+        const args = fn?.arguments ?? toolCall.arguments ?? toolCall.input ?? {};
+        const callId = typeof toolCall.id === "string" ? toolCall.id : undefined;
+        appendTimelineFunctionCall(timeline, name, args, callId);
+      });
+    }
+
+    if (isRecord(entry.function_call)) {
+      const fn = entry.function_call;
+      const name = typeof fn.name === "string" ? fn.name : "";
+      const args = fn.arguments ?? fn.input ?? {};
+      const callId = typeof fn.id === "string" ? fn.id : (typeof entry.tool_call_id === "string" ? entry.tool_call_id : undefined);
+      appendTimelineFunctionCall(timeline, name, args, callId);
+    }
+
+    if (type === "function_call" || type === "tool_use" || type === "custom_tool_call") {
+      const name = typeof entry.name === "string" ? entry.name : (typeof entry.tool_name === "string" ? entry.tool_name : "");
+      const args = entry.arguments ?? entry.input ?? entry.params ?? {};
+      const callId = typeof entry.call_id === "string" ? entry.call_id : (typeof entry.id === "string" ? entry.id : undefined);
+      appendTimelineFunctionCall(timeline, name, args, callId);
+      return;
+    }
+
+    if (type === "function_call_output" || type === "tool_result" || type === "tool_output") {
+      const name = typeof entry.name === "string" ? entry.name : (typeof entry.tool_name === "string" ? entry.tool_name : "");
+      const result = entry.output ?? entry.result ?? entry.content ?? entry.text ?? {};
+      const callId = typeof entry.call_id === "string" ? entry.call_id : (typeof entry.tool_call_id === "string" ? entry.tool_call_id : undefined);
+      appendTimelineFunctionResult(timeline, name, result, callId);
+      return;
+    }
+
+    if (role === "tool") {
+      const name = typeof entry.name === "string" ? entry.name : (typeof entry.tool_name === "string" ? entry.tool_name : "");
+      const result = entry.content ?? entry.output ?? entry.result ?? entry.text ?? {};
+      const callId = typeof entry.tool_call_id === "string" ? entry.tool_call_id : undefined;
+      appendTimelineFunctionResult(timeline, name, result, callId);
+      return;
+    }
+
+    if (role === "system" || role === "developer" || role === "user") {
+      const extraChunks: RequestChunk[] = [];
+      if (typeof entry.name === "string" && entry.name.trim()) {
+        extraChunks.push({ label: "名称", value: entry.name.trim() });
+      }
+      const content = entry.content ?? entry.input ?? entry.parts ?? entry.text ?? entry;
+      appendTimelineMessage(timeline, role, content, extraChunks);
+      return;
+    }
+
+    if (entry.content !== undefined && Array.isArray(entry.content)) {
+      parseTimelineArrayEntries(entry.content, timeline);
+    }
+  });
+}
+
+function buildParsedRequestPayload(value: unknown): ParsedRequestPayload | null {
+  if (!isRecord(value)) return null;
+
+  const record = value;
+  const usedKeys = new Set<string>();
+  const meta: RequestMetaItem[] = [];
+  const timeline: RequestTimelineItem[] = [];
+
+  const metaKeys: Array<[string, string]> = [
+    ["model", "模型"],
+    ["stream", "流式"],
+    ["temperature", "温度"],
+    ["top_p", "Top P"],
+    ["max_tokens", "最大输出"],
+    ["max_output_tokens", "最大输出"],
+    ["tool_choice", "工具策略"],
+    ["parallel_tool_calls", "并行工具"],
+    ["response_format", "响应格式"],
+  ];
+
+  metaKeys.forEach(([key, label]) => {
+    if (!(key in record)) return;
+    const valueText = toReadableText(record[key]).trim();
+    if (!valueText) return;
+    meta.push({ label, value: valueText });
+    usedKeys.add(key);
+  });
+
+  if (record.instructions !== undefined) {
+    appendTimelineMessage(timeline, "system", record.instructions);
+    usedKeys.add("instructions");
+  }
+
+  if (record.system !== undefined) {
+    appendTimelineMessage(timeline, "system", record.system);
+    usedKeys.add("system");
+  }
+
+  if (record.messages !== undefined) {
+    parseTimelineArrayEntries(record.messages, timeline);
+    usedKeys.add("messages");
+  }
+
+  if (record.input !== undefined) {
+    if (Array.isArray(record.input)) {
+      parseTimelineArrayEntries(record.input, timeline);
+    } else {
+      appendTimelineMessage(timeline, "user", record.input);
+    }
+    usedKeys.add("input");
+  }
+
+  if (record.tools !== undefined) {
+    const toolsText = toReadableText(record.tools).trim();
+    if (toolsText) {
+      timeline.push({
+        id: `timeline-${timeline.length + 1}`,
+        kind: "developer",
+        title: "开发者指令",
+        role: "developer",
+        chunks: [{ label: "工具配置", value: toolsText }],
+      });
+    }
+    usedKeys.add("tools");
+  }
+
+  if (record.tool_calls !== undefined) {
+    parseTimelineArrayEntries(record.tool_calls, timeline);
+    usedKeys.add("tool_calls");
+  }
+
+  const extraFields: RequestFieldItem[] = Object.entries(record)
+    .filter(([key]) => !usedKeys.has(key))
+    .map(([key, fieldValue]) => ({ key, value: fieldValue }));
+
+  return { meta, timeline, extraFields };
+}
+
+function roleToneClass(role: MessageRole): string {
+  switch (role) {
+    case "developer":
+      return "border-violet-200 bg-violet-50/45";
+    case "system":
+      return "border-fuchsia-200 bg-fuchsia-50/45";
+    case "user":
+      return "border-sky-200 bg-sky-50/45";
+    case "assistant":
+      return "border-emerald-200 bg-emerald-50/45";
+    case "tool":
+      return "border-amber-200 bg-amber-50/45";
+    default:
+      return "border-muted bg-muted/35";
+  }
+}
+
+function roleIcon(role: MessageRole) {
+  switch (role) {
+    case "developer":
+      return <Cog className="h-4 w-4" />;
+    case "system":
+      return <Info className="h-4 w-4" />;
+    case "user":
+      return <User className="h-4 w-4" />;
+    case "assistant":
+      return <Bot className="h-4 w-4" />;
+    case "tool":
+      return <Wrench className="h-4 w-4" />;
+    default:
+      return <Braces className="h-4 w-4" />;
+  }
+}
+
+function timelineToneClass(kind: RequestTimelineKind, role: "system" | "developer" | "user"): string {
+  if (kind === "function_call") return "border-orange-200 bg-orange-50/50";
+  if (kind === "function_result") return "border-teal-200 bg-teal-50/50";
+  return roleToneClass(role);
+}
+
+function timelineHeaderClass(kind: RequestTimelineKind): string {
+  if (kind === "function_call") return "text-orange-700";
+  if (kind === "function_result") return "text-teal-700";
+  return "";
+}
+
+function timelineIcon(kind: RequestTimelineKind, role: "system" | "developer" | "user") {
+  if (kind === "function_call") return <Zap className="h-4 w-4" />;
+  if (kind === "function_result") return <ArrowUpFromLine className="h-4 w-4" />;
+  return roleIcon(role);
+}
+
+function wrapTechnicalTerms(text: string): string {
+  if (!text.trim()) return text;
+  const segments = text.split(/(`[^`]*`)/g);
+  return segments
+    .map((segment) => {
+      if (segment.startsWith("`") && segment.endsWith("`")) {
+        return segment;
+      }
+      let next = segment;
+      next = next.replace(/(^|[\s(（])((?:\/[A-Za-z0-9._-]+){1,})(?=$|[\s),，。；;:：])/g, (_m, prefix: string, value: string) => `${prefix}\`${value}\``);
+      next = next.replace(/\b[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+\b/g, (value: string) => `\`${value}\``);
+      next = next.replace(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g, (value: string) => `\`${value}\``);
+      return next;
+    })
+    .join("");
+}
+
+function extractContentTexts(content: unknown): string[] {
+  if (typeof content === "string") {
+    const trimmed = content.trim();
+    return trimmed ? [trimmed] : [];
+  }
+  if (typeof content === "number" || typeof content === "boolean") {
+    return [String(content)];
+  }
+  if (Array.isArray(content)) {
+    const texts: string[] = [];
+    content.forEach((item) => {
+      if (typeof item === "string") {
+        if (item.trim()) texts.push(item.trim());
+        return;
+      }
+      if (isRecord(item)) {
+        const primary = pickFirstText(item, ["text", "input_text", "output_text", "content", "description", "reasoning"]);
+        if (primary.trim()) {
+          texts.push(primary.trim());
+          return;
+        }
+        if (item.content !== undefined) {
+          texts.push(...extractContentTexts(item.content));
+          return;
+        }
+        const fallback = toReadableText(item).trim();
+        if (fallback) texts.push(fallback);
+        return;
+      }
+      const fallback = toReadableText(item).trim();
+      if (fallback) texts.push(fallback);
+    });
+    return texts;
+  }
+  if (isRecord(content)) {
+    const primary = pickFirstText(content, ["text", "input_text", "output_text", "content", "description", "reasoning"]);
+    if (primary.trim()) return [primary.trim()];
+    if (content.content !== undefined) return extractContentTexts(content.content);
+    const fallback = toReadableText(content).trim();
+    return fallback ? [fallback] : [];
+  }
+  return [];
+}
+
+function buildSuggestionBlocks(suggestions: unknown): ParsedOutputBlock[] {
+  if (!Array.isArray(suggestions)) return [];
+  const blocks: ParsedOutputBlock[] = [];
+  suggestions.forEach((item, index) => {
+    if (!isRecord(item)) return;
+    const title = typeof item.title === "string" && item.title.trim() ? item.title.trim() : `建议 ${index + 1}`;
+    const description = typeof item.description === "string" ? item.description.trim() : "";
+    const prompt = typeof item.prompt === "string" ? item.prompt.trim() : "";
+    const appId = typeof item.appId === "string" ? item.appId.trim() : "";
+
+    const lines: string[] = [];
+    if (description) lines.push(wrapTechnicalTerms(description));
+    if (prompt) {
+      lines.push("");
+      lines.push("任务提示：");
+      lines.push(wrapTechnicalTerms(prompt));
+    }
+    if (appId) {
+      lines.push("");
+      lines.push(`应用：${wrapTechnicalTerms(appId)}`);
+    }
+    blocks.push({
+      id: `suggestion-${index + 1}`,
+      title,
+      body: lines.join("\n"),
+    });
+  });
+  return blocks;
+}
+
+function buildParsedOutputPayload(value: unknown): ParsedOutputPayload | null {
+  if (!isRecord(value)) return null;
+
+  const record = value;
+  const blocks: ParsedOutputBlock[] = [];
+  const usedKeys = new Set<string>();
+
+  const suggestionBlocks = buildSuggestionBlocks(record.suggestions);
+  if (suggestionBlocks.length > 0) {
+    blocks.push(...suggestionBlocks);
+    usedKeys.add("suggestions");
+  }
+
+  const directTextKeys = ["output_text", "text", "content", "message"];
+  directTextKeys.forEach((key) => {
+    if (!(key in record)) return;
+    const texts = extractContentTexts(record[key]);
+    if (texts.length === 0) return;
+    blocks.push({
+      id: `direct-${key}`,
+      title: "模型响应",
+      body: wrapTechnicalTerms(texts.join("\n\n")),
+    });
+    usedKeys.add(key);
+  });
+
+  if (Array.isArray(record.choices)) {
+    record.choices.forEach((choice, index) => {
+      if (!isRecord(choice)) return;
+      const message = choice.message;
+      const texts = extractContentTexts(isRecord(message) ? message.content ?? message : message);
+      if (texts.length === 0) return;
+      blocks.push({
+        id: `choice-${index + 1}`,
+        title: `模型响应 ${index + 1}`,
+        body: wrapTechnicalTerms(texts.join("\n\n")),
+      });
+    });
+    usedKeys.add("choices");
+  }
+
+  if (Array.isArray(record.output)) {
+    record.output.forEach((entry, index) => {
+      if (!isRecord(entry)) return;
+      const entryType = typeof entry.type === "string" && entry.type.trim() ? entry.type.trim() : `片段 ${index + 1}`;
+      const source = entry.content ?? entry.output_text ?? entry.text ?? entry;
+      const texts = extractContentTexts(source);
+      if (texts.length === 0) return;
+      blocks.push({
+        id: `output-${index + 1}`,
+        title: `模型响应 · ${entryType}`,
+        body: wrapTechnicalTerms(texts.join("\n\n")),
+      });
+    });
+    usedKeys.add("output");
+  }
+
+  if (Array.isArray(record.content)) {
+    const texts = extractContentTexts(record.content);
+    if (texts.length > 0) {
+      blocks.push({
+        id: "content-array",
+        title: "模型响应",
+        body: wrapTechnicalTerms(texts.join("\n\n")),
+      });
+    }
+    usedKeys.add("content");
+  }
+
+  if (blocks.length === 0) {
+    return null;
+  }
+
+  const extraFields: RequestFieldItem[] = Object.entries(record)
+    .filter(([key]) => !usedKeys.has(key))
+    .map(([key, fieldValue]) => ({ key, value: fieldValue }));
+
+  return { blocks, extraFields };
+}
+
+function extractTextPiecesFromStreamEvent(record: JsonRecord): string[] {
+  const pieces: string[] = [];
+  const eventType = typeof record.type === "string" ? record.type.trim() : "";
+
+  // Anthropic streaming events
+  if (eventType === "content_block_start" && isRecord(record.content_block)) {
+    const startText = typeof record.content_block.text === "string" ? record.content_block.text : "";
+    if (startText) pieces.push(startText);
+    return pieces;
+  }
+  if (eventType === "content_block_delta" && isRecord(record.delta)) {
+    const deltaText = typeof record.delta.text === "string" ? record.delta.text : "";
+    if (deltaText) pieces.push(deltaText);
+    const thinkingText = typeof record.delta.thinking === "string" ? record.delta.thinking : "";
+    if (thinkingText) pieces.push(thinkingText);
+    return pieces;
+  }
+  if (eventType === "message_start" && isRecord(record.message) && Array.isArray(record.message.content)) {
+    pieces.push(...extractContentTexts(record.message.content));
+    return pieces;
+  }
+
+  // OpenAI chat streaming chunk
+  if (Array.isArray(record.choices)) {
+    record.choices.forEach((choice) => {
+      if (!isRecord(choice)) return;
+      if (isRecord(choice.delta)) {
+        const deltaContent = choice.delta.content;
+        if (typeof deltaContent === "string" && deltaContent) {
+          pieces.push(deltaContent);
+        } else if (Array.isArray(deltaContent)) {
+          pieces.push(...extractContentTexts(deltaContent));
+        }
+      }
+      if (isRecord(choice.message)) {
+        pieces.push(...extractContentTexts(choice.message.content ?? choice.message));
+      }
+    });
+    if (pieces.length > 0) return pieces;
+  }
+
+  // OpenAI responses style streaming events
+  if (typeof record.delta === "string" && record.delta) {
+    pieces.push(record.delta);
+  }
+  if (isRecord(record.delta)) {
+    const deltaText = typeof record.delta.text === "string" ? record.delta.text : "";
+    if (deltaText) pieces.push(deltaText);
+  }
+  if (typeof record.output_text === "string" && record.output_text) {
+    pieces.push(record.output_text);
+  }
+
+  return pieces;
+}
+
+function parseEscapedJSONRecord(raw: string): JsonRecord | null {
+  let current: unknown = raw;
+  for (let i = 0; i < 3; i += 1) {
+    if (isRecord(current)) {
+      return current;
+    }
+    if (typeof current !== "string") {
+      return null;
+    }
+    const text = current.trim();
+    if (!text) return null;
+    try {
+      current = JSON.parse(text) as unknown;
+    } catch {
+      return null;
+    }
+  }
+  return isRecord(current) ? current : null;
+}
+
+function decodeJSONStringLiteral(raw: string): string {
+  try {
+    return JSON.parse(`"${raw}"`) as string;
+  } catch {
+    return raw
+      .replace(/\\\\/g, "\\")
+      .replace(/\\"/g, "\"")
+      .replace(/\\n/g, "\n")
+      .replace(/\\r/g, "\r")
+      .replace(/\\t/g, "\t");
+  }
+}
+
+function sanitizeStreamJSONLine(raw: string): string {
+  let line = raw.trim();
+  if (!line) return "";
+  if (line.startsWith("data:")) {
+    line = line.slice(5).trim();
+  }
+  if (!line || line === "[DONE]") return "";
+  if (line === "[" || line === "]") return "";
+  if (line.startsWith("[")) {
+    line = line.slice(1).trim();
+  }
+  if (line.endsWith("]")) {
+    line = line.slice(0, -1).trim();
+  }
+  if (line.endsWith(",")) {
+    line = line.slice(0, -1).trim();
+  }
+  return line;
+}
+
+function extractTextByRegexFallback(raw: string): string {
+  const pieces: string[] = [];
+
+  const anthropicDeltaRegex = /"type"\s*:\s*"\s*text_delta\s*"[\s\S]*?"text"\s*:\s*"((?:\\.|[^"\\])*)"/g;
+  for (const match of raw.matchAll(anthropicDeltaRegex)) {
+    const value = decodeJSONStringLiteral(match[1] || "");
+    if (value) pieces.push(value);
+  }
+  if (pieces.length > 0) {
+    return pieces.join("");
+  }
+
+  const openaiDeltaRegex = /"delta"\s*:\s*\{[\s\S]*?"content"\s*:\s*"((?:\\.|[^"\\])*)"/g;
+  for (const match of raw.matchAll(openaiDeltaRegex)) {
+    const value = decodeJSONStringLiteral(match[1] || "");
+    if (value) pieces.push(value);
+  }
+  if (pieces.length > 0) {
+    return pieces.join("");
+  }
+
+  return "";
+}
+
+function buildParsedOutputPayloadFromRaw(raw: string): ParsedOutputPayload | null {
+  const formatted = formatJson(raw);
+  if (formatted.parsed) {
+    const payload = buildParsedOutputPayload(formatted.value);
+    if (payload && payload.blocks.length > 0) {
+      return payload;
+    }
+  }
+
+  const streamPieces: string[] = [];
+  const lines = raw.replace(/\r\n/g, "\n").split("\n");
+  for (const originLine of lines) {
+    const head = originLine.trim();
+    if (!head || head.startsWith("event:") || head.startsWith("id:") || head.startsWith("retry:")) {
+      continue;
+    }
+    const line = sanitizeStreamJSONLine(originLine);
+    if (!line) {
+      continue;
+    }
+    const parsedRecord = parseEscapedJSONRecord(line);
+    if (parsedRecord) {
+      streamPieces.push(...extractTextPiecesFromStreamEvent(parsedRecord));
+    }
+  }
+
+  const text = streamPieces.join("").trim();
+  if (!text) {
+    const regexText = extractTextByRegexFallback(raw).trim();
+    if (!regexText) {
+      return null;
+    }
+    return {
+      blocks: [
+        {
+          id: "stream-merged-text-regex",
+          title: "模型响应",
+          body: wrapTechnicalTerms(regexText),
+        },
+      ],
+      extraFields: [],
+    };
+  }
+  return {
+    blocks: [
+      {
+        id: "stream-merged-text",
+        title: "模型响应",
+        body: wrapTechnicalTerms(text),
+      },
+    ],
+    extraFields: [],
+  };
 }
 
 interface JsonContentProps {
@@ -124,7 +852,7 @@ function JsonContent({ text, parsed, empty, syntaxStyle }: JsonContentProps) {
             lineHeight: "1.5rem",
             whiteSpace: "pre",
             minWidth: "100%",
-            maxWidth: "100%"
+            maxWidth: "100%",
           }}
         >
           {text}
@@ -134,37 +862,265 @@ function JsonContent({ text, parsed, empty, syntaxStyle }: JsonContentProps) {
   }
 
   return (
-    <pre className="whitespace-pre font-mono text-sm leading-6 bg-muted/70 border rounded-md p-4 overflow-x-auto w-full max-w-full min-w-0">{text}</pre>
+    <pre className="whitespace-pre-wrap break-words font-mono text-sm leading-6 bg-muted/70 border rounded-md p-4 overflow-x-auto w-full max-w-full min-w-0">
+      {text}
+    </pre>
   );
 }
 
-function useSyntaxStyle(): SyntaxStyle {
-  return duotoneLight;
+function MarkdownOutputText({ value }: { value: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        p: ({ children }) => <p className="mb-3 leading-7 last:mb-0">{children}</p>,
+        code: ({ children, className, ...props }) => {
+          const isBlock = typeof className === "string" && className.includes("language-");
+          if (isBlock) {
+            return (
+              <code className={className} {...props}>
+                {children}
+              </code>
+            );
+          }
+          return (
+            <code className="rounded-md bg-muted px-2 py-0.5 font-mono text-[0.95em] text-foreground" {...props}>
+              {children}
+            </code>
+          );
+        },
+      }}
+    >
+      {value}
+    </ReactMarkdown>
+  );
 }
 
-type LogChatLocationState = {
-  style?: string;
-};
+interface StructuredInputCardProps {
+  raw: string;
+  syntaxStyle: SyntaxStyle;
+}
+
+function StructuredInputCard({ raw, syntaxStyle }: StructuredInputCardProps) {
+  const [viewMode, setViewMode] = useState<ViewMode>("parsed");
+  const formatted = useMemo(() => formatJson(raw), [raw]);
+  const payload = useMemo(() => buildParsedRequestPayload(formatted.value), [formatted.value]);
+
+  useEffect(() => {
+    if (!formatted.parsed || payload === null) {
+      setViewMode("raw");
+      return;
+    }
+    setViewMode("parsed");
+  }, [formatted.parsed, payload]);
+
+  const parsedAvailable = formatted.parsed && payload !== null;
+
+  return (
+    <Card>
+      <CardHeader className="space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="space-y-1">
+            <CardTitle className="text-base font-semibold">请求输入</CardTitle>
+            <CardDescription>
+              {parsedAvailable ? "已按角色和字段结构化解析" : "当前内容无法结构化解析，显示原始内容"}
+            </CardDescription>
+          </div>
+          <div className="inline-flex rounded-full border bg-muted p-1">
+            <button
+              type="button"
+              className={`rounded-full px-3 py-1 text-xs font-medium transition ${viewMode === "parsed" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground"}`}
+              onClick={() => setViewMode("parsed")}
+              disabled={!parsedAvailable}
+            >
+              解析视图
+            </button>
+            <button
+              type="button"
+              className={`rounded-full px-3 py-1 text-xs font-medium transition ${viewMode === "raw" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground"}`}
+              onClick={() => setViewMode("raw")}
+            >
+              原始视图
+            </button>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {viewMode === "raw" || !parsedAvailable || payload === null ? (
+          <JsonContent text={formatted.text} parsed={formatted.parsed} empty={formatted.empty} syntaxStyle={syntaxStyle} />
+        ) : (
+          <>
+            {payload.meta.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {payload.meta.map((item) => (
+                  <div key={item.label} className="inline-flex items-center gap-2 rounded-full border bg-muted/55 px-3 py-1 text-xs">
+                    <span className="text-muted-foreground">{item.label}</span>
+                    <span className="font-medium text-foreground">{item.value}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {payload.timeline.length > 0 ? (
+              <div className="space-y-3">
+                {payload.timeline.map((item, index) => (
+                  <details
+                    key={item.id}
+                    open={index < 3}
+                    className={`rounded-xl border ${timelineToneClass(item.kind, item.role)}`}
+                  >
+                    <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-4 py-3">
+                      <span className={`inline-flex items-center gap-2 text-sm font-semibold ${timelineHeaderClass(item.kind)}`}>
+                        {timelineIcon(item.kind, item.role)}
+                        {item.title}
+                      </span>
+                      <span className="text-xs text-muted-foreground">{item.chunks.length} 个片段</span>
+                    </summary>
+                    <div className="space-y-3 border-t border-border/50 bg-background/70 px-4 py-3">
+                      {item.chunks.map((chunk, chunkIndex) => (
+                        <div key={`${item.id}-chunk-${chunkIndex}`} className="space-y-1">
+                          <div className="text-xs font-medium text-muted-foreground">{chunk.label}</div>
+                          <pre className="whitespace-pre-wrap break-words rounded-md border bg-background px-3 py-2 text-sm leading-6">
+                            {chunk.value || "(空)"}
+                          </pre>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                ))}
+              </div>
+            ) : (
+              <div className="rounded-md border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">未识别到消息结构</div>
+            )}
+
+            {payload.extraFields.length > 0 && (
+              <div className="space-y-2">
+                <div className="text-sm font-semibold">请求详情</div>
+                {payload.extraFields.map((field) => (
+                  <details key={field.key} className="rounded-lg border bg-muted/35">
+                    <summary className="cursor-pointer list-none px-3 py-2 text-sm font-medium">{field.key}</summary>
+                    <div className="border-t bg-background/75 p-3">
+                      <JsonContent
+                        text={toReadableText(field.value)}
+                        parsed={typeof field.value === "object" && field.value !== null}
+                        empty={field.value === null || field.value === undefined || toReadableText(field.value).trim() === ""}
+                        syntaxStyle={syntaxStyle}
+                      />
+                    </div>
+                  </details>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function StructuredOutputCard({ raw, syntaxStyle }: { raw: string; syntaxStyle: SyntaxStyle }) {
+  const [viewMode, setViewMode] = useState<ViewMode>("parsed");
+  const formatted = useMemo(() => formatJson(raw), [raw]);
+  const payload = useMemo(() => buildParsedOutputPayloadFromRaw(raw), [raw]);
+  const parsedAvailable = payload !== null && payload.blocks.length > 0;
+
+  useEffect(() => {
+    if (!parsedAvailable) {
+      setViewMode("raw");
+      return;
+    }
+    setViewMode("parsed");
+  }, [parsedAvailable]);
+
+  return (
+    <Card>
+      <CardHeader className="space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="space-y-1">
+            <CardTitle className="text-base font-semibold">响应输出</CardTitle>
+            <CardDescription>
+              {parsedAvailable ? "已提取模型返回内容并结构化展示" : "当前内容无法解析，显示原始内容"}
+            </CardDescription>
+          </div>
+          <div className="inline-flex rounded-full border bg-muted p-1">
+            <button
+              type="button"
+              className={`rounded-full px-3 py-1 text-xs font-medium transition ${viewMode === "parsed" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground"}`}
+              onClick={() => setViewMode("parsed")}
+              disabled={!parsedAvailable}
+            >
+              解析视图
+            </button>
+            <button
+              type="button"
+              className={`rounded-full px-3 py-1 text-xs font-medium transition ${viewMode === "raw" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground"}`}
+              onClick={() => setViewMode("raw")}
+            >
+              原始视图
+            </button>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {viewMode === "raw" || !parsedAvailable || payload === null ? (
+          <JsonContent text={formatted.text} parsed={formatted.parsed} empty={formatted.empty} syntaxStyle={syntaxStyle} />
+        ) : (
+          <>
+            {payload.blocks.map((block, index) => (
+              <details
+                key={block.id}
+                open={index === 0}
+                className="rounded-xl border border-emerald-200 bg-emerald-50/45"
+              >
+                <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-4 py-3 text-emerald-800">
+                  <span className="text-base font-semibold">{block.title}</span>
+                  <span className="text-xs text-emerald-700">展开详情</span>
+                </summary>
+                <div className="border-t border-emerald-200/70 bg-background/85 px-4 py-3 text-[15px] leading-7 text-foreground">
+                  <MarkdownOutputText value={block.body} />
+                </div>
+              </details>
+            ))}
+
+            {payload.extraFields.length > 0 && (
+              <div className="space-y-2">
+                <div className="text-sm font-semibold">响应详情</div>
+                {payload.extraFields.map((field) => (
+                  <details key={field.key} className="rounded-lg border bg-muted/35">
+                    <summary className="cursor-pointer list-none px-3 py-2 text-sm font-medium">{field.key}</summary>
+                    <div className="border-t bg-background/75 p-3">
+                      <JsonContent
+                        text={toReadableText(field.value)}
+                        parsed={typeof field.value === "object" && field.value !== null}
+                        empty={field.value === null || field.value === undefined || toReadableText(field.value).trim() === ""}
+                        syntaxStyle={syntaxStyle}
+                      />
+                    </div>
+                  </details>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
 export default function LogChatPage() {
   const { logId } = useParams<{ logId: string }>();
-  const location = useLocation();
   const navigate = useNavigate();
   const [chatIO, setChatIO] = useState<ChatIO | null>(null);
   const [loading, setLoading] = useState(true);
-  const [loadingFull, setLoadingFull] = useState(false);
-  const [copyingCurlVariant, setCopyingCurlVariant] = useState<"masked" | "raw" | null>(null);
   const [loadErrorMessage, setLoadErrorMessage] = useState<string | null>(null);
-  const logStyle = ((location.state as LogChatLocationState | null)?.style ?? "").trim();
+  const syntaxStyle = duotoneLight;
   const outputList = chatIO?.OfStringArray ?? [];
   const hasArrayOutput = outputList.length > 0;
   const singleOutput = chatIO?.OfString ?? "";
-  const syntaxStyle = useSyntaxStyle();
-  const isSummary = chatIO?.summary;
-  const isTruncated = Boolean(
-    chatIO?.truncated_input || chatIO?.truncated_output || chatIO?.truncated_output_items
-  );
-
+  const normalizedOutputRaw = useMemo(() => {
+    if (!hasArrayOutput) return singleOutput;
+    return outputList.join("\n");
+  }, [hasArrayOutput, outputList, singleOutput]);
   useEffect(() => {
     if (!logId) {
       const message = "缺少日志 ID";
@@ -174,35 +1130,17 @@ export default function LogChatPage() {
       return;
     }
 
-    // 支持数字 ID 和 UUID 格式
-    const isValidId = logId.length > 0;
-    if (!isValidId) {
-      const message = "日志 ID 无效";
-      toast.error(message);
-      setLoadErrorMessage(message);
-      setLoading(false);
-      return;
-    }
-
     const fetchChatIO = async () => {
       try {
-        const data = await getChatIO(logId, {
-          mode: "summary",
-          inputLimit: 20000,
-          outputLimit: 20000,
-          outputItemsLimit: 50
-        });
+        const data = await getChatIO(logId, { mode: "full" });
         setChatIO(data);
         setLoadErrorMessage(null);
       } catch (fetchError) {
-        let message = "获取会话日志失败";
-        if (fetchError instanceof Error) {
-          if (fetchError.message.includes("chat io not found")) {
-            message = "暂无会话记录，可能未开启 IO 记录";
-          } else {
-            message = fetchError.message;
-          }
-        }
+        const message = fetchError instanceof Error && fetchError.message.includes("chat io not found")
+          ? "暂无会话记录，可能未开启 IO 记录"
+          : fetchError instanceof Error
+            ? fetchError.message
+            : "获取会话日志失败";
         toast.error(message);
         setLoadErrorMessage(message);
       } finally {
@@ -210,68 +1148,8 @@ export default function LogChatPage() {
       }
     };
 
-    fetchChatIO();
+    void fetchChatIO();
   }, [logId]);
-
-  const handleLoadFull = async () => {
-    if (!logId || loadingFull) return;
-    setLoadingFull(true);
-    try {
-      const data = await getChatIO(logId, { mode: "full" });
-      setChatIO(data);
-      setLoadErrorMessage(null);
-    } catch (fetchError) {
-      let message = "获取完整会话日志失败";
-      if (fetchError instanceof Error) {
-        message = fetchError.message;
-      }
-      toast.error(message);
-      setLoadErrorMessage(message);
-    } finally {
-      setLoadingFull(false);
-    }
-  };
-
-  const getReplayInput = async (): Promise<string> => {
-    const currentInput = (chatIO?.Input ?? "").trim();
-    if (currentInput && !chatIO?.truncated_input) {
-      return currentInput;
-    }
-    if (!logId) {
-      throw new Error("缺少日志 ID");
-    }
-    const fullData = await getChatIO(logId, { mode: "full" });
-    setChatIO(fullData);
-    const fullInput = (fullData.Input ?? "").trim();
-    if (!fullInput) {
-      throw new Error("请求输入为空");
-    }
-    return fullInput;
-  };
-
-  const handleCopyReplayCurl = async (masked: boolean) => {
-    if (copyingCurlVariant) return;
-    setCopyingCurlVariant(masked ? "masked" : "raw");
-    try {
-      const requestBody = await getReplayInput();
-      const endpoint = inferGatewayEndpoint(logStyle, requestBody);
-      const rawAuthToken = getStoredAuthToken();
-      const authToken = masked ? maskAuthToken(rawAuthToken) : (rawAuthToken || "YOUR_AUTH_TOKEN");
-      const curlSnippet = buildReplayCurlSnippet({
-        baseUrl: window.location.origin,
-        endpoint,
-        authToken,
-        requestBody,
-      });
-      await navigator.clipboard.writeText(curlSnippet);
-      toast.success(masked ? "已复制 cURL（掩码版）" : "已复制 cURL（真实版）");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "未知错误";
-      toast.error(`复制 cURL 失败: ${message}`);
-    } finally {
-      setCopyingCurlVariant(null);
-    }
-  };
 
   if (loading) {
     return <Loading message="加载会话详情" />;
@@ -284,31 +1162,9 @@ export default function LogChatPage() {
           <h1 className="text-2xl font-bold">会话详情</h1>
           <p className="text-sm text-muted-foreground">日志 ID：{logId}</p>
         </div>
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-8"
-            onClick={() => void handleCopyReplayCurl(true)}
-            disabled={copyingCurlVariant !== null || Boolean(loadErrorMessage)}
-          >
-            <Copy className="size-3.5" />
-            复制 cURL（掩码）
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-8"
-            onClick={() => void handleCopyReplayCurl(false)}
-            disabled={copyingCurlVariant !== null || Boolean(loadErrorMessage)}
-          >
-            <Copy className="size-3.5" />
-            复制 cURL（真实）
-          </Button>
-          <Button variant="outline" onClick={() => navigate(-1)}>
-            返回
-          </Button>
-        </div>
+        <Button variant="outline" onClick={() => navigate(-1)}>
+          返回
+        </Button>
       </div>
 
       {loadErrorMessage && (
@@ -325,50 +1181,11 @@ export default function LogChatPage() {
 
       {!loadErrorMessage && chatIO && (
         <div className="space-y-6">
-          {isSummary && (
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base font-semibold">摘要模式</CardTitle>
-                <CardDescription>
-                  为避免大文本加载卡顿，当前仅展示摘要。{isTruncated ? "内容已截断。" : ""}
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="flex flex-col gap-3 text-sm text-muted-foreground">
-                <div className="flex flex-wrap gap-4">
-                  <span>输入大小：{chatIO.input_bytes ?? 0} 字节</span>
-                  <span>输出大小：{chatIO.output_bytes ?? 0} 字节</span>
-                  <span>输出条目：{chatIO.output_items ?? outputList.length}</span>
-                </div>
-                <div>
-                  <Button onClick={handleLoadFull} disabled={loadingFull}>
-                    {loadingFull ? "加载完整内容中..." : "加载完整内容"}
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-          )}
+          <StructuredInputCard raw={chatIO.Input} syntaxStyle={syntaxStyle} />
 
-          <JsonBlock title="请求输入" raw={chatIO.Input} syntaxStyle={syntaxStyle} />
-
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base font-semibold">响应输出</CardTitle>
-              <CardDescription>
-                {hasArrayOutput
-                  ? "列表中的每一项都会尝试以 JSON 格式展示"
-                  : "如果数据无法解析为 JSON，将保留原始内容"}
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {hasArrayOutput ? (
-                outputList.map((entry, index) => (
-                  <OutputPreview key={`chat-io-${index}`} index={index} raw={entry} syntaxStyle={syntaxStyle} />
-                ))
-              ) : (
-                <DefaultOutput raw={singleOutput} syntaxStyle={syntaxStyle} />
-              )}
-            </CardContent>
-          </Card>
+          <div className="space-y-4">
+            <StructuredOutputCard raw={normalizedOutputRaw} syntaxStyle={syntaxStyle} />
+          </div>
         </div>
       )}
     </div>

@@ -15,8 +15,13 @@ import (
 // BaseURL 推荐: https://generativelanguage.googleapis.com/v1beta
 // 通过 POST /models/{model}:generateContent 进行内容生成。
 type Gemini struct {
-	BaseURL string `json:"base_url"`
-	APIKey  string `json:"api_key"`
+	BaseURL  string `json:"base_url"`
+	APIKey   string `json:"api_key"`
+	ProxyURL string `json:"-"`
+}
+
+func (g *Gemini) SetProxyURL(proxyURL string) {
+	g.ProxyURL = strings.TrimSpace(proxyURL)
 }
 
 func (g *Gemini) BuildReq(ctx context.Context, header http.Header, model string, rawBody []byte) (*http.Request, error) {
@@ -75,7 +80,11 @@ func (g *Gemini) Models(ctx context.Context) ([]Model, error) {
 	req.Header.Set("x-goog-api-key", g.APIKey)
 	req.Header.Set("Content-Type", "application/json")
 
-	res, err := GetClient(modelsListTimeout).Do(req)
+	client, err := GetClientWithProxy(modelsListTimeout, g.ProxyURL)
+	if err != nil {
+		return nil, err
+	}
+	res, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}

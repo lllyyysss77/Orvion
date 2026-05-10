@@ -16,18 +16,19 @@ import (
 	"github.com/racio/orvion/models"
 	"github.com/racio/orvion/pkg"
 	"github.com/racio/orvion/providers"
+	"github.com/racio/orvion/service/ifacebridge"
 	runtimesvc "github.com/racio/orvion/service/runtime"
 	"github.com/samber/lo"
 	"gorm.io/gorm"
 )
 
 // BalanceChatWithLimiter 带限流功能的聊天负载均衡
-func BalanceChatWithLimiter(c *gin.Context, start time.Time, style string, before Before, providersWithMeta *ProvidersWithMeta, reqMeta models.ReqMeta) (*http.Response, *models.ChatLog, error) {
-	return balanceChatInternal(c, start, style, before, providersWithMeta, reqMeta, true)
+func BalanceChatWithLimiter(c *gin.Context, start time.Time, style string, requestPath string, before Before, providersWithMeta *ProvidersWithMeta, reqMeta models.ReqMeta) (*http.Response, *models.ChatLog, error) {
+	return balanceChatInternal(c, start, style, requestPath, before, providersWithMeta, reqMeta, true)
 }
 
 // balanceChatInternal 内部聊天负载均衡实现
-func balanceChatInternal(c *gin.Context, start time.Time, style string, before Before, providersWithMeta *ProvidersWithMeta, reqMeta models.ReqMeta, enableLimiter bool) (*http.Response, *models.ChatLog, error) {
+func balanceChatInternal(c *gin.Context, start time.Time, style string, requestPath string, before Before, providersWithMeta *ProvidersWithMeta, reqMeta models.ReqMeta, enableLimiter bool) (*http.Response, *models.ChatLog, error) {
 	slog.Info("request", "model", before.Model, "stream", before.Stream, "tool_call", before.toolCall, "structured_output", before.structuredOutput, "image", before.image)
 
 	// 获取context
@@ -62,7 +63,6 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, before B
 	if before.Stream {
 		responseHeaderTimeout = responseHeaderTimeout / 3
 	}
-	client := providers.GetClient(responseHeaderTimeout)
 
 	authKeyID, _ := ctx.Value(consts.ContextKeyAuthKeyID).(uint)
 	authKeyRPMLimit, _ := ctx.Value(consts.ContextKeyAuthKeyRPMLimit).(int)
@@ -147,6 +147,7 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, before B
 					ModelWithProviderID: modelWithProvider.ID,
 					Status:              "success",
 					Style:               style,
+					RequestPath:         requestPath,
 					UserAgent:           reqMeta.UserAgent,
 					RemoteIP:            reqMeta.RemoteIP,
 					AuthKeyID:           authKeyID,
@@ -155,7 +156,32 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, before B
 					ProxyTimeMs:         int(time.Since(start).Milliseconds()),
 				}
 
-				chatModel, err := providers.NewForStyle(style, provider.Config)
+				client, clientErr := providers.GetClientWithProxy(responseHeaderTimeout, provider.ProxyURL)
+				if clientErr != nil {
+					retryLog <- log.WithError(fmt.Errorf("init provider proxy client failed: %w", clientErr))
+					lastStatus = 0
+					lastWas429 = false
+					break
+				}
+
+				effectiveStyle := style
+				effectiveCtx := ctx
+				upstreamRaw := before.raw
+				bridgePlan, hasBridgePlan := providersWithMeta.BridgePlans[modelWithProvider.ID]
+				if hasBridgePlan && bridgePlan.Enabled {
+					convertedRaw, convertErr := ifacebridge.ConvertRequestBody(bridgePlan, before.raw)
+					if convertErr != nil {
+						retryLog <- log.WithError(fmt.Errorf("bridge request convert failed: %w", convertErr))
+						lastStatus = 0
+						lastWas429 = false
+						break
+					}
+					upstreamRaw = convertedRaw
+					effectiveStyle = bridgePlan.UpstreamStyle()
+					effectiveCtx = ifacebridge.ApplyUpstreamContext(ctx, bridgePlan)
+				}
+
+				chatModel, err := providers.NewForStyle(effectiveStyle, provider.Config)
 				if err != nil {
 					retryLog <- log.WithError(err)
 					lastStatus = 0
@@ -163,7 +189,7 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, before B
 					break
 				}
 
-				req, err := chatModel.BuildReq(ctx, header, modelWithProvider.ProviderModel, before.raw)
+				req, err := chatModel.BuildReq(effectiveCtx, header, modelWithProvider.ProviderModel, upstreamRaw)
 				if err != nil {
 					retryLog <- log.WithError(err)
 					// 构建请求失败属于不可恢复配置问题，直接切换
@@ -200,6 +226,8 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, before B
 					// 429/5xx/408：继续重试同一 provider
 					continue
 				}
+				// 按新口径：首字耗时=从发起上游请求到收到上游 HTTP 200 响应头。
+				upstreamAcceptedMs := int(time.Since(start).Milliseconds())
 
 				// 上游可能返回 HTTP 200 但响应体为空/无效（例如仅返回 [DONE]），
 				// 这类“假成功”需要转为错误并进入重试流程。
@@ -211,8 +239,21 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, before B
 					continue
 				}
 
+				if hasBridgePlan && bridgePlan.Enabled {
+					convertedRes, convertErr := ifacebridge.ConvertResponseBody(bridgePlan, res, before.Stream)
+					if convertErr != nil {
+						retryLog <- log.WithError(fmt.Errorf("bridge response convert failed: %w", convertErr))
+						lastStatus = 0
+						lastWas429 = false
+						_ = res.Body.Close()
+						continue
+					}
+					res = convertedRes
+				}
+
 				// success
 				balancer.Success(id)
+				log.FirstChunkTimeMs = upstreamAcceptedMs
 
 				return res, &log, nil
 			}
@@ -241,7 +282,7 @@ func RecordRetryLog(ctx context.Context, retryLog chan models.ChatLog) {
 	}
 }
 
-func RecordLog(ctx context.Context, reqStart time.Time, reader io.ReadCloser, processer Processer, logId uint, authKeyID uint, before Before, ioLog bool, style string) {
+func RecordLog(ctx context.Context, reqStart time.Time, upstreamFirstChunkMs int, reader io.ReadCloser, processer Processer, logId uint, authKeyID uint, before Before, ioLog bool, style string) {
 	recordFunc := func() error {
 		defer reader.Close()
 		if ioLog {
@@ -255,6 +296,9 @@ func RecordLog(ctx context.Context, reqStart time.Time, reader io.ReadCloser, pr
 		log, output, err := processer(ctx, reader, before.Stream, reqStart)
 		if err != nil {
 			return err
+		}
+		if upstreamFirstChunkMs > 0 {
+			log.FirstChunkTimeMs = upstreamFirstChunkMs
 		}
 		if log.Size == 0 {
 			log.Size = runtimesvc.EstimateOutputSize(output)
@@ -296,6 +340,9 @@ func RecordLog(ctx context.Context, reqStart time.Time, reader io.ReadCloser, pr
 		}
 		if _, err := gorm.G[models.ChatLog](models.DB).Where("id = ?", logId).Updates(ctx, *log); err != nil {
 			return err
+		}
+		if err := models.UpdateMonthlyChatLogByTime(ctx, reqStart, logId, *log); err != nil {
+			slog.Warn("更新日志月表失败", "error", err, "log_id", logId)
 		}
 		if log.TotalCost > 0 {
 			if err := AddTotalConsumedAmount(ctx, log.TotalCost); err != nil {
@@ -347,6 +394,9 @@ func SaveChatLog(ctx context.Context, log models.ChatLog) (uint, error) {
 			}
 			return 0, err
 		}
+		if err := models.CreateMonthlyChatLog(ctx, log); err != nil {
+			slog.Warn("写入日志月表失败", "error", err, "log_id", log.ID)
+		}
 		if log.Status == "error" && log.ModelWithProviderID > 0 {
 			modelWithProviderID := log.ModelWithProviderID
 			go func() {
@@ -377,6 +427,7 @@ type ProvidersWithMeta struct {
 	ModelWithProviderMap map[uint]models.ModelWithProvider
 	WeightItems          map[uint]int
 	ProviderMap          map[uint]models.Provider
+	BridgePlans          map[uint]ifacebridge.Plan
 	MaxRetry             int
 	TimeOut              int
 	IOLog                bool
@@ -384,7 +435,7 @@ type ProvidersWithMeta struct {
 	Breaker              bool   // 是否开启熔断
 }
 
-func ProvidersWithMetaBymodelsName(ctx context.Context, logStyle string, endpoint string, before Before) (*ProvidersWithMeta, error) {
+func ProvidersWithMetaBymodelsName(ctx context.Context, logStyle string, endpoint string, requestPath string, before Before) (*ProvidersWithMeta, error) {
 	if err := RestoreExpiredAutoDisabledModelProviders(ctx); err != nil {
 		slog.Warn("恢复已到期的模型关联提供商失败", "error", err)
 	}
@@ -393,10 +444,11 @@ func ProvidersWithMetaBymodelsName(ctx context.Context, logStyle string, endpoin
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			if _, err := SaveChatLog(ctx, models.ChatLog{
-				Name:   before.Model,
-				Status: "error",
-				Style:  logStyle,
-				Error:  err.Error(),
+				Name:        before.Model,
+				Status:      "error",
+				Style:       logStyle,
+				RequestPath: requestPath,
+				Error:       err.Error(),
 			}); err != nil {
 				return nil, err
 			}
@@ -406,10 +458,11 @@ func ProvidersWithMetaBymodelsName(ctx context.Context, logStyle string, endpoin
 	}
 	if model.Status == 0 {
 		if _, err := SaveChatLog(ctx, models.ChatLog{
-			Name:   before.Model,
-			Status: "error",
-			Style:  logStyle,
-			Error:  "model disabled",
+			Name:        before.Model,
+			Status:      "error",
+			Style:       logStyle,
+			RequestPath: requestPath,
+			Error:       "model disabled",
 		}); err != nil {
 			return nil, err
 		}
@@ -440,15 +493,23 @@ func ProvidersWithMetaBymodelsName(ctx context.Context, logStyle string, endpoin
 	providerMap := lo.KeyBy(providers, func(p models.Provider) uint { return p.ID })
 
 	weightItems := make(map[uint]int)
+	bridgePlans := make(map[uint]ifacebridge.Plan)
 	for _, mp := range modelWithProviders {
 		provider, ok := providerMap[mp.ProviderID]
 		if !ok {
 			continue
 		}
-		if !models.ProviderSupportsEndpoint([]string(provider.Capabilities), endpoint) {
+		capabilities := []string(provider.Capabilities)
+		if models.ProviderSupportsEndpoint(capabilities, endpoint) {
+			weightItems[mp.ID] = mp.Weight
+			continue
+		}
+		plan, ok := ifacebridge.ResolvePlan(provider, endpoint)
+		if !ok {
 			continue
 		}
 		weightItems[mp.ID] = mp.Weight
+		bridgePlans[mp.ID] = plan
 	}
 
 	if len(weightItems) == 0 {
@@ -463,6 +524,7 @@ func ProvidersWithMetaBymodelsName(ctx context.Context, logStyle string, endpoin
 		ModelWithProviderMap: modelWithProviderMap,
 		WeightItems:          weightItems,
 		ProviderMap:          providerMap,
+		BridgePlans:          bridgePlans,
 		MaxRetry:             model.MaxRetry,
 		TimeOut:              model.TimeOut,
 		IOLog:                ioLog,

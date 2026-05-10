@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"slices"
 	"sort"
 	"strconv"
@@ -29,8 +30,12 @@ type ProviderRequest struct {
 	Name            string   `json:"name"`
 	Config          string   `json:"config"`
 	Console         string   `json:"console"`
+	ProxyURL        string   `json:"proxy_url"`
 	ModelsFetchMode string   `json:"models_fetch_mode"`
 	Capabilities    []string `json:"capabilities"`
+	// 接口转换：启用后，不支持的接口会转为 target 指定接口能力。
+	InterfaceConversionEnabled bool   `json:"interface_conversion_enabled"`
+	InterfaceConversionTarget  string `json:"interface_conversion_target"`
 }
 
 const (
@@ -38,8 +43,6 @@ const (
 	modelsFetchModePricing  = "api_pricing"
 	pricingFetchTimeout     = 20 * time.Second
 )
-
-var pricingHTTPClient = &http.Client{Timeout: pricingFetchTimeout}
 
 // ModelRequest represents the request body for creating/updating a model
 type ModelRequest struct {
@@ -53,12 +56,16 @@ type ModelRequest struct {
 	Capabilities []string `json:"capabilities"`
 	InputPrice   *float64 `json:"input_price"`
 	OutputPrice  *float64 `json:"output_price"`
+	CacheRead    *float64 `json:"cache_read_price"`
+	CacheWrite   *float64 `json:"cache_write_price"`
 }
 
 type ModelWithPrice struct {
 	models.Model
-	InputPrice  *float64 `json:"InputPrice"`
-	OutputPrice *float64 `json:"OutputPrice"`
+	InputPrice      *float64 `json:"InputPrice"`
+	OutputPrice     *float64 `json:"OutputPrice"`
+	CacheReadPrice  *float64 `json:"CacheReadPrice"`
+	CacheWritePrice *float64 `json:"CacheWritePrice"`
 }
 
 // ModelWithProviderRequest represents the request body for creating/updating a model-provider association
@@ -164,19 +171,32 @@ func normalizeProviderCapabilities(values []string) models.ProviderCapabilities 
 	return models.NormalizeProviderCapabilities(values)
 }
 
+func normalizeInterfaceConversionTarget(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "chat":
+		return "chat"
+	case "responses":
+		return "responses"
+	case "messages":
+		return "messages"
+	default:
+		return ""
+	}
+}
+
 func listProviderModelsWithMode(ctx context.Context, provider models.Provider) ([]providers.Model, error) {
 	mode := normalizeModelsFetchMode(provider.ModelsFetchMode)
 	if mode == modelsFetchModePricing {
-		return listProviderModelsFromPricing(ctx, provider.Config)
+		return listProviderModelsFromPricing(ctx, provider.Config, provider.ProxyURL)
 	}
-	chatModel, err := providers.New(provider.Config)
+	chatModel, err := providers.NewWithProxy(provider.Config, provider.ProxyURL)
 	if err != nil {
 		return nil, err
 	}
 	return chatModel.Models(ctx)
 }
 
-func listProviderModelsFromPricing(ctx context.Context, configRaw string) ([]providers.Model, error) {
+func listProviderModelsFromPricing(ctx context.Context, configRaw string, proxyURL string) ([]providers.Model, error) {
 	var cfg struct {
 		BaseURL string `json:"base_url"`
 		APIKey  string `json:"api_key"`
@@ -198,7 +218,11 @@ func listProviderModelsFromPricing(ctx context.Context, configRaw string) ([]pro
 	if strings.TrimSpace(cfg.APIKey) != "" {
 		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(cfg.APIKey))
 	}
-	res, err := pricingHTTPClient.Do(req)
+	httpClient, err := providers.GetClientWithProxy(pricingFetchTimeout, proxyURL)
+	if err != nil {
+		return nil, err
+	}
+	res, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -263,11 +287,39 @@ func collectPricingModelIDs(node any, out map[string]struct{}) {
 	}
 }
 
+func sanitizeProviderProxyURL(raw string) (string, error) {
+	proxyURL := strings.TrimSpace(raw)
+	if proxyURL == "" {
+		return "", nil
+	}
+
+	lower := strings.ToLower(proxyURL)
+	if strings.HasPrefix(lower, "socket5://") {
+		proxyURL = "socks5://" + proxyURL[len("socket5://"):]
+	}
+
+	parsed, err := url.Parse(proxyURL)
+	if err != nil {
+		return "", err
+	}
+	switch strings.ToLower(strings.TrimSpace(parsed.Scheme)) {
+	case "http", "https", "socks5":
+		return proxyURL, nil
+	default:
+		return "", fmt.Errorf("unsupported proxy scheme: %s", parsed.Scheme)
+	}
+}
+
 // CreateProvider 创建提供商
 func CreateProvider(c *gin.Context) {
 	var req ProviderRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.BadRequest(c, "Invalid request body: "+err.Error())
+		return
+	}
+	proxyURL, err := sanitizeProviderProxyURL(req.ProxyURL)
+	if err != nil {
+		common.BadRequest(c, "Invalid proxy_url: "+err.Error())
 		return
 	}
 
@@ -283,12 +335,31 @@ func CreateProvider(c *gin.Context) {
 		return
 	}
 
+	normalizedCapabilities := normalizeProviderCapabilities(req.Capabilities)
+	conversionEnabled := 0
+	conversionTarget := ""
+	if req.InterfaceConversionEnabled {
+		conversionEnabled = 1
+		conversionTarget = normalizeInterfaceConversionTarget(req.InterfaceConversionTarget)
+		if conversionTarget == "" {
+			common.BadRequest(c, "interface_conversion_target must be one of chat/responses/messages")
+			return
+		}
+		if !models.ProviderSupportsEndpoint([]string(normalizedCapabilities), conversionTarget) {
+			common.BadRequest(c, "interface_conversion_target must be supported by provider capabilities")
+			return
+		}
+	}
+
 	provider := models.Provider{
-		Name:            req.Name,
-		Config:          req.Config,
-		Console:         req.Console,
-		ModelsFetchMode: normalizeModelsFetchMode(req.ModelsFetchMode),
-		Capabilities:    normalizeProviderCapabilities(req.Capabilities),
+		Name:                       req.Name,
+		Config:                     req.Config,
+		Console:                    req.Console,
+		ProxyURL:                   proxyURL,
+		ModelsFetchMode:            normalizeModelsFetchMode(req.ModelsFetchMode),
+		Capabilities:               normalizedCapabilities,
+		InterfaceConversionEnabled: conversionEnabled,
+		InterfaceConversionTarget:  conversionTarget,
 	}
 
 	if err := gorm.G[models.Provider](models.DB).Create(c.Request.Context(), &provider); err != nil {
@@ -313,6 +384,11 @@ func UpdateProvider(c *gin.Context) {
 		common.BadRequest(c, "Invalid request body: "+err.Error())
 		return
 	}
+	proxyURL, err := sanitizeProviderProxyURL(req.ProxyURL)
+	if err != nil {
+		common.BadRequest(c, "Invalid proxy_url: "+err.Error())
+		return
+	}
 
 	// Check if provider exists
 	if _, err := gorm.G[models.Provider](models.DB).Where("id = ?", id).First(c.Request.Context()); err != nil {
@@ -324,13 +400,32 @@ func UpdateProvider(c *gin.Context) {
 		return
 	}
 
+	normalizedCapabilities := normalizeProviderCapabilities(req.Capabilities)
+	conversionEnabled := 0
+	conversionTarget := ""
+	if req.InterfaceConversionEnabled {
+		conversionEnabled = 1
+		conversionTarget = normalizeInterfaceConversionTarget(req.InterfaceConversionTarget)
+		if conversionTarget == "" {
+			common.BadRequest(c, "interface_conversion_target must be one of chat/responses/messages")
+			return
+		}
+		if !models.ProviderSupportsEndpoint([]string(normalizedCapabilities), conversionTarget) {
+			common.BadRequest(c, "interface_conversion_target must be supported by provider capabilities")
+			return
+		}
+	}
+
 	// Update fields
 	updates := models.Provider{
-		Name:            req.Name,
-		Config:          req.Config,
-		Console:         req.Console,
-		ModelsFetchMode: normalizeModelsFetchMode(req.ModelsFetchMode),
-		Capabilities:    normalizeProviderCapabilities(req.Capabilities),
+		Name:                       req.Name,
+		Config:                     req.Config,
+		Console:                    req.Console,
+		ProxyURL:                   proxyURL,
+		ModelsFetchMode:            normalizeModelsFetchMode(req.ModelsFetchMode),
+		Capabilities:               normalizedCapabilities,
+		InterfaceConversionEnabled: conversionEnabled,
+		InterfaceConversionTarget:  conversionTarget,
 	}
 
 	if _, err := gorm.G[models.Provider](models.DB).Where("id = ?", id).Updates(c.Request.Context(), updates); err != nil {
@@ -461,16 +556,24 @@ func GetModels(c *gin.Context) {
 		key := strings.ToLower(strings.TrimSpace(model.Name))
 		var inputPrice *float64
 		var outputPrice *float64
+		var cacheReadPrice *float64
+		var cacheWritePrice *float64
 		if price, ok := priceMap[key]; ok {
 			input := price.Input
 			output := price.Output
+			cacheRead := price.CacheRead
+			cacheWrite := price.CacheWrite
 			inputPrice = &input
 			outputPrice = &output
+			cacheReadPrice = &cacheRead
+			cacheWritePrice = &cacheWrite
 		}
 		withPrices = append(withPrices, ModelWithPrice{
-			Model:       model,
-			InputPrice:  inputPrice,
-			OutputPrice: outputPrice,
+			Model:           model,
+			InputPrice:      inputPrice,
+			OutputPrice:     outputPrice,
+			CacheReadPrice:  cacheReadPrice,
+			CacheWritePrice: cacheWritePrice,
 		})
 	}
 
@@ -545,7 +648,7 @@ func CreateModel(c *gin.Context) {
 		return
 	}
 
-	if err := upsertModelPrice(c.Request.Context(), model.Name, req.InputPrice, req.OutputPrice); err != nil {
+	if err := upsertModelPrice(c.Request.Context(), model.Name, req.InputPrice, req.OutputPrice, req.CacheRead, req.CacheWrite); err != nil {
 		common.InternalServerError(c, "Failed to save model price: "+err.Error())
 		return
 	}
@@ -624,7 +727,7 @@ func UpdateModel(c *gin.Context) {
 		return
 	}
 
-	if err := upsertModelPrice(c.Request.Context(), updates.Name, req.InputPrice, req.OutputPrice); err != nil {
+	if err := upsertModelPrice(c.Request.Context(), updates.Name, req.InputPrice, req.OutputPrice, req.CacheRead, req.CacheWrite); err != nil {
 		common.InternalServerError(c, "Failed to save model price: "+err.Error())
 		return
 	}
@@ -975,6 +1078,16 @@ type WrapLog struct {
 	KeyName string `json:"key_name"`
 }
 
+type chatLogQueryFilter struct {
+	ProviderName string
+	Name         string
+	Status       string
+	Style        string
+	AuthKeyID    string
+	StartAt      *time.Time
+	EndAt        *time.Time
+}
+
 // GetRequestLogs 获取最近的请求日志（支持分页和筛选）
 func GetRequestLogs(c *gin.Context) {
 	// 解析分页参数
@@ -993,54 +1106,31 @@ func GetRequestLogs(c *gin.Context) {
 	startAtRaw := strings.TrimSpace(c.Query("start_at"))
 	endAtRaw := strings.TrimSpace(c.Query("end_at"))
 
-	// 构建查询条件
-	query := models.DB.Model(&models.ChatLog{})
-
-	if providerName != "" {
-		query = query.Where("provider_name = ?", providerName)
+	filter := chatLogQueryFilter{
+		ProviderName: providerName,
+		Name:         name,
+		Status:       status,
+		Style:        style,
+		AuthKeyID:    authKeyID,
 	}
-
-	if name != "" {
-		query = query.Where("name = ?", name)
-	}
-
-	if status != "" {
-		query = query.Where("status = ?", status)
-	}
-
-	if style != "" {
-		query = query.Where("style = ?", style)
-	}
-
-	if authKeyID != "" {
-		query = query.Where("auth_key_id = ?", authKeyID)
-	}
-
 	if startAtRaw != "" {
 		startAt, err := parseLogQueryTime(startAtRaw)
 		if err != nil {
 			common.BadRequest(c, "Invalid start_at format")
 			return
 		}
-		query = query.Where("created_at >= ?", startAt)
+		filter.StartAt = &startAt
 	}
-
 	if endAtRaw != "" {
 		endAt, err := parseLogQueryTime(endAtRaw)
 		if err != nil {
 			common.BadRequest(c, "Invalid end_at format")
 			return
 		}
-		query = query.Where("created_at <= ?", endAt)
+		filter.EndAt = &endAt
 	}
 
-	// 执行分页查询
-	var logs []models.ChatLog
-	total, err := common.PaginateQuery(
-		query.Order("id DESC"),
-		params,
-		&logs,
-	)
+	logs, total, err := queryRequestLogsByMonthlyTables(c.Request.Context(), params, filter)
 	if err != nil {
 		common.InternalServerError(c, "Failed to query logs: "+err.Error())
 		return
@@ -1061,7 +1151,7 @@ func GetRequestLogs(c *gin.Context) {
 			keyName = key.Name
 		}
 		if log.AuthKeyID == 0 {
-			keyName = "admin"
+			keyName = "管理员"
 		}
 		wrapLogs = append(wrapLogs, WrapLog{
 			ChatLog: log,
@@ -1095,6 +1185,115 @@ func parseLogQueryTime(raw string) (time.Time, error) {
 		}
 	}
 	return time.Time{}, fmt.Errorf("invalid time format")
+}
+
+func queryRequestLogsByMonthlyTables(ctx context.Context, params common.PaginationParams, filter chatLogQueryFilter) ([]models.ChatLog, int64, error) {
+	tables, err := models.ListChatLogMonthlyTables()
+	if err != nil {
+		return nil, 0, err
+	}
+	if len(tables) == 0 {
+		return queryRequestLogsFromMainTable(ctx, params, filter)
+	}
+
+	columns := models.ChatLogColumnsSQL()
+	filterSQL, filterArgs := buildChatLogFilterSQL(filter)
+
+	selectSQL := make([]string, 0, len(tables))
+	queryArgs := make([]any, 0, len(filterArgs)*len(tables))
+	for _, tableName := range tables {
+		selectSQL = append(selectSQL, fmt.Sprintf("SELECT %s FROM %s WHERE deleted_at IS NULL%s", columns, tableName, filterSQL))
+		queryArgs = append(queryArgs, filterArgs...)
+	}
+
+	unionSQL := strings.Join(selectSQL, " UNION ALL ")
+
+	type countRow struct {
+		Total int64 `gorm:"column:total"`
+	}
+	var totalRow countRow
+	countSQL := fmt.Sprintf("SELECT COUNT(1) AS total FROM (%s) AS logs", unionSQL)
+	if err := models.DB.WithContext(ctx).Raw(countSQL, queryArgs...).Scan(&totalRow).Error; err != nil {
+		return nil, 0, err
+	}
+
+	offset := (params.Page - 1) * params.PageSize
+	pageArgs := append(append(make([]any, 0, len(queryArgs)+2), queryArgs...), params.PageSize, offset)
+	pageSQL := fmt.Sprintf("SELECT %s FROM (%s) AS logs ORDER BY id DESC LIMIT ? OFFSET ?", columns, unionSQL)
+	logs := make([]models.ChatLog, 0, params.PageSize)
+	if err := models.DB.WithContext(ctx).Raw(pageSQL, pageArgs...).Scan(&logs).Error; err != nil {
+		return nil, 0, err
+	}
+	return logs, totalRow.Total, nil
+}
+
+func queryRequestLogsFromMainTable(ctx context.Context, params common.PaginationParams, filter chatLogQueryFilter) ([]models.ChatLog, int64, error) {
+	query := models.DB.WithContext(ctx).Model(&models.ChatLog{}).Where("deleted_at IS NULL")
+	if filter.ProviderName != "" {
+		query = query.Where("provider_name = ?", filter.ProviderName)
+	}
+	if filter.Name != "" {
+		query = query.Where("name = ?", filter.Name)
+	}
+	if filter.Status != "" {
+		query = query.Where("status = ?", filter.Status)
+	}
+	if filter.Style != "" {
+		query = query.Where("style = ?", filter.Style)
+	}
+	if filter.AuthKeyID != "" {
+		query = query.Where("auth_key_id = ?", filter.AuthKeyID)
+	}
+	if filter.StartAt != nil {
+		query = query.Where("created_at >= ?", *filter.StartAt)
+	}
+	if filter.EndAt != nil {
+		query = query.Where("created_at <= ?", *filter.EndAt)
+	}
+
+	logs := make([]models.ChatLog, 0, params.PageSize)
+	total, err := common.PaginateQuery(query.Order("id DESC"), params, &logs)
+	if err != nil {
+		return nil, 0, err
+	}
+	return logs, total, nil
+}
+
+func buildChatLogFilterSQL(filter chatLogQueryFilter) (string, []any) {
+	clauses := make([]string, 0, 7)
+	args := make([]any, 0, 7)
+	if filter.ProviderName != "" {
+		clauses = append(clauses, "provider_name = ?")
+		args = append(args, filter.ProviderName)
+	}
+	if filter.Name != "" {
+		clauses = append(clauses, "name = ?")
+		args = append(args, filter.Name)
+	}
+	if filter.Status != "" {
+		clauses = append(clauses, "status = ?")
+		args = append(args, filter.Status)
+	}
+	if filter.Style != "" {
+		clauses = append(clauses, "style = ?")
+		args = append(args, filter.Style)
+	}
+	if filter.AuthKeyID != "" {
+		clauses = append(clauses, "auth_key_id = ?")
+		args = append(args, filter.AuthKeyID)
+	}
+	if filter.StartAt != nil {
+		clauses = append(clauses, "created_at >= ?")
+		args = append(args, *filter.StartAt)
+	}
+	if filter.EndAt != nil {
+		clauses = append(clauses, "created_at <= ?")
+		args = append(args, *filter.EndAt)
+	}
+	if len(clauses) == 0 {
+		return "", nil
+	}
+	return " AND " + strings.Join(clauses, " AND "), args
 }
 
 // GetChatIO 查询指定日志的输入输出记录
@@ -1352,53 +1551,61 @@ func CleanLogs(c *gin.Context) {
 
 	switch req.Type {
 	case "count":
-		// 获取要保留的最小 ID
-		var minID uint
+		// 获取要保留的最小 ID（最新 req.Value 条中的最小值）
+		ids := make([]uint, 0, req.Value)
 		if err := models.DB.Model(&models.ChatLog{}).
+			Where("deleted_at IS NULL").
 			Order("id DESC").
 			Limit(req.Value).
-			Pluck("id", &[]uint{}).
-			Scan(&minID).Error; err != nil {
+			Pluck("id", &ids).Error; err != nil {
 			common.InternalServerError(c, "Failed to query min ID: "+err.Error())
 			return
 		}
-
-		if minID == 0 {
+		if len(ids) == 0 {
 			common.Success(c, map[string]any{"deleted_count": 0})
 			return
 		}
+		minID := ids[len(ids)-1]
 
-		// 先删除关联的 ChatIO
+		// 先删除关联的 ChatIO（以主表 ID 为准）
 		if err := models.DB.Unscoped().Where("log_id IN (SELECT id FROM chat_logs WHERE id < ?)", minID).Delete(&models.ChatIO{}).Error; err != nil {
 			common.InternalServerError(c, "Failed to delete chat IO: "+err.Error())
 			return
 		}
 
-		// 删除日志
+		// 删除主表日志
 		result := models.DB.Unscoped().Where("id < ?", minID).Delete(&models.ChatLog{})
 		if result.Error != nil {
 			common.InternalServerError(c, "Failed to delete logs: "+result.Error.Error())
 			return
 		}
 		deletedCount = result.RowsAffected
+		if err := deleteMonthlyLogsByCondition(c.Request.Context(), "id < ?", minID); err != nil {
+			common.InternalServerError(c, "Failed to delete monthly logs: "+err.Error())
+			return
+		}
 
 	case "days":
 		// 计算 N 天前的时间
 		cutoffTime := time.Now().AddDate(0, 0, -req.Value)
 
-		// 先删除关联的 ChatIO
+		// 先删除关联的 ChatIO（以主表 ID 为准）
 		if err := models.DB.Unscoped().Where("log_id IN (SELECT id FROM chat_logs WHERE created_at < ?)", cutoffTime).Delete(&models.ChatIO{}).Error; err != nil {
 			common.InternalServerError(c, "Failed to delete chat IO: "+err.Error())
 			return
 		}
 
-		// 删除日志
+		// 删除主表日志
 		result := models.DB.Unscoped().Where("created_at < ?", cutoffTime).Delete(&models.ChatLog{})
 		if result.Error != nil {
 			common.InternalServerError(c, "Failed to delete logs: "+result.Error.Error())
 			return
 		}
 		deletedCount = result.RowsAffected
+		if err := deleteMonthlyLogsByCondition(c.Request.Context(), "created_at < ?", cutoffTime); err != nil {
+			common.InternalServerError(c, "Failed to delete monthly logs: "+err.Error())
+			return
+		}
 
 	default:
 		common.BadRequest(c, "Invalid type: must be 'count' or 'days'")
@@ -1406,6 +1613,19 @@ func CleanLogs(c *gin.Context) {
 	}
 
 	common.Success(c, map[string]any{"deleted_count": deletedCount})
+}
+
+func deleteMonthlyLogsByCondition(ctx context.Context, condition string, args ...any) error {
+	tables, err := models.ListChatLogMonthlyTables()
+	if err != nil {
+		return err
+	}
+	for _, tableName := range tables {
+		if err := models.DB.WithContext(ctx).Table(tableName).Unscoped().Where(condition, args...).Delete(&models.ChatLog{}).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func normalizeModelCapabilities(values []string) []string {
@@ -1432,7 +1652,7 @@ func normalizeModelCapabilities(values []string) []string {
 	return result
 }
 
-func upsertModelPrice(ctx context.Context, modelName string, input, output *float64) error {
+func upsertModelPrice(ctx context.Context, modelName string, input, output, cacheRead, cacheWrite *float64) error {
 	if modelName == "" {
 		return nil
 	}
@@ -1442,7 +1662,13 @@ func upsertModelPrice(ctx context.Context, modelName string, input, output *floa
 	if output != nil && *output == 0 {
 		output = nil
 	}
-	if input == nil && output == nil {
+	if cacheRead != nil && *cacheRead == 0 {
+		cacheRead = nil
+	}
+	if cacheWrite != nil && *cacheWrite == 0 {
+		cacheWrite = nil
+	}
+	if input == nil && output == nil && cacheRead == nil && cacheWrite == nil {
 		return nil
 	}
 
@@ -1462,10 +1688,12 @@ func upsertModelPrice(ctx context.Context, modelName string, input, output *floa
 	}
 
 	updates := models.ModelPrice{
-		ModelID:  key,
-		Provider: price.Provider,
-		Input:    price.Input,
-		Output:   price.Output,
+		ModelID:    key,
+		Provider:   price.Provider,
+		Input:      price.Input,
+		Output:     price.Output,
+		CacheRead:  price.CacheRead,
+		CacheWrite: price.CacheWrite,
 	}
 	if input != nil {
 		updates.Input = *input
@@ -1473,12 +1701,20 @@ func upsertModelPrice(ctx context.Context, modelName string, input, output *floa
 	if output != nil {
 		updates.Output = *output
 	}
+	if cacheRead != nil {
+		updates.CacheRead = *cacheRead
+	}
+	if cacheWrite != nil {
+		updates.CacheWrite = *cacheWrite
+	}
 
 	if !exists {
 		return models.DB.WithContext(ctx).Create(&updates).Error
 	}
 	return models.DB.WithContext(ctx).Model(&models.ModelPrice{}).Where("model_id = ?", key).Updates(map[string]any{
-		"input":  updates.Input,
-		"output": updates.Output,
+		"input":       updates.Input,
+		"output":      updates.Output,
+		"cache_read":  updates.CacheRead,
+		"cache_write": updates.CacheWrite,
 	}).Error
 }

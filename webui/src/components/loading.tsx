@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react';
-import { Heart, Rocket, Sparkles, Star } from "lucide-react";
 import {
   readStoredLoadingUIStyle,
   resolveLoadingUIStyle,
@@ -42,51 +41,45 @@ const Loading: React.FC<LoadingProps> = ({ message = '加载中', className = ''
   }, []);
 
   const renderVisual = () => {
-    if (style === "star_dash") {
+    if (style === "orbit_ring") {
       return (
-        <div className="relative h-7 overflow-hidden rounded-xl bg-background/70">
-          <div className="absolute inset-x-3 top-1/2 h-1.5 -translate-y-1/2 rounded-full border border-dashed border-muted-foreground/30" />
-          <div className="loader-cute-star absolute left-2 top-[3px] inline-flex size-6 items-center justify-center rounded-full bg-white/90 text-fuchsia-500 shadow-sm dark:bg-zinc-900/90">
-            <Star className="size-3.5" />
-          </div>
-          <Sparkles className="loader-cute-sparkle-left absolute right-9 top-[4px] size-3 text-amber-500" />
-          <Sparkles className="loader-cute-sparkle-right absolute right-4 top-[11px] size-2.5 text-sky-500" />
-        </div>
-      );
-    }
-
-    if (style === "jelly_wave") {
-      return (
-        <div className="relative h-7 rounded-xl bg-background/70 px-3">
-          <div className="flex h-full items-center gap-2">
-            <span className="loader-cute-jelly-1 h-3.5 w-10 rounded-full bg-gradient-to-r from-rose-300 to-amber-300 dark:from-rose-700 dark:to-amber-700" />
-            <span className="loader-cute-jelly-2 h-3.5 w-10 rounded-full bg-gradient-to-r from-sky-300 to-cyan-300 dark:from-sky-700 dark:to-cyan-700" />
-            <span className="loader-cute-jelly-3 h-3.5 w-10 rounded-full bg-gradient-to-r from-emerald-300 to-lime-300 dark:from-emerald-700 dark:to-lime-700" />
+        <div className="flex h-8 items-center justify-center">
+          <div className="loader-min-orbit relative size-8 rounded-full border border-border/70">
+            <span className="absolute left-1/2 top-0 size-2 -translate-x-1/2 rounded-full bg-foreground/75" />
           </div>
         </div>
       );
     }
 
-    if (style === "candy_slide") {
+    if (style === "slim_progress") {
       return (
-        <div className="relative h-7 overflow-hidden rounded-xl bg-background/70">
-          <div className="loader-cute-candy absolute inset-y-[5px] left-0 w-14 rounded-full bg-gradient-to-r from-pink-300 via-violet-300 to-indigo-300 dark:from-pink-700 dark:via-violet-700 dark:to-indigo-700" />
-          <div className="absolute inset-x-3 top-1/2 h-1.5 -translate-y-1/2 rounded-full bg-muted-foreground/15" />
-          <div className="loader-cute-heart absolute left-2 top-[3px] inline-flex size-6 items-center justify-center rounded-full bg-white/90 text-rose-500 shadow-sm dark:bg-zinc-900/90">
-            <Heart className="size-3.5" />
+        <div className="flex h-8 items-center px-2">
+          <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-muted-foreground/20">
+            <span className="loader-min-sweep absolute inset-y-0 left-0 w-2/5 rounded-full bg-foreground/70" />
+          </div>
+        </div>
+      );
+    }
+
+    if (style === "ripple_focus") {
+      return (
+        <div className="flex h-8 items-center justify-center">
+          <div className="relative size-9">
+            <span className="loader-min-ripple-1 absolute inset-0 rounded-full border border-foreground/50" />
+            <span className="loader-min-ripple-2 absolute inset-0 rounded-full border border-foreground/35" />
+            <span className="absolute left-1/2 top-1/2 size-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-foreground/75" />
           </div>
         </div>
       );
     }
 
     return (
-      <div className="relative h-7 overflow-hidden rounded-xl bg-background/70">
-        <div className="absolute inset-x-3 top-1/2 h-1.5 -translate-y-1/2 rounded-full bg-muted-foreground/15" />
-        <div className="loader-cute-rocket absolute left-2 top-[3px] inline-flex size-6 items-center justify-center rounded-full bg-white/90 text-rose-500 shadow-sm dark:bg-zinc-900/90">
-          <Rocket className="size-3.5" />
-        </div>
-        <Sparkles className="loader-cute-sparkle-left absolute right-9 top-[4px] size-3 text-amber-500" />
-        <Sparkles className="loader-cute-sparkle-right absolute right-4 top-[11px] size-2.5 text-sky-500" />
+      <div className="flex h-8 items-end justify-center gap-1.5">
+        <span className="loader-min-line-1 h-4 w-1.5 rounded-full bg-foreground/70" />
+        <span className="loader-min-line-2 h-6 w-1.5 rounded-full bg-foreground/60" />
+        <span className="loader-min-line-3 h-4 w-1.5 rounded-full bg-foreground/50" />
+        <span className="loader-min-line-4 h-6 w-1.5 rounded-full bg-foreground/60" />
+        <span className="loader-min-line-5 h-4 w-1.5 rounded-full bg-foreground/70" />
       </div>
     );
   };
@@ -94,12 +87,14 @@ const Loading: React.FC<LoadingProps> = ({ message = '加载中', className = ''
   return (
     <div className={`flex flex-col items-center justify-center gap-3 ${className}`}>
       <div
-        className="relative w-[196px] rounded-2xl border border-border/60 bg-gradient-to-r from-emerald-100/80 via-amber-100/80 to-sky-100/80 p-2 shadow-sm dark:from-emerald-950/40 dark:via-amber-950/40 dark:to-sky-950/40"
+        className="relative w-[196px] rounded-xl border border-border/60 bg-card/85 p-2.5 shadow-sm"
         role="status"
         aria-live="polite"
         aria-label={normalizedMessage}
       >
-        {renderVisual()}
+        <div className="rounded-lg bg-background/70 px-2">
+          {renderVisual()}
+        </div>
       </div>
       <div className="text-sm font-medium text-muted-foreground">{normalizedMessage}</div>
     </div>

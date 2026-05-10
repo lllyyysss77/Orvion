@@ -325,7 +325,7 @@ func GetAuthKeysList(c *gin.Context) {
 			Name: key.Name,
 		}
 	}
-	result = append(result, KeyItem{ID: 0, Name: "admin"})
+	result = append(result, KeyItem{ID: 0, Name: "管理员"})
 
 	common.Success(c, result)
 }

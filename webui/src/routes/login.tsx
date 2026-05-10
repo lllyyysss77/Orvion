@@ -80,6 +80,23 @@ export default function LoginPage() {
   });
   const currentSectionRef = useRef(SECTION_INDEX.home);
   const rafRef = useRef<number | null>(null);
+  const visibilityRef = useRef<number[]>([1, 0, 0, 0, 0]);
+  const lastVisibilityCommitAtRef = useRef(0);
+  const runtimeOrigin = useMemo(() => {
+    if (typeof window === "undefined") return "https://your-domain";
+    return window.location.origin.replace(/\/+$/, "");
+  }, []);
+  const runtimeCliSections = useMemo(
+    () =>
+      cliSections.map((item) => ({
+        ...item,
+        configContent: item.configContent.replaceAll("https://your-domain", runtimeOrigin),
+        extraConfigContent: item.extraConfigContent
+          ? item.extraConfigContent.replaceAll("https://your-domain", runtimeOrigin)
+          : item.extraConfigContent,
+      })),
+    [runtimeOrigin],
+  );
 
   useEffect(() => {
     const root = scrollRootRef.current;
@@ -97,11 +114,22 @@ export default function LoginPage() {
       return Math.max(0, 1 - distanceFromCenter / maxDistance);
     };
 
-    const runScrollCompute = () => {
+    const runScrollCompute = (forceCommit = false) => {
       const newScrollTop = root.scrollTop;
 
-      const nextVisibility = sectionTabs.map((item) => calculateVisibility(sectionRefs.current[item.id]));
-      setSectionVisibility(nextVisibility);
+      const nextVisibility = sectionTabs.map((item) => {
+        const value = calculateVisibility(sectionRefs.current[item.id]);
+        return Math.round(value * 1000) / 1000;
+      });
+      const now = window.performance.now();
+      const prevVisibility = visibilityRef.current;
+      const visibilityChanged = nextVisibility.some((value, idx) => Math.abs(value - (prevVisibility[idx] ?? 0)) >= 0.03);
+      const canCommitByTime = now - lastVisibilityCommitAtRef.current >= 48;
+      if (forceCommit || (visibilityChanged && canCommitByTime)) {
+        visibilityRef.current = nextVisibility;
+        lastVisibilityCommitAtRef.current = now;
+        setSectionVisibility(nextVisibility);
+      }
 
       const scrollMiddle = newScrollTop + window.innerHeight / 2;
       let nextSection = SECTION_INDEX.home;
@@ -133,12 +161,12 @@ export default function LoginPage() {
 
     const handleResize = () => {
       setWindowWidth(window.innerWidth);
-      runScrollCompute();
+      runScrollCompute(true);
     };
 
     root.addEventListener("scroll", handleScroll, { passive: true });
     window.addEventListener("resize", handleResize, { passive: true });
-    window.requestAnimationFrame(runScrollCompute);
+    window.requestAnimationFrame(() => runScrollCompute(true));
 
     return () => {
       root.removeEventListener("scroll", handleScroll);
@@ -458,7 +486,7 @@ export default function LoginPage() {
 
       <div
         ref={scrollRootRef}
-        className={`relative z-10 h-screen overflow-y-auto overflow-x-hidden snap-y snap-mandatory scroll-smooth ${
+        className={`relative z-10 h-screen overflow-y-auto overflow-x-hidden snap-y snap-proximity scroll-smooth ${
           darkMode ? "bg-[#191714]/95" : "bg-[#fafaf7]/95"
         }`}
         style={{
@@ -585,7 +613,7 @@ export default function LoginPage() {
             </div>
           </section>
 
-          {cliSections.map((item) => {
+          {runtimeCliSections.map((item) => {
             const sectionIndex = SECTION_INDEX[item.id];
             return (
               <CliSection

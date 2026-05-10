@@ -96,6 +96,26 @@ docker run -d \
 - `BREAKER_ALERT_TG_PROXY_URL`（可选；显式指定 TG 请求代理）
 - `BREAKER_ALERT_TG_STATUS_IMAGE_URL`（可选；`/status` 与日报配图拉取地址）
 
+### Provider 接口转换配置（可选）
+
+当某个上游 Provider 不支持某些接口形式时，可在 Provider 独立字段中开启接口桥接，把不支持的接口统一转换到你指定的目标接口能力。
+
+示例：
+
+```json
+{
+  "name": "my-provider",
+  "interface_conversion_enabled": true,
+  "interface_conversion_target": "messages"
+}
+```
+
+说明：
+
+- `interface_conversion_target` 取值为 `chat` / `responses` / `messages`，表示“统一转换目标能力”。
+- 仅当 `interface_conversion_enabled=true` 时生效。
+- 当某个客户端入口接口不被该 Provider 支持时，会自动转到 `interface_conversion_target` 指定的接口能力。
+
 ## 认证与鉴权
 
 - `/api/*`（管理接口）：

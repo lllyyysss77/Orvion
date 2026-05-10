@@ -1,19 +1,19 @@
 export const LOADING_UI_STORAGE_KEY = "orvion_ui_loading_style";
 
-export const loadingUIValues = ["rocket_trail", "star_dash", "jelly_wave", "candy_slide"] as const;
+export const loadingUIValues = ["line_pulse", "orbit_ring", "slim_progress", "ripple_focus"] as const;
 
 export type LoadingUIStyle = (typeof loadingUIValues)[number];
 
 export const resolveLoadingUIStyle = (style?: string): LoadingUIStyle => {
-  if (!style) return "rocket_trail";
+  if (!style) return "line_pulse";
   if (loadingUIValues.includes(style as LoadingUIStyle)) {
     return style as LoadingUIStyle;
   }
-  return "rocket_trail";
+  return "line_pulse";
 };
 
 export const readStoredLoadingUIStyle = (): LoadingUIStyle => {
-  if (typeof window === "undefined") return "rocket_trail";
+  if (typeof window === "undefined") return "line_pulse";
   return resolveLoadingUIStyle(window.localStorage.getItem(LOADING_UI_STORAGE_KEY) ?? undefined);
 };
 

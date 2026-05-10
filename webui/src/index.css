@@ -161,28 +161,16 @@
     @apply bg-background text-foreground;
   }
 
-  /* Custom scrollbar styles */
-  ::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
-  }
-
-  ::-webkit-scrollbar-track {
-    @apply bg-muted;
-  }
-
-  ::-webkit-scrollbar-thumb {
-    @apply bg-border rounded-full;
-  }
-
-  ::-webkit-scrollbar-thumb:hover {
-    @apply bg-foreground/30;
-  }
-
-  /* For Firefox */
+  /* 全局隐藏滚动条（保留滚动能力） */
   * {
-    scrollbar-width: thin;
-    scrollbar-color: var(--border) var(--muted);
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  *::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+    display: none;
   }
 }
 
@@ -202,106 +190,88 @@
   @apply px-3 py-2 border border-gray-300 rounded-md shadow-sm;
 }
 
-/* Cute loading animation */
-.loader-cute-rocket {
-  animation: loader-cute-slide 1.9s cubic-bezier(0.42, 0, 0.2, 1) infinite;
+/* Minimal loading animation */
+.loader-min-line-1 {
+  animation: loader-min-line 1.05s ease-in-out infinite;
 }
 
-.loader-cute-star {
-  animation: loader-cute-slide 1.8s cubic-bezier(0.42, 0, 0.2, 1) infinite;
+.loader-min-line-2 {
+  animation: loader-min-line 1.05s ease-in-out infinite 0.12s;
 }
 
-.loader-cute-sparkle-left {
-  animation: loader-cute-sparkle 1.2s ease-in-out infinite;
+.loader-min-line-3 {
+  animation: loader-min-line 1.05s ease-in-out infinite 0.24s;
 }
 
-.loader-cute-sparkle-right {
-  animation: loader-cute-sparkle 1.2s ease-in-out infinite 0.4s;
+.loader-min-line-4 {
+  animation: loader-min-line 1.05s ease-in-out infinite 0.36s;
 }
 
-.loader-cute-jelly-1 {
-  animation: loader-cute-jelly 1.35s ease-in-out infinite;
+.loader-min-line-5 {
+  animation: loader-min-line 1.05s ease-in-out infinite 0.48s;
 }
 
-.loader-cute-jelly-2 {
-  animation: loader-cute-jelly 1.35s ease-in-out infinite 0.18s;
+.loader-min-orbit {
+  animation: loader-min-rotate 1.4s linear infinite;
 }
 
-.loader-cute-jelly-3 {
-  animation: loader-cute-jelly 1.35s ease-in-out infinite 0.36s;
+.loader-min-sweep {
+  animation: loader-min-sweep 1.5s ease-in-out infinite;
 }
 
-.loader-cute-candy {
-  animation: loader-cute-candy-slide 1.8s ease-in-out infinite;
+.loader-min-ripple-1 {
+  animation: loader-min-ripple 1.6s ease-out infinite;
 }
 
-.loader-cute-heart {
-  animation: loader-cute-heart-bounce 1.8s ease-in-out infinite;
+.loader-min-ripple-2 {
+  animation: loader-min-ripple 1.6s ease-out infinite 0.8s;
 }
 
-@keyframes loader-cute-slide {
+@keyframes loader-min-line {
+  0%,
+  100% {
+    transform: scaleY(0.58);
+    opacity: 0.55;
+  }
+
+  50% {
+    transform: scaleY(1);
+    opacity: 1;
+  }
+}
+
+@keyframes loader-min-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes loader-min-sweep {
   0% {
-    transform: translateX(0) scale(0.92);
+    transform: translateX(-130%);
   }
 
   50% {
-    transform: translateX(156px) scale(1.06);
+    transform: translateX(120%);
   }
 
   100% {
-    transform: translateX(0) scale(0.92);
+    transform: translateX(-130%);
   }
 }
 
-@keyframes loader-cute-sparkle {
-  0%,
+@keyframes loader-min-ripple {
+  0% {
+    transform: scale(0.35);
+    opacity: 0.8;
+  }
+
   100% {
-    transform: scale(0.8);
-    opacity: 0.45;
-  }
-
-  50% {
-    transform: scale(1.2);
-    opacity: 1;
+    transform: scale(1);
+    opacity: 0;
   }
 }
 
-@keyframes loader-cute-jelly {
-  0%,
-  100% {
-    transform: translateY(0) scaleX(1);
-    opacity: 0.88;
-  }
-
-  50% {
-    transform: translateY(-2px) scaleX(1.08);
-    opacity: 1;
-  }
-}
-
-@keyframes loader-cute-candy-slide {
-  0%,
-  100% {
-    transform: translateX(8px);
-    opacity: 0.78;
-  }
-
-  50% {
-    transform: translateX(136px);
-    opacity: 1;
-  }
-}
-
-@keyframes loader-cute-heart-bounce {
-  0%,
-  100% {
-    transform: translateX(0) scale(0.92);
-  }
-
-  50% {
-    transform: translateX(156px) scale(1.08);
-  }
-}
 
 @layer base {
   button:not(:disabled),

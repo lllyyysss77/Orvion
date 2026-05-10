@@ -19,26 +19,31 @@ const (
 	defaultSystemLogLineLimit = 200
 	maxSystemLogLineLimit     = 1000
 	systemLogReadWindowBytes  = 256 * 1024
+	// 进程资源采样最小间隔：避免高频轮询时重复触发昂贵采样。
+	processStatsSampleInterval = time.Second
 )
 
 type SystemLogSnapshot struct {
-	Path      string `json:"path"`
-	Exists    bool   `json:"exists"`
-	Size      int64  `json:"size"`
-	UpdatedAt string `json:"updated_at,omitempty"`
-	Content   string `json:"content"`
-	Lines     int    `json:"lines"`
-	Process   struct {
-		MemoryBytes uint64  `json:"memory_bytes"`
-		CPUPercent  float64 `json:"cpu_percent"`
-		Goroutines  int     `json:"goroutines"`
-	} `json:"process"`
+	Path      string       `json:"path"`
+	Exists    bool         `json:"exists"`
+	Size      int64        `json:"size"`
+	UpdatedAt string       `json:"updated_at,omitempty"`
+	Content   string       `json:"content"`
+	Lines     int          `json:"lines"`
+	Process   processStats `json:"process"`
+}
+
+type processStats struct {
+	MemoryBytes uint64  `json:"memory_bytes"`
+	CPUPercent  float64 `json:"cpu_percent"`
+	Goroutines  int     `json:"goroutines"`
 }
 
 var (
 	processCPUSampleMu sync.Mutex
 	lastCPUTimeSeconds float64
 	lastCPUSampleAt    time.Time
+	lastProcessStats   processStats
 )
 
 func GetSystemLogs(c *gin.Context) {
@@ -149,25 +154,31 @@ func readSystemLogTail(path string, lineLimit int) (string, int, error) {
 	return strings.Join(lines, "\n"), len(lines), nil
 }
 
-func collectProcessStats() struct {
-	MemoryBytes uint64  `json:"memory_bytes"`
-	CPUPercent  float64 `json:"cpu_percent"`
-	Goroutines  int     `json:"goroutines"`
-} {
-	stats := struct {
-		MemoryBytes uint64  `json:"memory_bytes"`
-		CPUPercent  float64 `json:"cpu_percent"`
-		Goroutines  int     `json:"goroutines"`
-	}{}
+func collectProcessStats() processStats {
+	stats := processStats{}
+
+	now := time.Now()
+	processCPUSampleMu.Lock()
+	if !lastCPUSampleAt.IsZero() && now.Sub(lastCPUSampleAt) < processStatsSampleInterval {
+		stats.MemoryBytes = lastProcessStats.MemoryBytes
+		stats.CPUPercent = lastProcessStats.CPUPercent
+		stats.Goroutines = lastProcessStats.Goroutines
+		processCPUSampleMu.Unlock()
+		return stats
+	}
+	processCPUSampleMu.Unlock()
 
 	var mem runtime.MemStats
 	runtime.ReadMemStats(&mem)
 	stats.MemoryBytes = mem.Sys
 	stats.Goroutines = runtime.NumGoroutine()
 
-	now := time.Now()
 	var usage syscall.Rusage
 	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &usage); err != nil {
+		processCPUSampleMu.Lock()
+		lastProcessStats = stats
+		lastCPUSampleAt = now
+		processCPUSampleMu.Unlock()
 		return stats
 	}
 	cpuSeconds := float64(usage.Utime.Sec) + float64(usage.Utime.Usec)/1_000_000 +
@@ -180,7 +191,8 @@ func collectProcessStats() struct {
 		deltaCPU := cpuSeconds - lastCPUTimeSeconds
 		deltaWall := now.Sub(lastCPUSampleAt).Seconds()
 		if deltaCPU >= 0 && deltaWall > 0 {
-			cores := float64(runtime.NumCPU())
+			// 在容器环境下，GOMAXPROCS 更贴近 cgroup CPU 配额；NumCPU 可能是宿主机核数。
+			cores := float64(runtime.GOMAXPROCS(0))
 			if cores > 0 {
 				value := (deltaCPU / deltaWall) * 100 / cores
 				if value < 0 {
@@ -196,5 +208,6 @@ func collectProcessStats() struct {
 
 	lastCPUTimeSeconds = cpuSeconds
 	lastCPUSampleAt = now
+	lastProcessStats = stats
 	return stats
 }

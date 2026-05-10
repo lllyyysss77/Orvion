@@ -33,14 +33,14 @@ var modelEndpointRules = map[string]ModelEndpointRule{
 		Label:    "对话",
 	},
 	"responses": {
-		Required: []string{ModelCapabilityChat, ModelCapabilityVision},
-		Suffix:   "-vision",
-		Label:    "对话+视觉",
+		Required: []string{ModelCapabilityChat},
+		Suffix:   "-chat",
+		Label:    "对话",
 	},
 	"messages": {
-		Required: []string{ModelCapabilityChat, ModelCapabilityVision},
-		Suffix:   "-vision",
-		Label:    "对话+视觉",
+		Required: []string{ModelCapabilityChat},
+		Suffix:   "-chat",
+		Label:    "对话",
 	},
 	"images": {
 		Required: []string{ModelCapabilityVision},

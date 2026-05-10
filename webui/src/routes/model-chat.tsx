@@ -595,7 +595,11 @@ export default function ModelChatTestPage() {
   };
 
   if (loading) {
-    return <Loading message="加载模型信息" />;
+    return (
+      <div className="flex h-full min-h-0 items-center justify-center">
+        <Loading message="加载模型信息" />
+      </div>
+    );
   }
 
   const endpointIsMedia = endpoint.startsWith("images/") || endpoint === "videos";

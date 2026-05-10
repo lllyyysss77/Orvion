@@ -85,6 +85,16 @@ func VideosHandler(c *gin.Context) {
 	chatHandler(c, service.BeforerOpenAIMedia, service.ProcesserOpenAI, consts.StyleOpenAI, consts.StyleOpenAI, "videos")
 }
 
+func resolveRequestPath(c *gin.Context) string {
+	if c == nil {
+		return ""
+	}
+	if path := strings.TrimSpace(c.FullPath()); path != "" {
+		return path
+	}
+	return strings.TrimSpace(c.Request.URL.Path)
+}
+
 func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor service.Processer, _ string, logStyle string, endpoint string) {
 	// 读取原始请求体
 	reqBody, err := io.ReadAll(c.Request.Body)
@@ -116,6 +126,7 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 	}
 
 	ctx := c.Request.Context()
+	requestPath := resolveRequestPath(c)
 	if endpoint != "" {
 		if err := service.ValidateModelCapability(ctx, before.Model, endpoint); err != nil {
 			common.BadRequest(c, err.Error())
@@ -133,7 +144,7 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 		return
 	}
 	// 按模型获取可用 provider
-	providersWithMeta, err := service.ProvidersWithMetaBymodelsName(ctx, logStyle, endpoint, *before)
+	providersWithMeta, err := service.ProvidersWithMetaBymodelsName(ctx, logStyle, endpoint, requestPath, *before)
 	if err != nil {
 		common.InternalServerError(c, err.Error())
 		return
@@ -141,7 +152,7 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 
 	startReq := time.Now()
 	// 调用负载均衡后的 provider 并转发
-	res, log, err := service.BalanceChatWithLimiter(c, startReq, logStyle, *before, providersWithMeta, models.ReqMeta{
+	res, log, err := service.BalanceChatWithLimiter(c, startReq, logStyle, requestPath, *before, providersWithMeta, models.ReqMeta{
 		Header:    c.Request.Header,
 		RemoteIP:  c.ClientIP(),
 		UserAgent: c.Request.UserAgent(),
@@ -164,7 +175,7 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 	pw := newAsyncMirrorWriter(pipeWriter, 256)
 	// 异步处理输出并记录 tokens
 	pkg.GoSafe("handler.record_log", func() {
-		service.RecordLog(context.Background(), startReq, pr, postProcessor, logId, log.AuthKeyID, *before, providersWithMeta.IOLog, logStyle)
+		service.RecordLog(context.Background(), startReq, log.FirstChunkTimeMs, pr, postProcessor, logId, log.AuthKeyID, *before, providersWithMeta.IOLog, logStyle)
 	})
 
 	writeHeader(c, before.Stream, res.Header, logStyle)

@@ -175,6 +175,7 @@ func resolveShutdownTimeout() time.Duration {
 }
 
 func startBackgroundWorkers(ctx context.Context) {
+	service.StartChatLogMonthlyPartitionWorker(ctx)
 	handler.StartGitHubVersionUpdateRefresher(ctx)
 	service.StartAuthKeyFlusher(ctx)
 	service.StartPriceSync(ctx)

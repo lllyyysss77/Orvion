@@ -128,7 +128,7 @@ func ProviderTestHandler(c *gin.Context) {
 
 	// Create the provider instance
 	resolvedStyle := providers.ResolveStyle("", chatModel.Config)
-	providerInstance, err := providers.New(chatModel.Config)
+	providerInstance, err := providers.NewWithProxy(chatModel.Config, chatModel.ProxyURL)
 	if err != nil {
 		common.BadRequest(c, "Failed to create provider: "+err.Error())
 		return
@@ -329,7 +329,7 @@ func ModelChatTestHandler(c *gin.Context) {
 	header.Set("Accept-Encoding", "identity")
 
 	requestStyle := resolveProviderStyleForEndpoint(chatModel, endpoint)
-	providerInstance, err := providers.NewForStyle(requestStyle, chatModel.Config)
+	providerInstance, err := providers.NewForStyleWithProxy(requestStyle, chatModel.Config, chatModel.ProxyURL)
 	if err != nil {
 		common.BadRequest(c, "Failed to create provider: "+err.Error())
 		return
@@ -697,7 +697,7 @@ func recordTestChatSuccess(ctx context.Context, c *gin.Context, chatModel *ChatM
 		return saveTestChatIO(ctx, logID, requestBody, string(responseBody))
 	}
 
-	service.RecordLog(ctx, startReq, io.NopCloser(bytes.NewReader(responseBody)), processer, logID, 0, *before, true, style)
+	service.RecordLog(ctx, startReq, 0, io.NopCloser(bytes.NewReader(responseBody)), processer, logID, 0, *before, true, style)
 	return nil
 }
 
@@ -1290,6 +1290,7 @@ type ChatModel struct {
 	ModelName           string            `json:"model_name"`
 	Model               string            `json:"model"`
 	Config              string            `json:"config"`
+	ProxyURL            string            `json:"proxy_url"`
 	WithHeader          *bool             `json:"with_header,omitempty"`
 	CustomerHeaders     map[string]string `json:"customer_headers,omitempty"`
 }
@@ -1352,6 +1353,7 @@ func FindChatModel(ctx context.Context, id string) (*ChatModel, error) {
 		ModelName:           model.Name,
 		Model:               modelWithProvider.ProviderModel,
 		Config:              provider.Config,
+		ProxyURL:            provider.ProxyURL,
 		WithHeader:          withHeader,
 		CustomerHeaders:     customerHeaders,
 	}, nil

@@ -589,7 +589,7 @@ func ProjectCounts(c *gin.Context) {
 	for _, row := range rows {
 		project := "-"
 		if row.AuthKeyID == 0 {
-			project = "admin"
+			project = "管理员"
 		} else if name, ok := keyMap[row.AuthKeyID]; ok && name != "" {
 			project = name
 		}

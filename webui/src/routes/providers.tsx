@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
@@ -83,13 +83,39 @@ const parseConfigJson = (raw?: string | null): Record<string, unknown> | null =>
   }
 };
 
+type InterfaceConversionView = {
+  enabled: boolean;
+  target: "" | "chat" | "responses" | "messages";
+};
+
+const normalizeInterfaceConversionTarget = (value: unknown): InterfaceConversionView["target"] => {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "chat" || normalized === "responses" || normalized === "messages") {
+    return normalized;
+  }
+  return "";
+};
+
 // 定义表单验证模式
 const formSchema = z.object({
   name: z.string().min(1, { message: "提供商名称不能为空" }),
   models_fetch_mode: z.enum(["v1_models", "api_pricing"]),
   config: z.string().min(1, { message: "配置不能为空" }),
   console: z.string().optional(),
+  proxy_url: z.string().trim().refine((value) => {
+    if (!value) return true;
+    try {
+      const normalized = value.replace(/^socket5:\/\//i, "socks5://");
+      const parsed = new URL(normalized);
+      const protocol = parsed.protocol.toLowerCase();
+      return protocol === "http:" || protocol === "https:" || protocol === "socks5:";
+    } catch {
+      return false;
+    }
+  }, { message: "代理地址仅支持 http/https/socks5" }),
   capabilities: z.array(z.enum(["chat", "openai", "claude"])).min(1, { message: "至少选择一个接口支持能力" }),
+  interface_conversion_enabled: z.boolean(),
+  interface_conversion_target: z.enum(["chat", "responses", "messages", ""]),
 });
 
 export default function ProvidersPage() {
@@ -120,12 +146,26 @@ export default function ProvidersPage() {
       models_fetch_mode: "v1_models",
       config: "",
       console: "",
+      proxy_url: "",
       capabilities: [...defaultProviderCapabilities],
+      interface_conversion_enabled: false,
+      interface_conversion_target: "",
     },
   });
   const getFetchModeBadgeLabel = (mode?: string) => (
     mode === "api_pricing" ? "newapi" : "通用"
   );
+  const selectedCapabilities = form.watch("capabilities");
+  const conversionEnabled = form.watch("interface_conversion_enabled");
+  const conversionTarget = form.watch("interface_conversion_target");
+  const conversionTargetOptions = useMemo(() => {
+    const values = Array.isArray(selectedCapabilities) ? selectedCapabilities : [];
+    const options: Array<{ value: "chat" | "responses" | "messages"; label: string }> = [];
+    if (values.includes("chat")) options.push({ value: "chat", label: "/v1/chat/completions" });
+    if (values.includes("openai")) options.push({ value: "responses", label: "/v1/responses" });
+    if (values.includes("claude")) options.push({ value: "messages", label: "/v1/messages" });
+    return options;
+  }, [selectedCapabilities]);
 
   useEffect(() => {
     if (!open) {
@@ -239,10 +279,25 @@ export default function ProvidersPage() {
     toast.success(`已复制模型名称: ${modelName}`);
   };
 
-  const handleStructuredConfigChange = (nextJson: string) => {
+  const handleStructuredConfigChange = useCallback((nextJson: string) => {
+    const current = form.getValues("config");
+    if (current === nextJson) {
+      return;
+    }
     configCacheRef.current.default = nextJson;
     form.setValue("config", nextJson, { shouldDirty: true, shouldValidate: true });
-  };
+  }, [form]);
+
+  useEffect(() => {
+    if (!conversionEnabled) {
+      return;
+    }
+    const exists = conversionTargetOptions.some((item) => item.value === conversionTarget);
+    if (!exists) {
+      const fallback = conversionTargetOptions[0]?.value ?? "";
+      form.setValue("interface_conversion_target", fallback, { shouldDirty: true });
+    }
+  }, [conversionEnabled, conversionTarget, conversionTargetOptions, form]);
 
   const handleCreate = async (values: z.infer<typeof formSchema>) => {
     try {
@@ -250,8 +305,11 @@ export default function ProvidersPage() {
         name: values.name,
         config: values.config,
         console: values.console || "",
+        proxy_url: values.proxy_url || "",
         models_fetch_mode: values.models_fetch_mode,
         capabilities: values.capabilities,
+        interface_conversion_enabled: values.interface_conversion_enabled,
+        interface_conversion_target: values.interface_conversion_target,
       });
       setOpen(false);
       toast.success(`提供商 ${values.name} 创建成功`);
@@ -260,7 +318,10 @@ export default function ProvidersPage() {
         models_fetch_mode: "v1_models",
         config: "",
         console: "",
+        proxy_url: "",
         capabilities: [...defaultProviderCapabilities],
+        interface_conversion_enabled: false,
+        interface_conversion_target: "",
       });
       fetchProviders();
     } catch (err) {
@@ -277,8 +338,11 @@ export default function ProvidersPage() {
         name: values.name,
         config: values.config,
         console: values.console || "",
+        proxy_url: values.proxy_url || "",
         models_fetch_mode: values.models_fetch_mode,
         capabilities: values.capabilities,
+        interface_conversion_enabled: values.interface_conversion_enabled,
+        interface_conversion_target: values.interface_conversion_target,
       });
       setOpen(false);
       toast.success(`提供商 ${values.name} 更新成功`);
@@ -288,7 +352,10 @@ export default function ProvidersPage() {
         models_fetch_mode: "v1_models",
         config: "",
         console: "",
+        proxy_url: "",
         capabilities: [...defaultProviderCapabilities],
+        interface_conversion_enabled: false,
+        interface_conversion_target: "",
       });
       fetchProviders();
     } catch (err) {
@@ -321,7 +388,10 @@ export default function ProvidersPage() {
       models_fetch_mode: provider.ModelsFetchMode === "api_pricing" ? "api_pricing" : "v1_models",
       config: provider.Config,
       console: provider.Console || "",
+      proxy_url: provider.ProxyURL || "",
       capabilities: normalizeProviderCapabilities(provider.Capabilities),
+      interface_conversion_enabled: provider.InterfaceConversionEnabled === 1 || provider.InterfaceConversionEnabled === true,
+      interface_conversion_target: normalizeInterfaceConversionTarget(provider.InterfaceConversionTarget),
     });
     setOpen(true);
   };
@@ -347,7 +417,10 @@ export default function ProvidersPage() {
       models_fetch_mode: "v1_models",
       config: defaultConfig,
       console: "",
+      proxy_url: "",
       capabilities: [...defaultProviderCapabilities],
+      interface_conversion_enabled: false,
+      interface_conversion_target: "",
     });
     setOpen(true);
   };
@@ -400,6 +473,10 @@ export default function ProvidersPage() {
                     key={provider.ID}
                     className="group rounded-[26px] border border-border/70 bg-card/88 p-5 shadow-[0_18px_50px_rgba(98,71,47,0.08)] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_24px_60px_rgba(98,71,47,0.12)]"
                   >
+                    {(() => {
+                      const hasProxy = Boolean(provider.ProxyURL && provider.ProxyURL.trim() !== "");
+                      const proxyStatusLabel = hasProxy ? "代理" : "直连";
+                      return (
                     <div className="mb-3 flex items-start justify-between gap-3">
                       <div className="min-w-0">
                         <h3 className="truncate text-sm font-semibold text-foreground" title={provider.Name}>
@@ -407,14 +484,16 @@ export default function ProvidersPage() {
                         </h3>
                       </div>
                       <div className="flex items-center gap-1">
+                        <div className={`rounded-full border px-2 py-0.5 text-[11px] font-medium ${hasProxy ? "border-sky-200 bg-sky-50 text-sky-700" : "border-slate-200 bg-slate-100 text-slate-700"}`}>
+                          {proxyStatusLabel}
+                        </div>
                         <div className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">
                           {getFetchModeBadgeLabel(provider.ModelsFetchMode)}
                         </div>
-                        <div className="rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
-                          Provider
-                        </div>
                       </div>
                     </div>
+                      );
+                    })()}
 
                     <div className="flex items-center justify-end gap-2">
                       <Button
@@ -568,6 +647,20 @@ export default function ProvidersPage() {
 
               <FormField
                 control={form.control}
+                name="proxy_url"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>代理地址（可选）</FormLabel>
+                    <FormControl>
+                      <Input {...field} placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080" />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
                 name="capabilities"
                 render={({ field }) => {
                   const currentValues = Array.isArray(field.value) ? field.value : [];
@@ -607,6 +700,56 @@ export default function ProvidersPage() {
                   );
                 }}
               />
+
+              <div className="space-y-2 rounded-lg border border-border/70 p-3">
+                <div className="text-sm font-medium">接口转换（可选）</div>
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <FormField
+                    control={form.control}
+                    name="interface_conversion_enabled"
+                    render={({ field }) => (
+                      <label className="flex cursor-pointer items-center gap-2">
+                        <Checkbox
+                          checked={field.value}
+                          onCheckedChange={(next) => {
+                            const enabled = next === true;
+                            field.onChange(enabled);
+                            if (enabled && !form.getValues("interface_conversion_target") && conversionTargetOptions.length > 0) {
+                              form.setValue("interface_conversion_target", conversionTargetOptions[0].value, { shouldDirty: true });
+                            }
+                            if (!enabled) {
+                              form.setValue("interface_conversion_target", "", { shouldDirty: true });
+                            }
+                          }}
+                        />
+                        <span className="text-sm">启用接口转换</span>
+                      </label>
+                    )}
+                  />
+                  <FormField
+                    control={form.control}
+                    name="interface_conversion_target"
+                    render={({ field }) => (
+                      <Select
+                        value={field.value}
+                        onValueChange={field.onChange}
+                        disabled={!conversionEnabled}
+                      >
+                        <SelectTrigger className="w-full sm:w-[280px]">
+                          <SelectValue placeholder="选择目标接口能力" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {conversionTargetOptions.map((option) => (
+                            <SelectItem key={option.value} value={option.value}>
+                              {option.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  />
+                </div>
+              </div>
 
               <DialogFooter>
                 <Button type="button" variant="outline" onClick={() => setOpen(false)}>

@@ -18,8 +18,13 @@ import (
 const modelsListTimeout = 30 * time.Second
 
 type OpenAI struct {
-	BaseURL string `json:"base_url"`
-	APIKey  string `json:"api_key"`
+	BaseURL  string `json:"base_url"`
+	APIKey   string `json:"api_key"`
+	ProxyURL string `json:"-"`
+}
+
+func (o *OpenAI) SetProxyURL(proxyURL string) {
+	o.ProxyURL = strings.TrimSpace(proxyURL)
 }
 
 func (o *OpenAI) BuildReq(ctx context.Context, header http.Header, model string, rawBody []byte) (*http.Request, error) {
@@ -66,18 +71,22 @@ func (o *OpenAI) Models(ctx context.Context) ([]Model, error) {
 		return nil, err
 	}
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", o.APIKey))
-	res, err := GetClient(modelsListTimeout).Do(req)
+	res, err := GetClientWithProxy(modelsListTimeout, o.ProxyURL)
 	if err != nil {
 		return nil, err
 	}
-	defer res.Body.Close()
+	resp, err := res.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
 
-	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("status code: %d", res.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("status code: %d", resp.StatusCode)
 	}
 
 	var modelList ModelList
-	if err := json.NewDecoder(res.Body).Decode(&modelList); err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&modelList); err != nil {
 		return nil, err
 	}
 	return modelList.Data, nil

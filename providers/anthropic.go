@@ -8,15 +8,21 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/tidwall/sjson"
 )
 
 type Anthropic struct {
-	BaseURL string `json:"base_url"`
-	APIKey  string `json:"api_key"`
-	Version string `json:"version"`
+	BaseURL  string `json:"base_url"`
+	APIKey   string `json:"api_key"`
+	Version  string `json:"version"`
+	ProxyURL string `json:"-"`
+}
+
+func (a *Anthropic) SetProxyURL(proxyURL string) {
+	a.ProxyURL = strings.TrimSpace(proxyURL)
 }
 
 const defaultAnthropicVersion = "2023-06-01"
@@ -94,7 +100,11 @@ func (a *Anthropic) Models(ctx context.Context) ([]Model, error) {
 	req.Header.Set("x-api-key", a.APIKey)
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", a.APIKey))
 	req.Header.Set("anthropic-version", a.resolvedVersion())
-	res, err := GetClient(modelsListTimeout).Do(req)
+	client, err := GetClientWithProxy(modelsListTimeout, a.ProxyURL)
+	if err != nil {
+		return nil, err
+	}
+	res, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}

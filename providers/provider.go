@@ -27,6 +27,10 @@ type Provider interface {
 	Models(ctx context.Context) ([]Model, error)
 }
 
+type proxyAwareProvider interface {
+	SetProxyURL(proxyURL string)
+}
+
 type providerConfigBase struct {
 	BaseURL string `json:"base_url"`
 }
@@ -68,37 +72,49 @@ func ResolveStyle(preferredStyle string, providerConfig string) string {
 	return inferStyleFromConfig(providerConfig)
 }
 
-func NewForStyle(preferredStyle, providerConfig string) (Provider, error) {
+func NewForStyleWithProxy(preferredStyle, providerConfig, proxyURL string) (Provider, error) {
+	proxyURL = strings.TrimSpace(proxyURL)
+
 	switch ResolveStyle(preferredStyle, providerConfig) {
 	case consts.StyleOpenAI:
 		var openai OpenAI
 		if err := json.Unmarshal([]byte(providerConfig), &openai); err != nil {
 			return nil, errors.New("invalid openai config")
 		}
-
+		openai.SetProxyURL(proxyURL)
 		return &openai, nil
 	case consts.StyleOpenAIRes:
 		var openaiRes OpenAIRes
 		if err := json.Unmarshal([]byte(providerConfig), &openaiRes); err != nil {
 			return nil, errors.New("invalid codex config")
 		}
-
+		openaiRes.SetProxyURL(proxyURL)
 		return &openaiRes, nil
 	case consts.StyleAnthropic:
 		var anthropic Anthropic
 		if err := json.Unmarshal([]byte(providerConfig), &anthropic); err != nil {
 			return nil, errors.New("invalid anthropic config")
 		}
+		anthropic.SetProxyURL(proxyURL)
 		return &anthropic, nil
 	case consts.StyleGemini:
 		var gemini Gemini
 		if err := json.Unmarshal([]byte(providerConfig), &gemini); err != nil {
 			return nil, errors.New("invalid gemini config")
 		}
+		gemini.SetProxyURL(proxyURL)
 		return &gemini, nil
 	default:
 		return nil, errors.New("unknown provider")
 	}
+}
+
+func NewForStyle(preferredStyle, providerConfig string) (Provider, error) {
+	return NewForStyleWithProxy(preferredStyle, providerConfig, "")
+}
+
+func NewWithProxy(providerConfig, proxyURL string) (Provider, error) {
+	return NewForStyleWithProxy("", providerConfig, proxyURL)
 }
 
 func New(providerConfig string) (Provider, error) {

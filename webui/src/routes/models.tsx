@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, useLayoutEffect } from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -13,6 +14,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Form,
   FormControl,
@@ -50,6 +52,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { toast } from "sonner";
 import {
@@ -66,12 +69,96 @@ import {
   Layers,
   ArrowUpDown,
   MessageSquare,
+  SlidersHorizontal,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { resolveModelIcon } from "@/lib/model-icon";
 
 const capabilityValues = ["chat", "vision", "video", "embedding", "rerank"] as const;
 type ModelCapability = (typeof capabilityValues)[number];
+type ModelColumnKey = "model" | "input" | "output" | "capabilities" | "status" | "actions";
+
+const MODEL_FILTER_STORAGE_KEY = "orvion_models_filters_v1";
+const MODEL_COLUMNS_STORAGE_KEY = "orvion_models_columns_v1";
+const MODEL_WIDTH_STORAGE_KEY = "orvion_models_width_v1";
+
+type ModelFilterState = {
+  searchInput: string;
+  capabilityFilter: string;
+  familyFilter: string;
+};
+
+type ModelColumnVisibility = Record<ModelColumnKey, boolean>;
+type ModelWidthState = {
+  model: "compact" | "default" | "wide";
+  price: "compact" | "default";
+};
+
+const defaultModelFilters: ModelFilterState = {
+  searchInput: "",
+  capabilityFilter: "all",
+  familyFilter: "all",
+};
+
+const defaultModelColumns: ModelColumnVisibility = {
+  model: true,
+  input: true,
+  output: true,
+  capabilities: true,
+  status: true,
+  actions: true,
+};
+
+const defaultModelWidths: ModelWidthState = {
+  model: "default",
+  price: "default",
+};
+
+const parseStoredJSON = <T,>(raw: string | null): T | null => {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+};
+
+const readStoredModelFilters = (): ModelFilterState => {
+  if (typeof window === "undefined") return defaultModelFilters;
+  const parsed = parseStoredJSON<Partial<ModelFilterState>>(window.localStorage.getItem(MODEL_FILTER_STORAGE_KEY));
+  if (!parsed) return defaultModelFilters;
+  return {
+    searchInput: typeof parsed.searchInput === "string" ? parsed.searchInput : "",
+    capabilityFilter: typeof parsed.capabilityFilter === "string" ? parsed.capabilityFilter : "all",
+    familyFilter: typeof parsed.familyFilter === "string" ? parsed.familyFilter : "all",
+  };
+};
+
+const readStoredModelColumns = (): ModelColumnVisibility => {
+  if (typeof window === "undefined") return defaultModelColumns;
+  const parsed = parseStoredJSON<Partial<ModelColumnVisibility>>(window.localStorage.getItem(MODEL_COLUMNS_STORAGE_KEY));
+  if (!parsed) return defaultModelColumns;
+  const next = { ...defaultModelColumns };
+  (Object.keys(next) as ModelColumnKey[]).forEach((key) => {
+    if (typeof parsed[key] === "boolean") {
+      next[key] = parsed[key] as boolean;
+    }
+  });
+  if (!(Object.values(next).some(Boolean))) {
+    return defaultModelColumns;
+  }
+  return next;
+};
+
+const readStoredModelWidths = (): ModelWidthState => {
+  if (typeof window === "undefined") return defaultModelWidths;
+  const parsed = parseStoredJSON<Partial<ModelWidthState>>(window.localStorage.getItem(MODEL_WIDTH_STORAGE_KEY));
+  if (!parsed) return defaultModelWidths;
+  return {
+    model: parsed.model === "compact" || parsed.model === "wide" ? parsed.model : "default",
+    price: parsed.price === "compact" ? "compact" : "default",
+  };
+};
 
 const capabilityOptions: {
   value: ModelCapability;
@@ -123,10 +210,10 @@ const ModelIcon = ({ name, size = "md" }: { name: string; size?: "md" | "sm" }) 
   const compact = size === "sm";
 
   const wrapperClass = compact
-    ? "inline-flex size-7 shrink-0 items-center justify-center rounded-xl bg-muted/60 leading-none"
+    ? "inline-flex size-5 shrink-0 items-center justify-center leading-none"
     : "inline-flex size-10 shrink-0 items-center justify-center rounded-2xl bg-muted/60 leading-none";
   const fallbackClass = compact
-    ? "inline-flex size-7 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary font-semibold text-[10px] leading-none"
+    ? "inline-flex size-5 shrink-0 items-center justify-center text-muted-foreground font-semibold text-[10px] leading-none"
     : "inline-flex size-10 shrink-0 items-center justify-center rounded-2xl bg-primary/10 text-primary font-semibold text-sm leading-none";
 
   if (!config) {
@@ -139,7 +226,7 @@ const ModelIcon = ({ name, size = "md" }: { name: string; size?: "md" | "sm" }) 
 
   return (
     <div className={wrapperClass}>
-      <img src={config.src} alt={config.alt} className={cn("block object-contain", compact ? "size-4" : "size-5")} />
+      <img src={config.src} alt={config.alt} className={cn("block object-contain", compact ? "size-[18px]" : "size-5")} />
     </div>
   );
 };
@@ -157,7 +244,7 @@ const resolveModelFamily = (modelName: string) => {
     const family = iconConfig.key.trim().toLowerCase();
     return {
       key: family,
-      label: family,
+      label: iconConfig.alt || iconConfig.key,
       iconName: iconConfig.key,
     };
   }
@@ -171,7 +258,7 @@ const resolveModelFamily = (modelName: string) => {
 
   return {
     key: family,
-    label: family,
+    label: family.charAt(0).toUpperCase() + family.slice(1),
     iconName: family,
   };
 };
@@ -213,6 +300,8 @@ const formSchema = z.object({
   capabilities: z.array(z.enum(capabilityValues)).min(1, { message: "至少选择一个模型类型" }),
   input_price: z.string().refine(isValidNonNegativePrice, { message: "输入价格不能为负数" }),
   output_price: z.string().refine(isValidNonNegativePrice, { message: "输出价格不能为负数" }),
+  cache_read_price: z.string().refine(isValidNonNegativePrice, { message: "缓存读价格不能为负数" }),
+  cache_write_price: z.string().refine(isValidNonNegativePrice, { message: "缓存写价格不能为负数" }),
   status: z.boolean(),
 });
 
@@ -224,13 +313,23 @@ export default function ModelsPage() {
   const [deleteId, setDeleteId] = useState<number | null>(null);
   const [page, setPage] = useState(1);
   const [pageSize] = useState(12);
-  const [searchInput, setSearchInput] = useState("");
-  const [searchTerm, setSearchTerm] = useState("");
-  const [capabilityFilter, setCapabilityFilter] = useState<string>("all");
-  const [familyFilter, setFamilyFilter] = useState<string>("all");
+  const [searchInput, setSearchInput] = useState(() => readStoredModelFilters().searchInput);
+  const [searchTerm, setSearchTerm] = useState(() => readStoredModelFilters().searchInput.trim());
+  const [capabilityFilter, setCapabilityFilter] = useState<string>(() => readStoredModelFilters().capabilityFilter);
+  const [familyFilter, setFamilyFilter] = useState<string>(() => readStoredModelFilters().familyFilter);
+  const [columnVisibility, setColumnVisibility] = useState<ModelColumnVisibility>(() => readStoredModelColumns());
+  const [widthSettings, setWidthSettings] = useState<ModelWidthState>(() => readStoredModelWidths());
   const [providerPanelOpen, setProviderPanelOpen] = useState(false);
   const [providerPanelModel, setProviderPanelModel] = useState<Model | null>(null);
   const [statusUpdatingIds, setStatusUpdatingIds] = useState<number[]>([]);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const familyTabsRef = useRef<HTMLDivElement | null>(null);
+  const familyButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const [familyIndicator, setFamilyIndicator] = useState<{ left: number; width: number; visible: boolean }>({
+    left: 0,
+    width: 0,
+    visible: false,
+  });
 
   // 初始化表单
   const form = useForm<z.infer<typeof formSchema>>({
@@ -246,6 +345,8 @@ export default function ModelsPage() {
       capabilities: ["chat"],
       input_price: "0",
       output_price: "0",
+      cache_read_price: "0",
+      cache_write_price: "0",
       status: true,
     },
   });
@@ -257,6 +358,26 @@ export default function ModelsPage() {
     }, 400);
     return () => clearTimeout(timer);
   }, [searchInput]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const payload: ModelFilterState = {
+      searchInput,
+      capabilityFilter,
+      familyFilter,
+    };
+    window.localStorage.setItem(MODEL_FILTER_STORAGE_KEY, JSON.stringify(payload));
+  }, [searchInput, capabilityFilter, familyFilter]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(MODEL_COLUMNS_STORAGE_KEY, JSON.stringify(columnVisibility));
+  }, [columnVisibility]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(MODEL_WIDTH_STORAGE_KEY, JSON.stringify(widthSettings));
+  }, [widthSettings]);
 
   const fetchModels = useCallback(async () => {
     try {
@@ -339,6 +460,35 @@ export default function ModelsPage() {
     }
   }, [familyFilter, familyOptions]);
 
+  useLayoutEffect(() => {
+    const updateFamilyIndicator = () => {
+      const container = familyTabsRef.current;
+      if (!container) return;
+
+      const activeKey = familyFilter === "all" ? "all" : familyFilter;
+      const activeButton = familyButtonRefs.current[activeKey];
+      if (!activeButton) {
+        setFamilyIndicator((prev) => ({ ...prev, visible: false }));
+        return;
+      }
+
+      const containerRect = container.getBoundingClientRect();
+      const buttonRect = activeButton.getBoundingClientRect();
+      const nextLeft = buttonRect.left - containerRect.left;
+      const nextWidth = buttonRect.width;
+
+      setFamilyIndicator({
+        left: nextLeft,
+        width: nextWidth,
+        visible: nextWidth > 0,
+      });
+    };
+
+    updateFamilyIndicator();
+    window.addEventListener("resize", updateFamilyIndicator);
+    return () => window.removeEventListener("resize", updateFamilyIndicator);
+  }, [familyFilter, familyOptions]);
+
   const filteredModels = useMemo(() => {
     if (familyFilter === "all") {
       return modelsWithFamily.map((item) => item.model);
@@ -362,6 +512,32 @@ export default function ModelsPage() {
     return filteredModels.slice(start, start + pageSize);
   }, [filteredModels, page, pageSize]);
 
+  const rowVirtualizer = useVirtualizer({
+    count: visibleModels.length,
+    getScrollElement: () => listRef.current,
+    estimateSize: () => 108,
+    overscan: 8,
+  });
+
+  const desktopGridTemplate = useMemo(() => {
+    const modelWidth = widthSettings.model === "compact"
+      ? "minmax(0,2.1fr)"
+      : widthSettings.model === "wide"
+      ? "minmax(0,2.8fr)"
+      : "minmax(0,2.45fr)";
+    const priceWidth = widthSettings.price === "compact" ? "6.5rem" : "7.5rem";
+    const map: Record<ModelColumnKey, string> = {
+      model: modelWidth,
+      input: priceWidth,
+      output: priceWidth,
+      capabilities: "minmax(11rem,1fr)",
+      status: "9rem",
+      actions: "19rem",
+    };
+    const enabledColumns = (Object.keys(columnVisibility) as ModelColumnKey[]).filter((key) => columnVisibility[key]);
+    return enabledColumns.map((key) => map[key]).join(" ");
+  }, [columnVisibility, widthSettings]);
+
   const handleCreate = async (values: z.infer<typeof formSchema>) => {
     try {
       await createModel({
@@ -375,6 +551,8 @@ export default function ModelsPage() {
         capabilities: values.capabilities,
         input_price: Number(values.input_price),
         output_price: Number(values.output_price),
+        cache_read_price: Number(values.cache_read_price),
+        cache_write_price: Number(values.cache_write_price),
       });
       setOpen(false);
       toast.success(`模型: ${values.name} 创建成功`);
@@ -389,6 +567,8 @@ export default function ModelsPage() {
         capabilities: ["chat"],
         input_price: "0",
         output_price: "0",
+        cache_read_price: "0",
+        cache_write_price: "0",
       });
       await fetchModels();
     } catch (err) {
@@ -411,6 +591,8 @@ export default function ModelsPage() {
         capabilities: values.capabilities,
         input_price: Number(values.input_price),
         output_price: Number(values.output_price),
+        cache_read_price: Number(values.cache_read_price),
+        cache_write_price: Number(values.cache_write_price),
       });
       const previousEnabled = editingModel.Status == null ? true : Number(editingModel.Status) === 1;
       if (previousEnabled !== values.status) {
@@ -430,6 +612,8 @@ export default function ModelsPage() {
         capabilities: ["chat"],
         input_price: "0",
         output_price: "0",
+        cache_read_price: "0",
+        cache_write_price: "0",
         status: true,
       });
       await fetchModels();
@@ -473,6 +657,8 @@ export default function ModelsPage() {
       capabilities: normalizedCapabilities.length > 0 ? normalizedCapabilities : ["chat"],
       input_price: String(model.InputPrice ?? 0),
       output_price: String(model.OutputPrice ?? 0),
+      cache_read_price: String(model.CacheReadPrice ?? 0),
+      cache_write_price: String(model.CacheWritePrice ?? 0),
       status: statusEnabled,
     });
     setOpen(true);
@@ -496,6 +682,8 @@ export default function ModelsPage() {
       capabilities: ["chat"],
       input_price: "0",
       output_price: "0",
+      cache_read_price: "0",
+      cache_write_price: "0",
       status: true,
     });
     setOpen(true);
@@ -526,6 +714,26 @@ export default function ModelsPage() {
       toast.error(`更新模型状态失败: ${message}`);
     } finally {
       setStatusUpdatingIds((prev) => prev.filter((id) => id !== model.ID));
+    }
+  };
+
+  const handleToggleColumn = (column: ModelColumnKey, checked: boolean) => {
+    setColumnVisibility((prev) => {
+      const next = { ...prev, [column]: checked };
+      if (!Object.values(next).some(Boolean)) {
+        return prev;
+      }
+      return next;
+    });
+  };
+
+  const handleCopyModelName = async (modelName: string) => {
+    try {
+      await navigator.clipboard.writeText(modelName);
+      toast.success(`已复制模型名：${modelName}`);
+    } catch (error) {
+      console.error("copy model name failed", error);
+      toast.error("复制模型名失败");
     }
   };
 
@@ -575,6 +783,76 @@ export default function ModelsPage() {
             >
               <Plus className="size-4" />
             </Button>
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 rounded-full bg-muted/60 text-foreground hover:bg-muted/80"
+                  aria-label="列表显示设置"
+                  title="列表显示设置"
+                >
+                  <SlidersHorizontal className="size-4" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-72 p-3 space-y-3">
+                <div className="text-xs font-semibold text-foreground">列显示</div>
+                <div className="grid grid-cols-2 gap-2">
+                  {([
+                    ["model", "模型"],
+                    ["input", "输入价格"],
+                    ["output", "输出价格"],
+                    ["capabilities", "能力"],
+                    ["status", "状态"],
+                    ["actions", "操作"],
+                  ] as [ModelColumnKey, string][]).map(([key, label]) => (
+                    <label key={key} className="inline-flex items-center gap-2 text-xs text-foreground">
+                      <Checkbox
+                        checked={columnVisibility[key]}
+                        onCheckedChange={(checked) => handleToggleColumn(key, checked === true)}
+                      />
+                      <span>{label}</span>
+                    </label>
+                  ))}
+                </div>
+                <div className="space-y-2 border-t border-border/60 pt-2">
+                  <div className="text-xs font-semibold text-foreground">列宽</div>
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs text-muted-foreground">模型列</span>
+                      <Select
+                        value={widthSettings.model}
+                        onValueChange={(value) => setWidthSettings((prev) => ({ ...prev, model: value as ModelWidthState["model"] }))}
+                      >
+                        <SelectTrigger className="h-8 w-28 text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="compact">紧凑</SelectItem>
+                          <SelectItem value="default">标准</SelectItem>
+                          <SelectItem value="wide">加宽</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs text-muted-foreground">价格列</span>
+                      <Select
+                        value={widthSettings.price}
+                        onValueChange={(value) => setWidthSettings((prev) => ({ ...prev, price: value as ModelWidthState["price"] }))}
+                      >
+                        <SelectTrigger className="h-8 w-28 text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="compact">紧凑</SelectItem>
+                          <SelectItem value="default">标准</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                </div>
+              </PopoverContent>
+            </Popover>
             <div className="flex items-center gap-1 rounded-full bg-muted/60 px-2 py-1">
               <Button
                 variant="ghost"
@@ -602,50 +880,63 @@ export default function ModelsPage() {
             </div>
           </div>
         </div>
-        <div className="flex items-center gap-2 overflow-x-auto pb-1">
+        <div className="overflow-x-auto pb-1">
+          <div ref={familyTabsRef} className="relative inline-flex min-w-max items-center gap-1 rounded-full border border-border/60 bg-muted/45 p-1">
+          <span
+            aria-hidden
+            className={cn(
+              "pointer-events-none absolute bottom-1 top-1 rounded-full bg-background shadow-sm transition-[transform,width,opacity] duration-300 ease-out",
+              familyIndicator.visible ? "opacity-100" : "opacity-0",
+            )}
+            style={{
+              width: familyIndicator.width,
+              transform: `translateX(${familyIndicator.left}px)`,
+            }}
+          />
           <button
             type="button"
+            ref={(node) => { familyButtonRefs.current.all = node; }}
             onClick={() => {
               setFamilyFilter("all");
               setPage(1);
             }}
+            aria-pressed={familyFilter === "all"}
             className={cn(
-              "inline-flex h-9 shrink-0 items-center gap-2 rounded-full border px-3 text-xs font-semibold transition",
+              "relative z-10 inline-flex h-9 shrink-0 items-center gap-2 rounded-full px-3 text-sm font-semibold transition-colors duration-200",
               familyFilter === "all"
-                ? "border-primary/30 bg-primary/10 text-primary"
-                : "border-border/60 bg-muted/40 text-muted-foreground hover:bg-muted/60"
+                ? "text-foreground"
+                : "text-muted-foreground hover:text-foreground"
             )}
           >
-            <span className="inline-flex size-7 items-center justify-center rounded-xl bg-background/70 text-muted-foreground">
+            <span className="inline-flex size-5 items-center justify-center text-muted-foreground">
               <Boxes className="size-4" />
             </span>
             <span>全部</span>
-            <span className="rounded-full bg-background/70 px-1.5 py-0.5 text-[10px] tabular-nums">
-              {models.length}
-            </span>
           </button>
           {familyOptions.map((family) => (
             <button
               key={family.key}
               type="button"
+              ref={(node) => { familyButtonRefs.current[family.key] = node; }}
               onClick={() => {
                 setFamilyFilter(family.key);
                 setPage(1);
               }}
+              aria-pressed={familyFilter === family.key}
               className={cn(
-                "inline-flex h-9 shrink-0 items-center gap-2 rounded-full border px-3 text-xs font-semibold transition",
+                "relative z-10 inline-flex h-9 shrink-0 items-center gap-2 rounded-full px-3 text-sm font-semibold transition-colors duration-200",
                 familyFilter === family.key
-                  ? "border-primary/30 bg-primary/10 text-primary"
-                  : "border-border/60 bg-muted/40 text-muted-foreground hover:bg-muted/60"
+                  ? "text-foreground"
+                  : "text-muted-foreground hover:text-foreground"
               )}
             >
-              <ModelIcon name={family.iconName} size="sm" />
-              <span>{family.label}</span>
-              <span className="rounded-full bg-background/70 px-1.5 py-0.5 text-[10px] tabular-nums">
-                {family.count}
+              <span className="inline-flex size-5 shrink-0 items-center justify-center">
+                <ModelIcon name={family.iconName} size="sm" />
               </span>
+              <span>{family.label}</span>
             </button>
           ))}
+          </div>
         </div>
       </div>
       <div className="flex-1 min-h-0 overflow-hidden">
@@ -660,23 +951,37 @@ export default function ModelsPage() {
         ) : (
           <div className="h-full flex flex-col">
             <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-[28px] border border-border/70 bg-card/88 shadow-[0_18px_50px_rgba(98,71,47,0.08)]">
-              <div className="hidden xl:grid xl:grid-cols-[minmax(0,2.1fr)_9rem_9rem_minmax(11rem,1fr)_9rem_19rem] items-center gap-4 border-b border-border/60 px-5 py-3 text-xs font-medium text-muted-foreground">
-                <div>模型</div>
-                <div className="text-center">输入</div>
-                <div className="text-center">输出</div>
-                <div className="text-center">能力</div>
-                <div className="text-center">状态</div>
-                <div className="text-right">操作</div>
+              <div
+                className="hidden xl:grid xl:[grid-template-columns:var(--model-cols)] items-center gap-4 border-b border-border/60 px-5 py-3 text-xs font-medium text-muted-foreground"
+                style={{ ["--model-cols" as any]: desktopGridTemplate }}
+              >
+                {columnVisibility.model ? <div>模型</div> : null}
+                {columnVisibility.input ? <div className="text-center">输入</div> : null}
+                {columnVisibility.output ? <div className="text-center">输出</div> : null}
+                {columnVisibility.capabilities ? <div className="text-center">能力</div> : null}
+                {columnVisibility.status ? <div className="text-center">状态</div> : null}
+                {columnVisibility.actions ? <div className="text-right">操作</div> : null}
               </div>
-              <div className="flex-1 min-h-0 overflow-y-auto">
-                {visibleModels.map((model) => {
+              <div ref={listRef} className="flex-1 min-h-0 overflow-y-auto">
+                <div className="relative w-full" style={{ height: rowVirtualizer.getTotalSize() }}>
+                  {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+                    const model = visibleModels[virtualRow.index];
+                    if (!model) return null;
                   const enabled = isModelEnabled(model);
                   const statusUpdating = statusUpdatingIds.includes(model.ID);
                   return (
                     <div
                       key={model.ID}
-                      className="relative grid gap-4 border-b border-border/50 px-4 py-3 transform-gpu transition-[background-color,transform,box-shadow] duration-200 hover:-translate-y-0.5 hover:scale-[1.004] hover:bg-background hover:shadow-[0_14px_30px_rgba(98,71,47,0.12)] last:border-b-0 xl:grid-cols-[minmax(0,2.1fr)_9rem_9rem_minmax(11rem,1fr)_9rem_19rem] xl:items-center xl:px-5"
+                      data-index={virtualRow.index}
+                      ref={rowVirtualizer.measureElement}
+                      className="group absolute left-0 top-0 grid w-full gap-4 overflow-hidden border-b border-border/50 px-4 py-3 transform-gpu transition-[background-color,transform,box-shadow,border-color] duration-200 hover:translate-x-1 hover:border-border/30 hover:bg-gradient-to-r hover:from-primary/5 hover:via-background hover:to-background hover:shadow-[0_12px_28px_rgba(98,71,47,0.10)] last:border-b-0 xl:[grid-template-columns:var(--model-cols)] xl:items-center xl:px-5"
+                      style={{
+                        transform: `translateY(${virtualRow.start}px)`,
+                        ["--model-cols" as any]: desktopGridTemplate,
+                      }}
                     >
+                      <div className="pointer-events-none absolute inset-y-2 left-0 w-1 rounded-r-full bg-primary/0 transition-all duration-200 group-hover:bg-primary/70 group-hover:shadow-[0_0_18px_rgba(180,104,56,0.28)]" />
+                      {columnVisibility.model ? (
                       <div className="min-w-0">
                         <div className="mb-1 text-[11px] font-medium text-muted-foreground xl:hidden">模型</div>
                         <div className="grid min-w-0 grid-cols-[2.5rem_minmax(0,1fr)] items-center gap-3">
@@ -684,9 +989,14 @@ export default function ModelsPage() {
                           <div className="min-w-0 leading-tight">
                             <Tooltip>
                               <TooltipTrigger asChild>
-                                <div className="truncate cursor-pointer text-base font-semibold leading-6" title={model.Name}>
+                                <button
+                                  type="button"
+                                  className="w-full truncate text-left cursor-pointer text-base font-semibold leading-6 transition-colors group-hover:text-primary"
+                                  title={model.Name}
+                                  onClick={() => void handleCopyModelName(model.Name)}
+                                >
                                   {model.Name}
-                                </div>
+                                </button>
                               </TooltipTrigger>
                               <TooltipContent side="top" align="start">
                                 {model.Name}
@@ -700,7 +1010,9 @@ export default function ModelsPage() {
                           </div>
                         </div>
                       </div>
+                      ) : null}
 
+                      {columnVisibility.input ? (
                       <div className="min-w-0 xl:justify-self-center">
                         <div className="mb-1 text-[11px] font-medium text-muted-foreground xl:hidden">输入</div>
                         <div className="flex items-center gap-1 text-sm font-medium text-foreground/80 xl:justify-center">
@@ -710,7 +1022,9 @@ export default function ModelsPage() {
                           </span>
                         </div>
                       </div>
+                      ) : null}
 
+                      {columnVisibility.output ? (
                       <div className="min-w-0 xl:justify-self-center">
                         <div className="mb-1 text-[11px] font-medium text-muted-foreground xl:hidden">输出</div>
                         <div className="flex items-center gap-1 text-sm font-medium text-foreground/80 xl:justify-center">
@@ -720,7 +1034,9 @@ export default function ModelsPage() {
                           </span>
                         </div>
                       </div>
+                      ) : null}
 
+                      {columnVisibility.capabilities ? (
                       <div className="min-w-0 xl:justify-self-center xl:w-full">
                         <div className="mb-1 text-[11px] font-medium text-muted-foreground xl:hidden">能力</div>
                         <div className="flex flex-wrap items-center gap-1.5 xl:justify-center">
@@ -746,7 +1062,9 @@ export default function ModelsPage() {
                           })}
                         </div>
                       </div>
+                      ) : null}
 
+                      {columnVisibility.status ? (
                       <div className="min-w-0 xl:justify-self-center xl:w-full">
                         <div className="mb-1 text-[11px] font-medium text-muted-foreground xl:hidden">状态</div>
                         <div className="flex items-center gap-3 xl:justify-center">
@@ -768,7 +1086,9 @@ export default function ModelsPage() {
                           />
                         </div>
                       </div>
+                      ) : null}
 
+                      {columnVisibility.actions ? (
                       <div className="flex flex-wrap items-center justify-start gap-2 xl:justify-self-end xl:justify-end">
                         <Button
                           variant="outline"
@@ -824,9 +1144,11 @@ export default function ModelsPage() {
                           </AlertDialogContent>
                         </AlertDialog>
                       </div>
+                      ) : null}
                     </div>
                   );
                 })}
+                </div>
               </div>
             </div>
           </div>
@@ -847,7 +1169,7 @@ export default function ModelsPage() {
 
           <Form {...form}>
             <form onSubmit={form.handleSubmit(editingModel ? handleUpdate : handleCreate)} className="space-y-3">
-              <div className="grid gap-3 sm:grid-cols-[1fr,auto]">
+              <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
                 <FormField
                   control={form.control}
                   name="name"
@@ -867,7 +1189,7 @@ export default function ModelsPage() {
                     control={form.control}
                     name="status"
                     render={({ field }) => (
-                      <FormItem className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/50 px-3 py-2">
+                      <FormItem className="flex h-9 items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/50 px-3">
                         <FormLabel className="text-xs text-muted-foreground">启用</FormLabel>
                         <FormControl>
                           <Switch
@@ -969,6 +1291,49 @@ export default function ModelsPage() {
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>输出价格($/M)</FormLabel>
+                      <FormControl>
+                        <Input
+                          type="number"
+                          className="h-9"
+                          step="0.0001"
+                          inputMode="decimal"
+                          {...field}
+                          onChange={(e) => field.onChange(e.target.value)}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <FormField
+                  control={form.control}
+                  name="cache_read_price"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>缓存读价格($/M)</FormLabel>
+                      <FormControl>
+                        <Input
+                          type="number"
+                          className="h-9"
+                          step="0.0001"
+                          inputMode="decimal"
+                          {...field}
+                          onChange={(e) => field.onChange(e.target.value)}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="cache_write_price"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>缓存写价格($/M)</FormLabel>
                       <FormControl>
                         <Input
                           type="number"

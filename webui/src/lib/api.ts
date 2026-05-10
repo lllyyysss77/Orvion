@@ -8,8 +8,11 @@ export interface Provider {
   Name: string;
   Config: string;
   Console: string;
+  ProxyURL?: string | null;
   ModelsFetchMode?: "v1_models" | "api_pricing" | string;
   Capabilities?: string[] | null;
+  InterfaceConversionEnabled?: number | boolean | null;
+  InterfaceConversionTarget?: "chat" | "responses" | "messages" | string | null;
 }
 
 export interface Model {
@@ -28,6 +31,8 @@ export interface Model {
   Capabilities?: string[] | null;
   InputPrice?: number | null;
   OutputPrice?: number | null;
+  CacheReadPrice?: number | null;
+  CacheWritePrice?: number | null;
 }
 
 export interface AuthKeySummary {
@@ -274,8 +279,11 @@ export async function createProvider(provider: {
   name: string;
   config: string;
   console: string;
+  proxy_url?: string;
   models_fetch_mode?: "v1_models" | "api_pricing";
   capabilities?: string[];
+  interface_conversion_enabled?: boolean;
+  interface_conversion_target?: "chat" | "responses" | "messages" | "";
 }): Promise<Provider> {
   return apiRequest<Provider>('/providers', {
     method: 'POST',
@@ -287,8 +295,11 @@ export async function updateProvider(id: number, provider: {
   name?: string;
   config?: string;
   console?: string;
+  proxy_url?: string;
   models_fetch_mode?: "v1_models" | "api_pricing";
   capabilities?: string[];
+  interface_conversion_enabled?: boolean;
+  interface_conversion_target?: "chat" | "responses" | "messages" | "";
 }): Promise<Provider> {
   return apiRequest<Provider>(`/providers/${id}`, {
     method: 'PUT',
@@ -339,6 +350,8 @@ export async function createModel(model: {
   capabilities: string[];
   input_price?: number | null;
   output_price?: number | null;
+  cache_read_price?: number | null;
+  cache_write_price?: number | null;
 }): Promise<Model> {
   return apiRequest<Model>('/models', {
     method: 'POST',
@@ -357,6 +370,8 @@ export async function updateModel(id: number, model: {
   capabilities?: string[];
   input_price?: number | null;
   output_price?: number | null;
+  cache_read_price?: number | null;
+  cache_write_price?: number | null;
 }): Promise<Model> {
   return apiRequest<Model>(`/models/${id}`, {
     method: 'PUT',
@@ -716,7 +731,7 @@ export interface GitHubVersionCheckConfig {
 }
 
 export interface LoadingUIConfig {
-  style: "rocket_trail" | "star_dash" | "jelly_wave" | "candy_slide";
+  style: "line_pulse" | "orbit_ring" | "slim_progress" | "ripple_focus";
 }
 
 export const configAPI = {
@@ -747,6 +762,7 @@ export interface ChatLog {
   Name: string;
   ProviderModel: string;
   ProviderName: string;
+  RequestPath?: string;
   Status: string;
   Style: string;
   UserAgent: string;

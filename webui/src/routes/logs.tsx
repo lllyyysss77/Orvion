@@ -7,10 +7,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import Loading from "@/components/loading";
-import { getLogs, type ChatLog, cleanLogs, getProviders, getAuthKeysList, getChatIO, type Provider, type AuthKeyItem } from "@/lib/api";
-import { getStoredAuthToken, getStoredAuthTokenMode } from "@/lib/auth";
-import { buildReplayCurlSnippet, inferGatewayEndpoint, maskAuthToken } from "@/lib/curl";
-import { ChevronLeft, ChevronRight, RefreshCw, Trash2, Eye, EyeOff, Timer, Zap, ArrowDown, ArrowUp, Database, Coins, Copy } from "lucide-react";
+import { getLogs, type ChatLog, cleanLogs, getProviders, getAuthKeysList, type Provider, type AuthKeyItem } from "@/lib/api";
+import { getStoredAuthTokenMode } from "@/lib/auth";
+import { ChevronLeft, ChevronRight, RefreshCw, Trash2, Eye, EyeOff, Timer, Zap, ArrowDown, ArrowUp, Database, Coins } from "lucide-react";
 import { resolveModelIcon } from "@/lib/model-icon";
 
 // 格式化耗时显示（后端字段单位为毫秒）
@@ -93,10 +92,39 @@ type LogFilterState = {
   authKeyId: string;
 };
 
+type LogListPreference = {
+  filters: LogFilterState;
+  pageSize: number;
+};
+
+const LOGS_PREFERENCE_STORAGE_KEY = "orvion_logs_preferences_v1";
+
 const defaultLogFilters: LogFilterState = {
   providerName: "",
   status: "",
   authKeyId: "",
+};
+
+const readStoredLogPreferences = (): LogListPreference => {
+  if (typeof window === "undefined") {
+    return { filters: defaultLogFilters, pageSize: 10 };
+  }
+  const raw = window.localStorage.getItem(LOGS_PREFERENCE_STORAGE_KEY);
+  if (!raw) {
+    return { filters: defaultLogFilters, pageSize: 10 };
+  }
+  try {
+    const parsed = JSON.parse(raw) as Partial<LogListPreference>;
+    const filters: LogFilterState = {
+      providerName: typeof parsed.filters?.providerName === "string" ? parsed.filters.providerName : "",
+      status: typeof parsed.filters?.status === "string" ? parsed.filters.status : "",
+      authKeyId: typeof parsed.filters?.authKeyId === "string" ? parsed.filters.authKeyId : "",
+    };
+    const pageSize = parsed.pageSize === 20 || parsed.pageSize === 50 ? parsed.pageSize : 10;
+    return { filters, pageSize };
+  } catch {
+    return { filters: defaultLogFilters, pageSize: 10 };
+  }
 };
 
 type LogCardProps = {
@@ -270,6 +298,15 @@ const getCachedTokensFromLog = (log: ChatLog) => {
   return 0;
 };
 
+const getLogRequestPath = (log: ChatLog) => {
+  const raw = log as unknown as Record<string, unknown>;
+  const byPascal = typeof raw.RequestPath === "string" ? raw.RequestPath.trim() : "";
+  if (byPascal) return byPascal;
+  const bySnake = typeof raw.request_path === "string" ? raw.request_path.trim() : "";
+  if (bySnake) return bySnake;
+  return "-";
+};
+
 const ModelIcon = ({ name }: { name: string }) => {
   const config = resolveModelIcon(name);
   const fallback = (name || "M").slice(0, 2).toUpperCase();
@@ -291,16 +328,17 @@ const ModelIcon = ({ name }: { name: string }) => {
 
 export default function LogsPage() {
   const isAuthKeyMode = getStoredAuthTokenMode() === "auth_key";
+  const storedPreferences = useMemo(() => readStoredLogPreferences(), []);
   const [logs, setLogs] = useState<ChatLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(10);
+  const [pageSize, setPageSize] = useState(storedPreferences.pageSize);
   const [total, setTotal] = useState(0);
   const [pages, setPages] = useState(0);
   const [providerOptions, setProviderOptions] = useState<Provider[]>([]);
   const [authKeyOptions, setAuthKeyOptions] = useState<AuthKeyItem[]>([]);
-  const [filters, setFilters] = useState<LogFilterState>(defaultLogFilters);
-  const [draftFilters, setDraftFilters] = useState<LogFilterState>(defaultLogFilters);
+  const [filters, setFilters] = useState<LogFilterState>(storedPreferences.filters);
+  const [draftFilters, setDraftFilters] = useState<LogFilterState>(storedPreferences.filters);
   const navigate = useNavigate();
   // 详情弹窗
   const [selectedLog, setSelectedLog] = useState<ChatLog | null>(null);
@@ -310,7 +348,6 @@ export default function LogsPage() {
   const [cleanValue, setCleanValue] = useState<string>('1000');
   const [isCleanDialogOpen, setIsCleanDialogOpen] = useState(false);
   const [cleanLoading, setCleanLoading] = useState(false);
-  const [copyingCurlVariant, setCopyingCurlVariant] = useState<"masked" | "raw" | null>(null);
   const fetchFilterOptions = useCallback(async () => {
     if (isAuthKeyMode) {
       setProviderOptions([]);
@@ -355,6 +392,14 @@ export default function LogsPage() {
   useEffect(() => {
     void fetchFilterOptions();
   }, [fetchFilterOptions]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(
+      LOGS_PREFERENCE_STORAGE_KEY,
+      JSON.stringify({ filters, pageSize }),
+    );
+  }, [filters, pageSize]);
 
   const applyFilters = () => {
     setPage(1);
@@ -411,46 +456,6 @@ export default function LogsPage() {
       },
     });
   }, [navigate]);
-  const handleCopyReplayCurl = useCallback(async (log: ChatLog, masked: boolean) => {
-    if (copyingCurlVariant) return;
-    if (log.Status !== "success" || !log.ChatIO) {
-      toast.error("该日志未记录请求输入，无法复制 cURL");
-      return;
-    }
-
-    setCopyingCurlVariant(masked ? "masked" : "raw");
-    try {
-      const chatIO = await getChatIO(log.ID, { mode: "full" });
-      const requestBody = (chatIO.Input ?? "").trim();
-      if (!requestBody) {
-        toast.error("请求输入为空，无法生成 cURL");
-        return;
-      }
-
-      const endpoint = inferGatewayEndpoint(log.Style, requestBody);
-      const rawAuthToken = getStoredAuthToken();
-      const authToken = masked ? maskAuthToken(rawAuthToken) : (rawAuthToken || "YOUR_AUTH_TOKEN");
-      const baseUrl = window.location.origin;
-      const curlSnippet = buildReplayCurlSnippet({
-        baseUrl,
-        endpoint,
-        authToken,
-        requestBody,
-      });
-
-      await navigator.clipboard.writeText(curlSnippet);
-      toast.success(masked ? "已复制 cURL（掩码版）" : "已复制 cURL（真实版）");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "未知错误";
-      toast.error(`复制 cURL 失败: ${message}`);
-    } finally {
-      setCopyingCurlVariant(null);
-    }
-  }, [copyingCurlVariant]);
-  const handleCopyReplayCurlFromDetail = useCallback((masked: boolean) => {
-    if (!selectedLog) return;
-    void handleCopyReplayCurl(selectedLog, masked);
-  }, [handleCopyReplayCurl, selectedLog]);
   const logsList = useMemo(() => logs ?? [], [logs]);
   const listRef = useRef<HTMLDivElement | null>(null);
   const rowVirtualizer = useVirtualizer({
@@ -648,28 +653,6 @@ export default function LogsPage() {
                   <span className="rounded-full bg-muted/60 px-2 py-0.5">{selectedLog.key_name}</span>
                 ) : null}
               </div>
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-8"
-                  onClick={() => handleCopyReplayCurlFromDetail(true)}
-                  disabled={copyingCurlVariant !== null || selectedLog.Status !== "success" || !selectedLog.ChatIO}
-                >
-                  <Copy className="size-3.5" />
-                  复制 cURL（掩码）
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-8"
-                  onClick={() => handleCopyReplayCurlFromDetail(false)}
-                  disabled={copyingCurlVariant !== null || selectedLog.Status !== "success" || !selectedLog.ChatIO}
-                >
-                  <Copy className="size-3.5" />
-                  复制 cURL（真实）
-                </Button>
-              </div>
             </div>
             <div className="overflow-y-auto px-5 py-4 flex-1 space-y-4 text-sm">
               {selectedLog.Error && (
@@ -686,6 +669,9 @@ export default function LogsPage() {
                 <DetailCard label="提供商" value={selectedLog.ProviderName || "-"} />
                 <DetailCard label="提供商模型" value={selectedLog.ProviderModel || "-"} mono />
                 <DetailCard label="响应大小" value={selectedLog.Size ? formatBytes(selectedLog.Size) : "-"} />
+                <div className="sm:col-span-2">
+                  <DetailCard label="请求路径" value={getLogRequestPath(selectedLog)} mono />
+                </div>
               </div>
 
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
