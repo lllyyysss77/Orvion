@@ -59,11 +59,18 @@ interface ParsedOutputBlock {
   id: string;
   title: string;
   body: string;
+  images?: ParsedOutputImage[];
 }
 
 interface ParsedOutputPayload {
   blocks: ParsedOutputBlock[];
   extraFields: RequestFieldItem[];
+}
+
+interface ParsedOutputImage {
+  src: string;
+  mime: string;
+  source: "base64" | "url";
 }
 
 function formatJson(raw: string): FormattedJson {
@@ -562,6 +569,61 @@ function buildSuggestionBlocks(suggestions: unknown): ParsedOutputBlock[] {
   return blocks;
 }
 
+function normalizeImageMimeType(raw: unknown): string {
+  if (typeof raw !== "string") return "image/png";
+  const value = raw.trim().toLowerCase();
+  if (!value) return "image/png";
+  if (value.startsWith("image/")) return value;
+  return "image/png";
+}
+
+function buildImageOutputBlocks(data: unknown): ParsedOutputBlock[] {
+  if (!Array.isArray(data)) return [];
+  const blocks: ParsedOutputBlock[] = [];
+
+  data.forEach((entry, index) => {
+    if (!isRecord(entry)) return;
+
+    const mime = normalizeImageMimeType(entry.type);
+    const b64 = typeof entry.b64_json === "string" ? entry.b64_json.trim() : "";
+    const imageURL = typeof entry.url === "string" ? entry.url.trim() : "";
+    const revisedURL = typeof entry.revised_url === "string" ? entry.revised_url.trim() : "";
+    const sourceURL = imageURL || revisedURL;
+    const images: ParsedOutputImage[] = [];
+
+    if (b64) {
+      images.push({
+        src: `data:${mime};base64,${b64}`,
+        mime,
+        source: "base64",
+      });
+    }
+    if (sourceURL) {
+      images.push({
+        src: sourceURL,
+        mime,
+        source: "url",
+      });
+    }
+    if (images.length === 0) return;
+
+    const bodyLines: string[] = [];
+    bodyLines.push(`已识别图像输出 ${index + 1}`);
+    bodyLines.push(`类型：${mime}`);
+    if (b64) bodyLines.push(`Base64 长度：${b64.length}`);
+    if (sourceURL) bodyLines.push(`图片地址：${wrapTechnicalTerms(sourceURL)}`);
+
+    blocks.push({
+      id: `image-${index + 1}`,
+      title: `图像响应 ${index + 1}`,
+      body: bodyLines.join("\n"),
+      images,
+    });
+  });
+
+  return blocks;
+}
+
 function buildParsedOutputPayload(value: unknown): ParsedOutputPayload | null {
   if (!isRecord(value)) return null;
 
@@ -573,6 +635,12 @@ function buildParsedOutputPayload(value: unknown): ParsedOutputPayload | null {
   if (suggestionBlocks.length > 0) {
     blocks.push(...suggestionBlocks);
     usedKeys.add("suggestions");
+  }
+
+  const imageBlocks = buildImageOutputBlocks(record.data);
+  if (imageBlocks.length > 0) {
+    blocks.push(...imageBlocks);
+    usedKeys.add("data");
   }
 
   const directTextKeys = ["output_text", "text", "content", "message"];
@@ -838,7 +906,8 @@ interface JsonContentProps {
 }
 
 function JsonContent({ text, parsed, empty, syntaxStyle }: JsonContentProps) {
-  if (parsed && !empty) {
+  const shouldUseSyntaxHighlight = parsed && !empty && text.length <= 200000;
+  if (shouldUseSyntaxHighlight) {
     return (
       <div className="w-full max-w-full min-w-0 overflow-x-auto rounded-md border bg-muted/70 font-mono text-sm leading-6">
         <SyntaxHighlighter
@@ -862,7 +931,7 @@ function JsonContent({ text, parsed, empty, syntaxStyle }: JsonContentProps) {
   }
 
   return (
-    <pre className="whitespace-pre-wrap break-words font-mono text-sm leading-6 bg-muted/70 border rounded-md p-4 overflow-x-auto w-full max-w-full min-w-0">
+    <pre className="whitespace-pre-wrap break-all font-mono text-sm leading-6 bg-muted/70 border rounded-md p-4 overflow-x-auto w-full max-w-full min-w-0">
       {text}
     </pre>
   );
@@ -1078,6 +1147,23 @@ function StructuredOutputCard({ raw, syntaxStyle }: { raw: string; syntaxStyle: 
                 </summary>
                 <div className="border-t border-emerald-200/70 bg-background/85 px-4 py-3 text-[15px] leading-7 text-foreground">
                   <MarkdownOutputText value={block.body} />
+                  {block.images && block.images.length > 0 && (
+                    <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                      {block.images.map((image, imageIndex) => (
+                        <figure key={`${block.id}-image-${imageIndex}`} className="rounded-lg border bg-background p-2">
+                          <img
+                            src={image.src}
+                            alt={`${block.title} 预览 ${imageIndex + 1}`}
+                            className="max-h-[340px] w-full rounded object-contain bg-muted/25"
+                            loading="lazy"
+                          />
+                          <figcaption className="mt-2 text-xs text-muted-foreground">
+                            {image.source === "base64" ? "来源：Base64" : "来源：URL"} · {image.mime}
+                          </figcaption>
+                        </figure>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </details>
             ))}

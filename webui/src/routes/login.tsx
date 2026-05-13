@@ -42,7 +42,7 @@ const FEATURE_CARDS = [
     icon: Rocket,
     title: "格式转换",
     desc: "支持接口格式转换与自定义请求头能力",
-    status: "in-progress" as const,
+    status: "completed" as const,
   },
 ];
 
@@ -496,8 +496,8 @@ export default function LoginPage() {
       >
         <header className={`sticky top-0 z-50 border-b backdrop-blur-xl transition-all ${headerClass}`}>
           <div className="mx-auto flex h-14 max-w-[1320px] items-center justify-between px-3 sm:h-[72px] sm:px-6">
-            <button className="flex h-9 w-9 items-center justify-center sm:h-10 sm:w-10" onClick={() => scrollToSection("home")}>
-              <img src={iconSvg} alt="Orvion" className="h-[3.9375rem] w-[3.9375rem] sm:h-[5.0625rem] sm:w-[5.0625rem]" />
+            <button className="flex h-12 w-12 items-center justify-center sm:h-14 sm:w-14" onClick={() => scrollToSection("home")}>
+              <img src={iconSvg} alt="Orvion" className="h-full w-full max-w-none object-contain" />
             </button>
 
             <nav className="mx-6 hidden items-center gap-1 lg:flex">

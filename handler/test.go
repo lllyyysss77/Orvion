@@ -168,6 +168,9 @@ func ProviderTestHandler(c *gin.Context) {
 	// 避免将浏览器的压缩协商（br/zstd）透传到上游，导致回包为不可读压缩字节。
 	header.Del("Accept-Encoding")
 	header.Set("Accept-Encoding", "identity")
+	// 测试场会来自浏览器请求，需剥离会触发上游来源校验的浏览器头；
+	// 同时保留并回填自定义请求头，确保用户显式配置优先级最高。
+	sanitizeTestUpstreamHeaders(header, c.Request.Header, chatModel.CustomerHeaders)
 	req, err := providerInstance.BuildReq(ctx, header, chatModel.Model, []byte(testBody))
 	if err != nil {
 		common.ErrorWithHttpStatus(c, http.StatusOK, 502, "Failed to connect to provider: "+err.Error())
@@ -327,6 +330,9 @@ func ModelChatTestHandler(c *gin.Context) {
 	// 避免将浏览器的压缩协商（br/zstd）透传到上游，导致回包为不可读压缩字节。
 	header.Del("Accept-Encoding")
 	header.Set("Accept-Encoding", "identity")
+	// 测试场来自浏览器，剥离浏览器来源头，避免上游返回 origin not allowed。
+	// 然后回填用户自定义头，保持“自定义请求头 > 透传请求头”的优先级。
+	sanitizeTestUpstreamHeaders(header, c.Request.Header, chatModel.CustomerHeaders)
 
 	requestStyle := resolveProviderStyleForEndpoint(chatModel, endpoint)
 	providerInstance, err := providers.NewForStyleWithProxy(requestStyle, chatModel.Config, chatModel.ProxyURL)
@@ -1261,6 +1267,43 @@ func mergeHeaders(dst http.Header, extra http.Header, skipKeys map[string]struct
 			continue
 		}
 		dst[key] = append([]string(nil), values...)
+	}
+}
+
+func sanitizeTestUpstreamHeaders(dst http.Header, source http.Header, customHeaders map[string]string) {
+	if dst == nil {
+		return
+	}
+
+	// 仅剥离浏览器来源相关头，避免上游按 Web CORS 规则拒绝。
+	// 若用户在“自定义请求头”中显式设置同名头，会在下面回填覆盖。
+	blockedBrowserHeaders := []string{
+		"Origin",
+		"Referer",
+		"Sec-Fetch-Site",
+		"Sec-Fetch-Mode",
+		"Sec-Fetch-Dest",
+		"Sec-Fetch-User",
+	}
+	for _, key := range blockedBrowserHeaders {
+		if source == nil {
+			dst.Del(key)
+			continue
+		}
+		srcValues := source.Values(key)
+		if len(srcValues) == 0 {
+			// 非浏览器来源时不强制删，避免影响服务端/CLI 调试场景。
+			continue
+		}
+		dst.Del(key)
+	}
+
+	// 自定义请求头优先：用户显式配置时，允许覆盖上述默认剥离行为。
+	for key, value := range customHeaders {
+		if strings.TrimSpace(key) == "" {
+			continue
+		}
+		dst.Set(key, value)
 	}
 }
 

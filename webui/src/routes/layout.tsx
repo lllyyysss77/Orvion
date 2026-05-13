@@ -41,18 +41,23 @@ const SIDEBAR_BUTTON_BASE =
 
 const navSections = [
   {
-    title: "管理",
+    title: "仪表盘",
     items: [
       { to: "/", label: "仪表板", icon: House },
+      { to: "/health-ui", label: "模型监控", icon: Activity },
+    ],
+  },
+  {
+    title: "管理",
+    items: [
       { to: "/providers", label: "提供商", icon: Cloud },
       { to: "/models", label: "模型", icon: Boxes },
-      { to: "/health-ui", label: "健康监控", icon: Activity },
+      { to: "/auth-keys", label: "API 密钥", icon: KeyRound },
     ],
   },
   {
     title: "项目",
     items: [
-      { to: "/auth-keys", label: "API 密钥", icon: KeyRound },
       { to: "/model-chat", label: "测试场", icon: MessageSquareText },
       { to: "/logs", label: "请求日志", icon: ScrollText },
       { to: "/system-logs", label: "系统状态", icon: FileTerminal },
@@ -484,9 +489,9 @@ export default function Layout() {
           <div className="flex h-full w-full flex-col bg-sidebar text-sidebar-foreground shadow-xl">
             <div className="flex items-center justify-between px-4 py-3 border-b border-sidebar-border/70">
               <div className="flex items-center gap-2">
-                <div className="flex size-8 items-center justify-center overflow-hidden rounded bg-primary/10">
-                  <img src={iconSvg} alt="Orvion" className="size-8 object-cover" />
-                </div>
+              <div className="flex size-10 items-center justify-center overflow-hidden rounded bg-transparent">
+                <img src={iconSvg} alt="Orvion" className="size-10 object-cover" />
+              </div>
                 <span className="text-sm font-semibold">Orvion</span>
               </div>
               <Button
@@ -538,8 +543,8 @@ export default function Layout() {
             </Button>
 
             <Link to="/" className="flex items-center gap-2">
-              <div className="flex size-8 shrink-0 items-center justify-center overflow-hidden rounded bg-primary/10">
-                <img src={iconSvg} alt="Orvion" className="size-8 object-cover" />
+              <div className="flex size-10 shrink-0 items-center justify-center overflow-hidden rounded bg-transparent">
+                <img src={iconSvg} alt="Orvion" className="size-10 object-cover" />
               </div>
               <span className="text-sm leading-none font-semibold text-foreground">Orvion</span>
             </Link>

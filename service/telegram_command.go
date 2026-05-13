@@ -897,10 +897,10 @@ func buildTelegramYesterdayUsageReportMessage(ctx context.Context, now time.Time
 
 	if summary.SlowestRequest != nil {
 		statusText := telegramReadableStatus(summary.SlowestRequest.Status)
-		lines = append(lines, fmt.Sprintf("🐢 最慢一次请求：%s / %s（%d ms，%s）",
+		lines = append(lines, fmt.Sprintf("🐢 最慢一次请求：%s / %s（%s，%s）",
 			summary.SlowestRequest.ModelName,
 			summary.SlowestRequest.Provider,
-			summary.SlowestRequest.LatencyMs,
+			formatTelegramLatency(summary.SlowestRequest.LatencyMs),
 			statusText,
 		))
 	} else {
@@ -1020,6 +1020,16 @@ func telegramReadableStatus(status string) string {
 	default:
 		return "未知状态"
 	}
+}
+
+func formatTelegramLatency(latencyMs int) string {
+	if latencyMs <= 0 {
+		return "0 ms"
+	}
+	if latencyMs < 1000 {
+		return fmt.Sprintf("%d ms", latencyMs)
+	}
+	return fmt.Sprintf("%.2f s", float64(latencyMs)/1000)
 }
 
 func resolveTelegramStatusCoverImageBaseURL(ctx context.Context) string {
