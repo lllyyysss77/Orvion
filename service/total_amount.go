@@ -90,12 +90,18 @@ func AddTotalConsumedAmount(ctx context.Context, delta float64) error {
 }
 
 func sumCurrentTotalAmount(ctx context.Context) (float64, error) {
+	union, err := models.BuildChatLogUnionQuery(models.ChatLogQueryScope{}, "total_cost")
+	if err != nil {
+		return 0, err
+	}
+	if union.SQL == "" {
+		return 0, nil
+	}
 	var total sql.NullFloat64
-	if err := models.DB.WithContext(ctx).
-		Model(&models.ChatLog{}).
-		Where("deleted_at IS NULL").
-		Select("COALESCE(SUM(total_cost),0) AS total").
-		Scan(&total).Error; err != nil {
+	if err := models.DB.WithContext(ctx).Raw(
+		`SELECT COALESCE(SUM(total_cost),0) AS total
+		   FROM (` + union.SQL + `) AS logs`,
+	).Scan(&total).Error; err != nil {
 		return 0, err
 	}
 	return sanitizeAmount(total.Float64), nil

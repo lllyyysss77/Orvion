@@ -33,8 +33,8 @@ func init() {
 	initLogging()
 
 	ctx := context.Background()
-	// 数据库默认使用 SQLite，支持 PostgreSQL
-	// - DATABASE_DSN：连接串（支持 SQLite 路径 / sqlite:// / file: / Postgres URL / key=value）
+	// 数据库使用 SQLite。
+	// - DATABASE_DSN：SQLite 文件路径、sqlite:// 路径或 file: DSN；空值默认 ./data/llmio.db。
 	dsn := strings.TrimSpace(os.Getenv("DATABASE_DSN"))
 	models.Init(ctx, dsn)
 

@@ -163,7 +163,7 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 	}
 	defer res.Body.Close()
 
-	logId, err := service.SaveChatLog(ctx, *log)
+	logRef, err := service.SaveChatLog(ctx, *log)
 	if err != nil {
 		common.InternalServerError(c, err.Error())
 		return
@@ -175,7 +175,7 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 	pw := newAsyncMirrorWriter(pipeWriter, 256)
 	// 异步处理输出并记录 tokens
 	pkg.GoSafe("handler.record_log", func() {
-		service.RecordLog(context.Background(), startReq, log.FirstChunkTimeMs, pr, postProcessor, logId, log.AuthKeyID, *before, providersWithMeta.IOLog, logStyle)
+		service.RecordLog(context.Background(), startReq, log.FirstChunkTimeMs, pr, postProcessor, logRef, log.AuthKeyID, *before, providersWithMeta.IOLog, logStyle)
 	})
 
 	writeHeader(c, before.Stream, res.Header, logStyle)

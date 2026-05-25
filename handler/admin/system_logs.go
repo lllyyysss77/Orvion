@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/racio/orvion/common"
+	"github.com/racio/orvion/models"
 	"github.com/racio/orvion/pkg/logutil"
 )
 
@@ -31,12 +32,23 @@ type SystemLogSnapshot struct {
 	Content   string       `json:"content"`
 	Lines     int          `json:"lines"`
 	Process   processStats `json:"process"`
+	SlowSQL   slowSQLStats `json:"slow_sql"`
 }
 
 type processStats struct {
 	MemoryBytes uint64  `json:"memory_bytes"`
 	CPUPercent  float64 `json:"cpu_percent"`
 	Goroutines  int     `json:"goroutines"`
+	GCCount     uint32  `json:"gc_count"`
+}
+
+type slowSQLStats struct {
+	TotalQueries uint64  `json:"total_queries"`
+	SlowQueries  uint64  `json:"slow_queries"`
+	NormalRate   float64 `json:"normal_rate"`
+	SlowRate     float64 `json:"slow_rate"`
+	ThresholdMs  int64   `json:"threshold_ms"`
+	WindowSize   uint64  `json:"window_size"`
 }
 
 var (
@@ -60,6 +72,7 @@ func GetSystemLogs(c *gin.Context) {
 				Content: "",
 				Lines:   0,
 				Process: stats,
+				SlowSQL: collectSlowSQLStats(),
 			})
 			return
 		}
@@ -82,6 +95,7 @@ func GetSystemLogs(c *gin.Context) {
 		Content:   content,
 		Lines:     lines,
 		Process:   stats,
+		SlowSQL:   collectSlowSQLStats(),
 	})
 }
 
@@ -163,6 +177,7 @@ func collectProcessStats() processStats {
 		stats.MemoryBytes = lastProcessStats.MemoryBytes
 		stats.CPUPercent = lastProcessStats.CPUPercent
 		stats.Goroutines = lastProcessStats.Goroutines
+		stats.GCCount = lastProcessStats.GCCount
 		processCPUSampleMu.Unlock()
 		return stats
 	}
@@ -171,6 +186,7 @@ func collectProcessStats() processStats {
 	var mem runtime.MemStats
 	runtime.ReadMemStats(&mem)
 	stats.MemoryBytes = mem.Sys
+	stats.GCCount = mem.NumGC
 	stats.Goroutines = runtime.NumGoroutine()
 
 	var usage syscall.Rusage
@@ -210,4 +226,16 @@ func collectProcessStats() processStats {
 	lastCPUSampleAt = now
 	lastProcessStats = stats
 	return stats
+}
+
+func collectSlowSQLStats() slowSQLStats {
+	snapshot := models.SnapshotSlowSQLStats()
+	return slowSQLStats{
+		TotalQueries: snapshot.TotalQueries,
+		SlowQueries:  snapshot.SlowQueries,
+		NormalRate:   snapshot.NormalRate,
+		SlowRate:     snapshot.SlowRate,
+		ThresholdMs:  snapshot.ThresholdMs,
+		WindowSize:   snapshot.WindowSize,
+	}
 }

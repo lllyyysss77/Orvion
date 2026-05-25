@@ -60,6 +60,7 @@ func ProcesserOpenAI(ctx context.Context, pr io.Reader, stream bool, start time.
 	}
 
 	chunkTime := time.Since(start) - firstChunkTime
+	usage.CacheHitRate = calculateCacheHitRate(usage.PromptTokens, usage.CachedTokens)
 
 	return &models.ChatLog{
 		FirstChunkTimeMs: int(firstChunkTime.Milliseconds()),
@@ -118,6 +119,7 @@ func ProcesserOpenAiRes(ctx context.Context, pr io.Reader, stream bool, start ti
 	}
 
 	chunkTime := time.Since(start) - firstChunkTime
+	usage.CacheHitRate = calculateCacheHitRate(usage.PromptTokens, usage.CachedTokens)
 
 	return &models.ChatLog{
 		FirstChunkTimeMs: int(firstChunkTime.Milliseconds()),
@@ -217,6 +219,7 @@ func ProcesserAnthropic(ctx context.Context, pr io.Reader, stream bool, start ti
 	totalTokens := usage.InputTokens + usage.OutputTokens
 	cacheReadTokens := normalizeCachedTokens(usage.CacheReadInputTokens)
 	cacheWriteTokens := normalizeCachedTokens(usage.CacheCreationInputTokens)
+	cacheHitRate := calculateCacheHitRate(usage.InputTokens, cacheReadTokens)
 
 	return &models.ChatLog{
 		FirstChunkTimeMs: int(firstChunkTime.Milliseconds()),
@@ -226,6 +229,7 @@ func ProcesserAnthropic(ctx context.Context, pr io.Reader, stream bool, start ti
 			CompletionTokens:    usage.OutputTokens,
 			TotalTokens:         totalTokens,
 			CachedTokens:        cacheReadTokens,
+			CacheHitRate:        cacheHitRate,
 			PromptTokensDetails: buildPromptTokensDetailsJSON(cacheReadTokens, cacheWriteTokens, true),
 		},
 		Tps:  float64(totalTokens) / chunkTime.Seconds(),
@@ -321,6 +325,16 @@ func mergeOpenAIUsageMax(current *models.Usage, candidate models.Usage) {
 	if current.PromptTokensDetails == "" {
 		current.PromptTokensDetails = buildPromptTokensDetailsJSON(current.CachedTokens, 0, false)
 	}
+}
+
+func calculateCacheHitRate(promptTokens, cachedTokens int64) float64 {
+	if promptTokens <= 0 || cachedTokens <= 0 {
+		return 0
+	}
+	if cachedTokens > promptTokens {
+		cachedTokens = promptTokens
+	}
+	return float64(cachedTokens) / float64(promptTokens) * 100
 }
 
 func mergeAnthropicUsageMax(current *AnthropicUsage, usageNode gjson.Result) {

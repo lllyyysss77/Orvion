@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import Loading from "@/components/loading";
 import { getLogs, type ChatLog, cleanLogs, getProviders, getAuthKeysList, type Provider, type AuthKeyItem } from "@/lib/api";
 import { getStoredAuthTokenMode } from "@/lib/auth";
-import { ChevronLeft, ChevronRight, RefreshCw, Trash2, Eye, EyeOff, Timer, Zap, ArrowDown, ArrowUp, Database, Coins } from "lucide-react";
+import { ChevronLeft, ChevronRight, RefreshCw, Trash2, Eye, EyeOff, Timer, Zap, ArrowDown, ArrowUp, Database, Coins, Gauge } from "lucide-react";
 import { resolveModelIcon } from "@/lib/model-icon";
 
 // 格式化耗时显示（后端字段单位为毫秒）
@@ -86,6 +86,11 @@ const formatCostValue = (value?: number) => {
   return `$${trimmed}`;
 };
 
+const formatPercentValue = (value?: number) => {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return "-";
+  return `${value.toFixed(2)}%`;
+};
+
 type LogFilterState = {
   providerName: string;
   status: string;
@@ -128,6 +133,7 @@ const readStoredLogPreferences = (): LogListPreference => {
 };
 
 type LogCardProps = {
+  isAuthKeyMode: boolean;
   log: ChatLog;
   onOpenDetail: (log: ChatLog) => void;
   onViewChatIO: (log: ChatLog) => void;
@@ -136,16 +142,18 @@ type LogCardProps = {
 type AlignedMetricItemProps = {
   icon: ReactNode;
   label: string;
-  value: string;
+  value: ReactNode;
 };
 
 const AlignedMetricItem = ({ icon, label, value }: AlignedMetricItemProps) => (
-  <div className="min-w-0 whitespace-nowrap text-xs leading-none">
+  <div className="inline-flex min-w-0 items-center whitespace-nowrap text-xs leading-none">
     <span className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center align-middle text-muted-foreground/85">
       {icon}
     </span>
     <span className="ml-1 text-muted-foreground align-middle">{label}</span>{" "}
-    <span className="tabular-nums font-medium text-foreground align-middle">{value}</span>
+    <div className="inline-flex min-w-0 items-center align-middle">
+      {value}
+    </div>
   </div>
 );
 
@@ -153,20 +161,43 @@ type LogMetric = {
   key: string;
   icon: ReactNode;
   label: string;
-  value: string;
+  value: ReactNode;
+  className?: string;
 };
 
 const MetricsGrid = ({ items }: { items: LogMetric[] }) => (
-  <div className="mt-2 grid w-full grid-cols-2 gap-x-2 gap-y-1.5 sm:grid-cols-3 lg:grid-cols-[9.5rem_9.5rem_7.5rem_7.5rem_7.5rem_7.5rem]">
+  <div className="mt-2 grid w-full grid-cols-2 gap-x-2 gap-y-1.5 sm:grid-cols-3 lg:grid-cols-[8.5rem_8.5rem_7rem_7rem_7rem_7rem_9.5rem]">
     {items.map((item) => (
-      <div key={item.key} className="justify-self-start">
+      <div key={item.key} className={`${item.className ?? ""} justify-self-start`}>
         <AlignedMetricItem icon={item.icon} label={item.label} value={item.value} />
       </div>
     ))}
   </div>
 );
 
-const LogCard = memo(({ log, onOpenDetail, onViewChatIO }: LogCardProps) => {
+const CacheHitRateMetric = ({ value }: { value: number }) => {
+  const progress = Math.max(0, Math.min(value, 100));
+  const barClassName = progress >= 70
+    ? "bg-emerald-500/80"
+    : progress >= 30
+      ? "bg-cyan-500/80"
+      : progress > 0
+        ? "bg-amber-500/80"
+        : "bg-zinc-400/50";
+  return (
+    <div className="ml-2 inline-flex min-w-0 items-center gap-2">
+      <div className="h-1.5 w-12 overflow-hidden rounded-full bg-cyan-500/12">
+        <div
+          className={`h-full rounded-full transition-[width] duration-300 ease-out ${barClassName}`}
+          style={{ width: `${progress}%` }}
+        />
+      </div>
+      <span className="shrink-0 tabular-nums font-medium text-foreground">{formatPercentValue(value)}</span>
+    </div>
+  );
+};
+
+const LogCard = memo(({ isAuthKeyMode, log, onOpenDetail, onViewChatIO }: LogCardProps) => {
   const durations = getLogDurationsMs(log);
   const statusText = log.Status === "success" ? "成功" : "错误";
   const statusClass = log.Status === "success"
@@ -211,6 +242,13 @@ const LogCard = memo(({ log, onOpenDetail, onViewChatIO }: LogCardProps) => {
       label: "价格",
       value: formatCostValue(log.total_cost)
     },
+    {
+      key: "cache-rate",
+      icon: <Gauge className="h-3.5 w-3.5 text-cyan-600" />,
+      label: "命中率",
+      value: <CacheHitRateMetric value={getCacheHitRateFromLog(log)} />,
+      className: "lg:pl-2"
+    },
   ];
 
   return (
@@ -223,13 +261,17 @@ const LogCard = memo(({ log, onOpenDetail, onViewChatIO }: LogCardProps) => {
               <span className="font-semibold truncate max-w-[26ch]" title={log.Name}>
                 {log.Name}
               </span>
-              <span className="text-xs text-muted-foreground">-&gt;</span>
-              <span className="inline-flex items-center rounded-full bg-muted/70 px-2 py-0.5 text-xs text-muted-foreground">
-                {log.ProviderName || "-"}
-              </span>
-              <span className="text-xs text-muted-foreground truncate max-w-[26ch]" title={log.ProviderModel || "-"}>
-                {log.ProviderModel || "-"}
-              </span>
+              {!isAuthKeyMode ? (
+                <>
+                  <span className="text-xs text-muted-foreground">-&gt;</span>
+                  <span className="inline-flex items-center rounded-full bg-muted/70 px-2 py-0.5 text-xs text-muted-foreground">
+                    {log.ProviderName || "-"}
+                  </span>
+                  <span className="text-xs text-muted-foreground truncate max-w-[26ch]" title={log.ProviderModel || "-"}>
+                    {log.ProviderModel || "-"}
+                  </span>
+                </>
+              ) : null}
               <span className="text-[11px] text-muted-foreground">{createdAt}</span>
               {log.key_name ? (
                 <span className="rounded-full bg-background/70 px-2 py-0.5 text-[11px] text-muted-foreground">
@@ -296,6 +338,20 @@ const getCachedTokensFromLog = (log: ChatLog) => {
     return details.cached_tokens;
   }
   return 0;
+};
+
+const getCacheHitRateFromLog = (log: ChatLog) => {
+  const raw = log as unknown as Record<string, unknown>;
+  const directValue = toFiniteNumber(raw.cache_hit_rate);
+  if (typeof directValue === "number" && directValue > 0) {
+    return directValue;
+  }
+  const promptTokens = toFiniteNumber(raw.prompt_tokens) ?? 0;
+  const cachedTokens = getCachedTokensFromLog(log);
+  if (promptTokens <= 0 || cachedTokens <= 0) {
+    return 0;
+  }
+  return Math.min(cachedTokens, promptTokens) / promptTokens * 100;
 };
 
 const getLogRequestPath = (log: ChatLog) => {
@@ -450,7 +506,8 @@ export default function LogsPage() {
   }, []);
   const handleViewChatIO = useCallback((log: ChatLog) => {
     if (log.Status !== 'success' || !log.ChatIO) return;
-    navigate(`/logs/${log.ID}/chat-io`, {
+    const logKey = log.UUID || String(log.ID);
+    navigate(`/logs/${encodeURIComponent(logKey)}/chat-io`, {
       state: {
         style: log.Style,
       },
@@ -500,22 +557,24 @@ export default function LogsPage() {
         </div>
         <div className="rounded-xl border border-border/60 bg-card/80 p-3">
           <div className="flex flex-wrap items-center gap-1.5">
-            <Select
-              value={draftFilters.providerName || "all"}
-              onValueChange={(value) => setDraftFilters((prev) => ({ ...prev, providerName: value === "all" ? "" : value }))}
-            >
-              <SelectTrigger className="h-8 w-[150px] text-xs">
-                <SelectValue placeholder="提供商" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">全部提供商</SelectItem>
-                {providerOptions.map((provider) => (
-                  <SelectItem key={provider.ID} value={provider.Name}>
-                    {provider.Name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            {!isAuthKeyMode ? (
+              <Select
+                value={draftFilters.providerName || "all"}
+                onValueChange={(value) => setDraftFilters((prev) => ({ ...prev, providerName: value === "all" ? "" : value }))}
+              >
+                <SelectTrigger className="h-8 w-[150px] text-xs">
+                  <SelectValue placeholder="提供商" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">全部提供商</SelectItem>
+                  {providerOptions.map((provider) => (
+                    <SelectItem key={provider.ID} value={provider.Name}>
+                      {provider.Name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : null}
             <Select
               value={draftFilters.status || "all"}
               onValueChange={(value) => setDraftFilters((prev) => ({ ...prev, status: value === "all" ? "" : value }))}
@@ -575,13 +634,18 @@ export default function LogsPage() {
                   if (!log) return null;
                   return (
                     <div
-                      key={log.ID}
+                      key={log.UUID || log.ID}
                       data-index={virtualRow.index}
                       ref={rowVirtualizer.measureElement}
                       className="absolute left-0 top-0 w-full pb-3"
                       style={{ transform: `translateY(${virtualRow.start}px)` }}
                     >
-                      <LogCard log={log} onOpenDetail={openDetailDialog} onViewChatIO={handleViewChatIO} />
+                      <LogCard
+                        isAuthKeyMode={isAuthKeyMode}
+                        log={log}
+                        onOpenDetail={openDetailDialog}
+                        onViewChatIO={handleViewChatIO}
+                      />
                     </div>
                   );
                 })}
@@ -666,15 +730,19 @@ export default function LogsPage() {
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <DetailCard label="模型名称" value={selectedLog.Name} />
-                <DetailCard label="提供商" value={selectedLog.ProviderName || "-"} />
-                <DetailCard label="提供商模型" value={selectedLog.ProviderModel || "-"} mono />
+                {!isAuthKeyMode ? (
+                  <>
+                    <DetailCard label="提供商" value={selectedLog.ProviderName || "-"} />
+                    <DetailCard label="提供商模型" value={selectedLog.ProviderModel || "-"} mono />
+                  </>
+                ) : null}
                 <DetailCard label="响应大小" value={selectedLog.Size ? formatBytes(selectedLog.Size) : "-"} />
                 <div className="sm:col-span-2">
                   <DetailCard label="请求路径" value={getLogRequestPath(selectedLog)} mono />
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
                 {(() => {
                   const d = getLogDurationsMs(selectedLog);
                   return (
@@ -683,6 +751,7 @@ export default function LogsPage() {
                       <DetailCard label="完成耗时" value={formatDurationValue(d.chunk)} />
                       <DetailCard label="TPS" value={formatTpsValue(selectedLog.Tps)} />
                       <DetailCard label="价格" value={formatCostValue(selectedLog.total_cost)} />
+                      <DetailCard label="缓存命中率" value={formatPercentValue(getCacheHitRateFromLog(selectedLog))} />
                     </>
                   );
                 })()}

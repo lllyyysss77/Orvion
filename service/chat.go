@@ -282,13 +282,14 @@ func RecordRetryLog(ctx context.Context, retryLog chan models.ChatLog) {
 	}
 }
 
-func RecordLog(ctx context.Context, reqStart time.Time, upstreamFirstChunkMs int, reader io.ReadCloser, processer Processer, logId uint, authKeyID uint, before Before, ioLog bool, style string) {
+func RecordLog(ctx context.Context, reqStart time.Time, upstreamFirstChunkMs int, reader io.ReadCloser, processer Processer, logRef models.ChatLogRef, authKeyID uint, before Before, ioLog bool, style string) {
 	recordFunc := func() error {
 		defer reader.Close()
 		if ioLog {
 			if err := gorm.G[models.ChatIO](models.DB).Create(ctx, &models.ChatIO{
-				Input: string(before.raw),
-				LogId: logId,
+				Input:   string(before.raw),
+				LogId:   logRef.ID,
+				LogUUID: logRef.UUID,
 			}); err != nil {
 				return err
 			}
@@ -327,6 +328,9 @@ func RecordLog(ctx context.Context, reqStart time.Time, upstreamFirstChunkMs int
 				log.Usage.TotalTokens = computedTotal
 			}
 		}
+		if log.Usage.CacheHitRate == 0 {
+			log.Usage.CacheHitRate = calculateCacheHitRate(log.Usage.PromptTokens, log.Usage.CachedTokens)
+		}
 		log.TotalCost = runtimesvc.CalculateTotalCost(ctx, before.Model, log.Usage)
 		effectiveAuthKeyID := log.AuthKeyID
 		if effectiveAuthKeyID == 0 {
@@ -338,15 +342,12 @@ func RecordLog(ctx context.Context, reqStart time.Time, upstreamFirstChunkMs int
 		if effectiveAuthKeyID > 0 && log.TotalCost > 0 {
 			KeyCostUpdate(effectiveAuthKeyID, log.TotalCost, time.Now())
 		}
-		if _, err := gorm.G[models.ChatLog](models.DB).Where("id = ?", logId).Updates(ctx, *log); err != nil {
-			return err
-		}
-		if err := models.UpdateMonthlyChatLogByTime(ctx, reqStart, logId, *log); err != nil {
-			slog.Warn("更新日志月表失败", "error", err, "log_id", logId)
+		if err := models.UpdateMonthlyChatLogByRef(ctx, logRef, *log); err != nil {
+			slog.Warn("更新日志月表失败", "error", err, "log_id", logRef.ID, "log_uuid", logRef.UUID)
 		}
 		if log.TotalCost > 0 {
 			if err := AddTotalConsumedAmount(ctx, log.TotalCost); err != nil {
-				slog.Warn("累计总金额到 config 失败", "error", err, "log_id", logId)
+				slog.Warn("累计总金额到 config 失败", "error", err, "log_id", logRef.ID, "log_uuid", logRef.UUID)
 			}
 		}
 		if ioLog {
@@ -359,7 +360,11 @@ func RecordLog(ctx context.Context, reqStart time.Time, upstreamFirstChunkMs int
 					chatIO.OutputStringArray = string(jsonBytes)
 				}
 			}
-			if _, err := gorm.G[models.ChatIO](models.DB).Where("log_id = ?", logId).Updates(ctx, chatIO); err != nil {
+			query := gorm.G[models.ChatIO](models.DB).Where("log_uuid = ?", logRef.UUID)
+			if logRef.UUID == "" {
+				query = gorm.G[models.ChatIO](models.DB).Where("log_id = ?", logRef.ID)
+			}
+			if _, err := query.Updates(ctx, chatIO); err != nil {
 				return err
 			}
 		}
@@ -370,53 +375,38 @@ func RecordLog(ctx context.Context, reqStart time.Time, upstreamFirstChunkMs int
 	}
 }
 
-func SaveChatLog(ctx context.Context, log models.ChatLog) (uint, error) {
-	// chat_logs.uuid 在数据库中是 NOT NULL UNIQUE，必须保证每条记录都有唯一值。
+func SaveChatLog(ctx context.Context, log models.ChatLog) (models.ChatLogRef, error) {
+	// uuid 是跨月表和 chat_io 的稳定关联键，必须保证每条记录都有唯一值。
 	if log.UUID == "" {
 		uuid, err := pkg.GenerateRandomCharsKey(36)
 		if err != nil {
-			return 0, err
+			return models.ChatLogRef{}, err
 		}
 		log.UUID = uuid
 	}
 
 	// 极低概率下可能发生 UUID 冲突；若命中唯一约束，生成新 UUID 后重试。
 	for attempt := 0; attempt < 3; attempt++ {
-		if err := gorm.G[models.ChatLog](models.DB).Create(ctx, &log); err != nil {
+		ref, err := models.CreateMonthlyChatLog(ctx, log)
+		if err != nil {
 			// 兼容不同 driver 的错误类型：这里用 SQLSTATE 文本匹配，不引入额外依赖。
 			if strings.Contains(err.Error(), "SQLSTATE 23505") {
 				uuid, genErr := pkg.GenerateRandomCharsKey(36)
 				if genErr != nil {
-					return 0, genErr
+					return models.ChatLogRef{}, genErr
 				}
 				log.UUID = uuid
 				continue
 			}
-			return 0, err
-		}
-		if err := models.CreateMonthlyChatLog(ctx, log); err != nil {
-			slog.Warn("写入日志月表失败", "error", err, "log_id", log.ID)
+			return models.ChatLogRef{}, err
 		}
 		if log.Status == "error" && log.ModelWithProviderID > 0 {
-			modelWithProviderID := log.ModelWithProviderID
-			go func() {
-				defer func() {
-					if r := recover(); r != nil {
-						slog.Error("auto disable goroutine panic", "recover", r, "model_with_provider_id", modelWithProviderID)
-					}
-				}()
-				// 基于 root ctx 派生 5s 超时,既有 shutdown 感知又防止长挂。
-				autoCtx, cancel := context.WithTimeout(RootContext(), 5*time.Second)
-				defer cancel()
-				if err := TriggerModelProviderAutoDisableIfNeeded(autoCtx, modelWithProviderID); err != nil {
-					slog.Error("检查模型关联提供商自动关闭失败", "error", err, "model_with_provider_id", modelWithProviderID)
-				}
-			}()
+			ScheduleModelProviderAutoDisableCheck(log.ModelWithProviderID)
 		}
-		return log.ID, nil
+		return ref, nil
 	}
 
-	return 0, errors.New("failed to generate unique chat log uuid")
+	return models.ChatLogRef{}, errors.New("failed to generate unique chat log uuid")
 }
 
 func BuildHeaders(source http.Header, withHeader bool, customHeaders map[string]string, stream bool) http.Header {

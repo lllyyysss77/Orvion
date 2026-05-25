@@ -46,6 +46,19 @@ type telegramNotifier struct {
 	botToken string
 }
 
+type ModelProviderAutoDisableAlertEvent struct {
+	ModelWithProviderID uint
+	ResumeAt            time.Time
+	Threshold           int
+	Window              time.Duration
+}
+
+type modelProviderAutoDisableAlertDetail struct {
+	ModelName     string `gorm:"column:model_name"`
+	ProviderName  string `gorm:"column:provider_name"`
+	ProviderModel string `gorm:"column:provider_model"`
+}
+
 type telegramSendMessageRequest struct {
 	ChatID      string `json:"chat_id"`
 	Text        string `json:"text"`
@@ -182,9 +195,16 @@ func buildTelegramNotifier(botToken string, chatID string, apiBase string, proxy
 }
 
 func buildTelegramHTTPClient(proxyURL string) (*http.Client, error) {
+	return buildTelegramHTTPClientWithTimeout(proxyURL, telegramHTTPTimeout)
+}
+
+func buildTelegramHTTPClientWithTimeout(proxyURL string, timeout time.Duration) (*http.Client, error) {
 	proxyURL = strings.TrimSpace(proxyURL)
+	if timeout <= 0 {
+		timeout = telegramHTTPTimeout
+	}
 	if proxyURL == "" {
-		return &http.Client{Timeout: telegramHTTPTimeout}, nil
+		return &http.Client{Timeout: timeout}, nil
 	}
 	if err := validateTelegramProxyURL(proxyURL); err != nil {
 		return nil, err
@@ -202,7 +222,7 @@ func buildTelegramHTTPClient(proxyURL string) (*http.Client, error) {
 	transport.Proxy = http.ProxyURL(parsedProxyURL)
 
 	return &http.Client{
-		Timeout:   telegramHTTPTimeout,
+		Timeout:   timeout,
 		Transport: transport,
 	}, nil
 }
@@ -249,6 +269,65 @@ func (n *telegramNotifier) SendBreakerOpen(event balancers.BreakerOpenEvent) err
 		fmt.Sprintf("冷却结束：%s", event.OpenUntil.Format("2006-01-02 15:04:05")),
 	}, "\n")
 	return n.sendText(content)
+}
+
+func SendModelProviderAutoDisableAlert(ctx context.Context, event ModelProviderAutoDisableAlertEvent) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	notifier, ok, err := resolveTelegramNotifier(ctx)
+	if err != nil {
+		return err
+	}
+	if !ok || notifier == nil {
+		return ErrTelegramNotifierNotConfigured
+	}
+
+	detail := loadModelProviderAutoDisableAlertDetail(ctx, event.ModelWithProviderID)
+	lines := []string{
+		"【Orvion 模型提供商熔断】",
+		fmt.Sprintf("时间：%s", time.Now().Format("2006-01-02 15:04:05")),
+		fmt.Sprintf("模型关联ID：%d", event.ModelWithProviderID),
+	}
+	if strings.TrimSpace(detail.ModelName) != "" {
+		lines = append(lines, fmt.Sprintf("模型：%s", detail.ModelName))
+	}
+	if strings.TrimSpace(detail.ProviderName) != "" || strings.TrimSpace(detail.ProviderModel) != "" {
+		providerText := strings.TrimSpace(detail.ProviderName)
+		if providerText == "" {
+			providerText = "未知提供商"
+		}
+		if providerModel := strings.TrimSpace(detail.ProviderModel); providerModel != "" {
+			providerText += " / " + providerModel
+		}
+		lines = append(lines, fmt.Sprintf("提供商：%s", providerText))
+	}
+	lines = append(lines,
+		fmt.Sprintf("触发原因：%d 次连续错误", event.Threshold),
+		fmt.Sprintf("检测窗口：%s", event.Window.String()),
+		fmt.Sprintf("恢复时间：%s", event.ResumeAt.Format("2006-01-02 15:04:05")),
+	)
+
+	return notifier.sendText(strings.Join(lines, "\n"))
+}
+
+func loadModelProviderAutoDisableAlertDetail(ctx context.Context, modelWithProviderID uint) modelProviderAutoDisableAlertDetail {
+	if modelWithProviderID == 0 || models.DB == nil {
+		return modelProviderAutoDisableAlertDetail{}
+	}
+
+	var detail modelProviderAutoDisableAlertDetail
+	if err := models.DB.WithContext(ctx).
+		Table("model_with_providers").
+		Select("models.name AS model_name, providers.name AS provider_name, model_with_providers.provider_model AS provider_model").
+		Joins("LEFT JOIN models ON models.id = model_with_providers.model_id").
+		Joins("LEFT JOIN providers ON providers.id = model_with_providers.provider_id").
+		Where("model_with_providers.id = ?", modelWithProviderID).
+		Scan(&detail).Error; err != nil {
+		slog.Warn("读取模型提供商熔断告警详情失败", "error", err, "model_with_provider_id", modelWithProviderID)
+		return modelProviderAutoDisableAlertDetail{}
+	}
+	return detail
 }
 
 func (n *telegramNotifier) sendText(content string) error {

@@ -117,12 +117,23 @@ func GetProviders(c *gin.Context) {
 	}
 
 	// 按“今天使用量”降序排序，使用量相同时再按创建时间和 ID 稳定排序。
-	usageSubQuery := models.DB.
-		Model(&models.ChatLog{}).
-		Select("provider_name, COUNT(*) AS usage_count").
-		Where("deleted_at IS NULL").
-		Where("created_at >= ?", startOfDay).
-		Group("provider_name")
+	union, err := models.BuildChatLogUnionQuery(models.ChatLogQueryScope{StartAt: &startOfDay}, "created_at, provider_name")
+	if err != nil {
+		common.InternalServerError(c, err.Error())
+		return
+	}
+	usageSubQuery := models.DB
+	if union.SQL != "" {
+		usageSubQuery = models.DB.Raw(
+			`SELECT provider_name, COUNT(*) AS usage_count
+			   FROM (`+union.SQL+`) AS logs
+			  WHERE created_at >= ?
+			  GROUP BY provider_name`,
+			startOfDay,
+		)
+	} else {
+		usageSubQuery = models.DB.Raw(`SELECT '' AS provider_name, 0 AS usage_count WHERE 1 = 0`)
+	}
 
 	query = query.
 		Joins("LEFT JOIN (?) AS usage_stats ON usage_stats.provider_name = providers.name", usageSubQuery).
@@ -322,6 +333,11 @@ func CreateProvider(c *gin.Context) {
 		common.BadRequest(c, "Invalid proxy_url: "+err.Error())
 		return
 	}
+	normalizedConfig, err := models.NormalizeProviderConfig(req.Config)
+	if err != nil {
+		common.BadRequest(c, "Invalid config: "+err.Error())
+		return
+	}
 
 	// Check if provider exists
 	count, err := gorm.G[models.Provider](models.DB).Where("name = ?", req.Name).Count(c.Request.Context(), "id")
@@ -353,7 +369,7 @@ func CreateProvider(c *gin.Context) {
 
 	provider := models.Provider{
 		Name:                       req.Name,
-		Config:                     req.Config,
+		Config:                     normalizedConfig,
 		Console:                    req.Console,
 		ProxyURL:                   proxyURL,
 		ModelsFetchMode:            normalizeModelsFetchMode(req.ModelsFetchMode),
@@ -389,6 +405,11 @@ func UpdateProvider(c *gin.Context) {
 		common.BadRequest(c, "Invalid proxy_url: "+err.Error())
 		return
 	}
+	normalizedConfig, err := models.NormalizeProviderConfig(req.Config)
+	if err != nil {
+		common.BadRequest(c, "Invalid config: "+err.Error())
+		return
+	}
 
 	// Check if provider exists
 	if _, err := gorm.G[models.Provider](models.DB).Where("id = ?", id).First(c.Request.Context()); err != nil {
@@ -419,7 +440,7 @@ func UpdateProvider(c *gin.Context) {
 	// Update fields
 	updates := models.Provider{
 		Name:                       req.Name,
-		Config:                     req.Config,
+		Config:                     normalizedConfig,
 		Console:                    req.Console,
 		ProxyURL:                   proxyURL,
 		ModelsFetchMode:            normalizeModelsFetchMode(req.ModelsFetchMode),
@@ -870,13 +891,26 @@ func GetModelProviderStatus(c *gin.Context) {
 	}
 
 	// 获取最近10次请求状态
-	logs, err := gorm.G[models.ChatLog](models.DB).
-		Where("provider_name = ?", provider.Name).
-		Where("provider_model = ?", providerModel).
-		Where("name = ?", modelName).
-		Limit(10).
-		Order("created_at DESC").
-		Find(c.Request.Context())
+	union, err := models.BuildChatLogUnionQuery(models.ChatLogQueryScope{}, "created_at, provider_name, provider_model, name, status")
+	if err != nil {
+		common.InternalServerError(c, "Failed to build log query: "+err.Error())
+		return
+	}
+	logs := make([]models.ChatLog, 0, 10)
+	if union.SQL != "" {
+		err = models.DB.WithContext(c.Request.Context()).Raw(
+			`SELECT *
+			   FROM (`+union.SQL+`) AS logs
+			  WHERE provider_name = ?
+			    AND provider_model = ?
+			    AND name = ?
+			  ORDER BY created_at DESC
+			  LIMIT 10`,
+			provider.Name,
+			providerModel,
+			modelName,
+		).Scan(&logs).Error
+	}
 	if err != nil {
 		common.InternalServerError(c, "Failed to retrieve chat log: "+err.Error())
 		return
@@ -1188,12 +1222,12 @@ func parseLogQueryTime(raw string) (time.Time, error) {
 }
 
 func queryRequestLogsByMonthlyTables(ctx context.Context, params common.PaginationParams, filter chatLogQueryFilter) ([]models.ChatLog, int64, error) {
-	tables, err := models.ListChatLogMonthlyTables()
+	tables, err := models.ListChatLogMonthlyTablesInRange(models.ChatLogQueryScope{StartAt: filter.StartAt, EndAt: filter.EndAt})
 	if err != nil {
 		return nil, 0, err
 	}
 	if len(tables) == 0 {
-		return queryRequestLogsFromMainTable(ctx, params, filter)
+		return []models.ChatLog{}, 0, nil
 	}
 
 	columns := models.ChatLogColumnsSQL()
@@ -1202,7 +1236,7 @@ func queryRequestLogsByMonthlyTables(ctx context.Context, params common.Paginati
 	selectSQL := make([]string, 0, len(tables))
 	queryArgs := make([]any, 0, len(filterArgs)*len(tables))
 	for _, tableName := range tables {
-		selectSQL = append(selectSQL, fmt.Sprintf("SELECT %s FROM %s WHERE deleted_at IS NULL%s", columns, tableName, filterSQL))
+		selectSQL = append(selectSQL, fmt.Sprintf("SELECT %s FROM %s%s", columns, tableName, filterSQL))
 		queryArgs = append(queryArgs, filterArgs...)
 	}
 
@@ -1219,44 +1253,12 @@ func queryRequestLogsByMonthlyTables(ctx context.Context, params common.Paginati
 
 	offset := (params.Page - 1) * params.PageSize
 	pageArgs := append(append(make([]any, 0, len(queryArgs)+2), queryArgs...), params.PageSize, offset)
-	pageSQL := fmt.Sprintf("SELECT %s FROM (%s) AS logs ORDER BY id DESC LIMIT ? OFFSET ?", columns, unionSQL)
+	pageSQL := fmt.Sprintf("SELECT %s FROM (%s) AS logs ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?", columns, unionSQL)
 	logs := make([]models.ChatLog, 0, params.PageSize)
 	if err := models.DB.WithContext(ctx).Raw(pageSQL, pageArgs...).Scan(&logs).Error; err != nil {
 		return nil, 0, err
 	}
 	return logs, totalRow.Total, nil
-}
-
-func queryRequestLogsFromMainTable(ctx context.Context, params common.PaginationParams, filter chatLogQueryFilter) ([]models.ChatLog, int64, error) {
-	query := models.DB.WithContext(ctx).Model(&models.ChatLog{}).Where("deleted_at IS NULL")
-	if filter.ProviderName != "" {
-		query = query.Where("provider_name = ?", filter.ProviderName)
-	}
-	if filter.Name != "" {
-		query = query.Where("name = ?", filter.Name)
-	}
-	if filter.Status != "" {
-		query = query.Where("status = ?", filter.Status)
-	}
-	if filter.Style != "" {
-		query = query.Where("style = ?", filter.Style)
-	}
-	if filter.AuthKeyID != "" {
-		query = query.Where("auth_key_id = ?", filter.AuthKeyID)
-	}
-	if filter.StartAt != nil {
-		query = query.Where("created_at >= ?", *filter.StartAt)
-	}
-	if filter.EndAt != nil {
-		query = query.Where("created_at <= ?", *filter.EndAt)
-	}
-
-	logs := make([]models.ChatLog, 0, params.PageSize)
-	total, err := common.PaginateQuery(query.Order("id DESC"), params, &logs)
-	if err != nil {
-		return nil, 0, err
-	}
-	return logs, total, nil
 }
 
 func buildChatLogFilterSQL(filter chatLogQueryFilter) (string, []any) {
@@ -1293,14 +1295,18 @@ func buildChatLogFilterSQL(filter chatLogQueryFilter) (string, []any) {
 	if len(clauses) == 0 {
 		return "", nil
 	}
-	return " AND " + strings.Join(clauses, " AND "), args
+	return " WHERE " + strings.Join(clauses, " AND "), args
 }
 
 // GetChatIO 查询指定日志的输入输出记录
 func GetChatIO(c *gin.Context) {
 	id := c.Param("id")
 
-	chatIO, err := gorm.G[models.ChatIO](models.DB).Where("log_id = ?", id).First(c.Request.Context())
+	query := gorm.G[models.ChatIO](models.DB).Where("log_uuid = ?", id)
+	if _, parseErr := strconv.ParseUint(strings.TrimSpace(id), 10, 64); parseErr == nil {
+		query = gorm.G[models.ChatIO](models.DB).Where("log_uuid = ? OR log_id = ?", id, id)
+	}
+	chatIO, err := query.First(c.Request.Context())
 	if err != nil {
 		common.NotFound(c, "ChatIO not found")
 		return
@@ -1423,12 +1429,23 @@ func parsePositiveInt(raw string, defaultValue int) int {
 func GetUserAgents(c *gin.Context) {
 	var userAgents []string
 
-	// 查询所有不重复的非空用户代理
-	if err := models.DB.Model(&models.ChatLog{}).
-		Where("user_agent IS NOT NULL AND user_agent != ''").
-		Distinct("user_agent").
-		Pluck("user_agent", &userAgents).
-		Error; err != nil {
+	union, err := models.BuildChatLogUnionQuery(models.ChatLogQueryScope{}, "user_agent")
+	if err != nil {
+		common.InternalServerError(c, "Failed to build log query: "+err.Error())
+		return
+	}
+	if union.SQL == "" {
+		common.Success(c, userAgents)
+		return
+	}
+
+	// 查询所有不重复的非空用户代理。
+	if err := models.DB.WithContext(c.Request.Context()).Raw(
+		`SELECT DISTINCT user_agent
+		   FROM (` + union.SQL + `) AS logs
+		  WHERE user_agent IS NOT NULL AND user_agent != ''
+		  ORDER BY user_agent ASC`,
+	).Scan(&userAgents).Error; err != nil {
 		common.InternalServerError(c, "Failed to query user agents: "+err.Error())
 		return
 	}
@@ -1551,61 +1568,45 @@ func CleanLogs(c *gin.Context) {
 
 	switch req.Type {
 	case "count":
-		// 获取要保留的最小 ID（最新 req.Value 条中的最小值）
-		ids := make([]uint, 0, req.Value)
-		if err := models.DB.Model(&models.ChatLog{}).
-			Where("deleted_at IS NULL").
-			Order("id DESC").
-			Limit(req.Value).
-			Pluck("id", &ids).Error; err != nil {
-			common.InternalServerError(c, "Failed to query min ID: "+err.Error())
+		logs, err := fetchLogsForCleanup(c.Request.Context(), req.Type, req.Value)
+		if err != nil {
+			common.InternalServerError(c, "Failed to query logs: "+err.Error())
 			return
 		}
-		if len(ids) == 0 {
+		if len(logs) == 0 {
 			common.Success(c, map[string]any{"deleted_count": 0})
 			return
 		}
-		minID := ids[len(ids)-1]
 
-		// 先删除关联的 ChatIO（以主表 ID 为准）
-		if err := models.DB.Unscoped().Where("log_id IN (SELECT id FROM chat_logs WHERE id < ?)", minID).Delete(&models.ChatIO{}).Error; err != nil {
-			common.InternalServerError(c, "Failed to delete chat IO: "+err.Error())
-			return
-		}
-
-		// 删除主表日志
-		result := models.DB.Unscoped().Where("id < ?", minID).Delete(&models.ChatLog{})
-		if result.Error != nil {
-			common.InternalServerError(c, "Failed to delete logs: "+result.Error.Error())
-			return
-		}
-		deletedCount = result.RowsAffected
-		if err := deleteMonthlyLogsByCondition(c.Request.Context(), "id < ?", minID); err != nil {
+		if err := deleteLogsByRefs(c.Request.Context(), logs); err != nil {
 			common.InternalServerError(c, "Failed to delete monthly logs: "+err.Error())
+			return
+		}
+		deletedCount = int64(len(logs))
+		if err := deleteChatIOByLogRefs(c.Request.Context(), logs); err != nil {
+			common.InternalServerError(c, "Failed to delete chat IO: "+err.Error())
 			return
 		}
 
 	case "days":
-		// 计算 N 天前的时间
-		cutoffTime := time.Now().AddDate(0, 0, -req.Value)
-
-		// 先删除关联的 ChatIO（以主表 ID 为准）
-		if err := models.DB.Unscoped().Where("log_id IN (SELECT id FROM chat_logs WHERE created_at < ?)", cutoffTime).Delete(&models.ChatIO{}).Error; err != nil {
-			common.InternalServerError(c, "Failed to delete chat IO: "+err.Error())
+		logs, err := fetchLogsForCleanup(c.Request.Context(), req.Type, req.Value)
+		if err != nil {
+			common.InternalServerError(c, "Failed to query logs: "+err.Error())
 			return
 		}
-
-		// 删除主表日志
-		result := models.DB.Unscoped().Where("created_at < ?", cutoffTime).Delete(&models.ChatLog{})
-		if result.Error != nil {
-			common.InternalServerError(c, "Failed to delete logs: "+result.Error.Error())
+		if len(logs) == 0 {
+			common.Success(c, map[string]any{"deleted_count": 0})
 			return
 		}
-		deletedCount = result.RowsAffected
-		if err := deleteMonthlyLogsByCondition(c.Request.Context(), "created_at < ?", cutoffTime); err != nil {
+		if err := deleteLogsByRefs(c.Request.Context(), logs); err != nil {
 			common.InternalServerError(c, "Failed to delete monthly logs: "+err.Error())
 			return
 		}
+		if err := deleteChatIOByLogRefs(c.Request.Context(), logs); err != nil {
+			common.InternalServerError(c, "Failed to delete chat IO: "+err.Error())
+			return
+		}
+		deletedCount = int64(len(logs))
 
 	default:
 		common.BadRequest(c, "Invalid type: must be 'count' or 'days'")
@@ -1615,17 +1616,83 @@ func CleanLogs(c *gin.Context) {
 	common.Success(c, map[string]any{"deleted_count": deletedCount})
 }
 
-func deleteMonthlyLogsByCondition(ctx context.Context, condition string, args ...any) error {
-	tables, err := models.ListChatLogMonthlyTables()
-	if err != nil {
-		return err
+type cleanupLogRef struct {
+	UUID      string
+	CreatedAt time.Time
+	TableName string
+	ID        uint
+}
+
+func fetchLogsForCleanup(ctx context.Context, cleanType string, value int) ([]cleanupLogRef, error) {
+	now := time.Now()
+	var scope models.ChatLogQueryScope
+	switch cleanType {
+	case "count":
+		scope = models.ChatLogQueryScope{}
+	case "days":
+		cutoff := now.AddDate(0, 0, -value)
+		scope = models.ChatLogQueryScope{EndAt: &cutoff}
+	default:
+		return nil, nil
 	}
-	for _, tableName := range tables {
-		if err := models.DB.WithContext(ctx).Table(tableName).Unscoped().Where(condition, args...).Delete(&models.ChatLog{}).Error; err != nil {
+	union, err := models.BuildChatLogUnionQuery(scope, "id, uuid, created_at")
+	if err != nil {
+		return nil, err
+	}
+	if union.SQL == "" {
+		return nil, nil
+	}
+
+	var rows []cleanupLogRef
+	if cleanType == "count" {
+		if err := models.DB.WithContext(ctx).Raw(
+			`SELECT id, uuid, created_at, '' AS table_name
+			   FROM (`+union.SQL+`) AS logs
+			  ORDER BY created_at DESC, id DESC
+			  LIMIT -1 OFFSET ?`,
+			value,
+		).Scan(&rows).Error; err != nil {
+			return nil, err
+		}
+	} else {
+		cutoff := now.AddDate(0, 0, -value)
+		if err := models.DB.WithContext(ctx).Raw(
+			`SELECT id, uuid, created_at, '' AS table_name
+			   FROM (`+union.SQL+`) AS logs
+			  WHERE created_at < ?
+			  ORDER BY created_at DESC, id DESC`,
+			cutoff,
+		).Scan(&rows).Error; err != nil {
+			return nil, err
+		}
+	}
+	return rows, nil
+}
+
+func deleteLogsByRefs(ctx context.Context, refs []cleanupLogRef) error {
+	for _, ref := range refs {
+		if ref.UUID == "" {
+			continue
+		}
+		tableName := models.ChatLogMonthlyTableName(ref.CreatedAt)
+		if err := models.DB.WithContext(ctx).Table(tableName).Where("uuid = ?", ref.UUID).Delete(&models.ChatLog{}).Error; err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func deleteChatIOByLogRefs(ctx context.Context, refs []cleanupLogRef) error {
+	uuids := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		if ref.UUID != "" {
+			uuids = append(uuids, ref.UUID)
+		}
+	}
+	if len(uuids) == 0 {
+		return nil
+	}
+	return models.DB.WithContext(ctx).Where("log_uuid IN ?", uuids).Delete(&models.ChatIO{}).Error
 }
 
 func normalizeModelCapabilities(values []string) []string {

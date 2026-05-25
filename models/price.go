@@ -1,10 +1,12 @@
 package models
 
-import "gorm.io/gorm"
+import "time"
 
 // ModelPrice 模型价格表
 type ModelPrice struct {
-	gorm.Model
+	ID         uint `gorm:"primaryKey"`
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 	ModelID    string  `gorm:"column:model_id;uniqueIndex;size:255"`
 	Provider   string  `gorm:"column:provider;size:100"`
 	Input      float64 `gorm:"column:input"`

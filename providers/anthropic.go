@@ -66,10 +66,11 @@ func (a *Anthropic) BuildReq(ctx context.Context, header http.Header, model stri
 	if header != nil {
 		req.Header = header
 	}
+	apiKey := nextProviderAPIKey(a.BaseURL, a.APIKey)
 	req.Header.Set("content-type", "application/json")
-	req.Header.Set("x-api-key", a.APIKey)
+	req.Header.Set("x-api-key", apiKey)
 	// 兼容部分上游（或网关）仅识别 Authorization: Bearer <key>
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", a.APIKey))
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", apiKey))
 	// 未显式配置版本时，messages 接口默认回落到 Anthropic 官方稳定版本。
 	req.Header.Set("anthropic-version", a.resolvedVersion())
 	return req, nil
@@ -96,9 +97,10 @@ func (a *Anthropic) Models(ctx context.Context) ([]Model, error) {
 	if err != nil {
 		return nil, err
 	}
+	apiKey := nextProviderAPIKey(a.BaseURL, a.APIKey)
 	req.Header.Set("content-type", "application/json")
-	req.Header.Set("x-api-key", a.APIKey)
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", a.APIKey))
+	req.Header.Set("x-api-key", apiKey)
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", apiKey))
 	req.Header.Set("anthropic-version", a.resolvedVersion())
 	client, err := GetClientWithProxy(modelsListTimeout, a.ProxyURL)
 	if err != nil {
@@ -136,9 +138,10 @@ func (a *Anthropic) BuildCountTokensReq(ctx context.Context, header http.Header,
 	if header != nil {
 		req.Header = header
 	}
+	apiKey := nextProviderAPIKey(a.BaseURL, a.APIKey)
 	req.Header.Set("content-type", "application/json")
-	req.Header.Set("x-api-key", a.APIKey)
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", a.APIKey))
+	req.Header.Set("x-api-key", apiKey)
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", apiKey))
 	req.Header.Set("anthropic-version", a.resolvedVersion())
 	return req, nil
 }

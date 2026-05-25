@@ -1,8 +1,14 @@
 package service
 
 import (
+	"context"
+	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/glebarez/sqlite"
+	"github.com/racio/orvion/models"
+	"gorm.io/gorm"
 )
 
 func TestShouldRunTelegramDailyUsageReport(t *testing.T) {
@@ -60,5 +66,46 @@ func TestResolveTelegramYesterdayRange(t *testing.T) {
 	}
 	if end.Format("2006-01-02 15:04:05") != "2026-04-18 00:00:00" {
 		t.Fatalf("unexpected end: %s", end.Format("2006-01-02 15:04:05"))
+	}
+}
+
+func TestClaimTelegramDailyUsageReportScheduleDate(t *testing.T) {
+	oldDB := models.DB
+	t.Cleanup(func() {
+		models.DB = oldDB
+	})
+
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "daily-report.db")), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	models.DB = db
+	if err := models.DB.AutoMigrate(&models.Config{}); err != nil {
+		t.Fatalf("migrate config: %v", err)
+	}
+
+	ctx := context.Background()
+	claimed, err := claimTelegramDailyUsageReportScheduleDate(ctx, "2026-04-18")
+	if err != nil {
+		t.Fatalf("first claim error: %v", err)
+	}
+	if !claimed {
+		t.Fatalf("first claim should succeed")
+	}
+
+	claimed, err = claimTelegramDailyUsageReportScheduleDate(ctx, "2026-04-18")
+	if err != nil {
+		t.Fatalf("second claim error: %v", err)
+	}
+	if claimed {
+		t.Fatalf("same day claim should be skipped")
+	}
+
+	claimed, err = claimTelegramDailyUsageReportScheduleDate(ctx, "2026-04-19")
+	if err != nil {
+		t.Fatalf("next day claim error: %v", err)
+	}
+	if !claimed {
+		t.Fatalf("next day claim should succeed")
 	}
 }

@@ -15,7 +15,7 @@ Orvion 是一个多提供商 LLM 网关（Go + Gin），提供 OpenAI/Anthropic 
 ## 技术栈
 
 - 后端：Go 1.25 + Gin + GORM
-- 数据库：SQLite（默认）/ PostgreSQL
+- 数据库：SQLite
 - 前端：React + Vite + TypeScript（构建产物嵌入后端）
 
 ## 快速开始

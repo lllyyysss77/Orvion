@@ -53,7 +53,7 @@ func (g *Gemini) BuildReq(ctx context.Context, header http.Header, model string,
 		req.Header = header
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-goog-api-key", g.APIKey)
+	req.Header.Set("x-goog-api-key", nextProviderAPIKey(g.BaseURL, g.APIKey))
 	if stream {
 		req.Header.Set("Accept", "text/event-stream")
 	}
@@ -77,7 +77,7 @@ func (g *Gemini) Models(ctx context.Context) ([]Model, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("x-goog-api-key", g.APIKey)
+	req.Header.Set("x-goog-api-key", nextProviderAPIKey(g.BaseURL, g.APIKey))
 	req.Header.Set("Content-Type", "application/json")
 
 	client, err := GetClientWithProxy(modelsListTimeout, g.ProxyURL)

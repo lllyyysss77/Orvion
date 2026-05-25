@@ -58,7 +58,7 @@ func (o *OpenAI) BuildReq(ctx context.Context, header http.Header, model string,
 		req.Header = header
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", o.APIKey))
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", nextProviderAPIKey(o.BaseURL, o.APIKey)))
 
 	return req, nil
 }
@@ -70,7 +70,7 @@ func (o *OpenAI) Models(ctx context.Context) ([]Model, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", o.APIKey))
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", nextProviderAPIKey(o.BaseURL, o.APIKey)))
 	res, err := GetClientWithProxy(modelsListTimeout, o.ProxyURL)
 	if err != nil {
 		return nil, err

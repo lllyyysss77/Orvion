@@ -2,12 +2,13 @@ package service
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/racio/orvion/models"
 	"github.com/racio/orvion/pkg"
-	"gorm.io/gorm"
 )
 
 const (
@@ -15,10 +16,87 @@ const (
 	modelProviderAutoDisableWindow    = time.Minute
 	modelProviderAutoRecoverAfter     = 5 * time.Minute
 	modelProviderAutoRecoverInterval  = 30 * time.Second
+	modelProviderAutoDisableWorkers   = 4
+	modelProviderAutoDisableQueueSize = 1024
+)
+
+var (
+	autoDisableQueueStart sync.Once
+	autoDisableQueue      = make(chan uint, modelProviderAutoDisableQueueSize)
+	autoDisablePendingMu  sync.Mutex
+	autoDisablePending    = make(map[uint]struct{})
 )
 
 func StartModelProviderAutoRecovery(ctx context.Context) {
+	StartModelProviderAutoDisableQueue(ctx)
 	pkg.GoSafe("service.model_provider_auto_recovery", func() { modelProviderAutoRecoveryLoop(ctx) })
+}
+
+func StartModelProviderAutoDisableQueue(ctx context.Context) {
+	autoDisableQueueStart.Do(func() {
+		for i := 0; i < modelProviderAutoDisableWorkers; i++ {
+			workerID := i + 1
+			pkg.GoSafe("service.model_provider_auto_disable_worker", func() {
+				modelProviderAutoDisableWorker(ctx, workerID)
+			})
+		}
+	})
+}
+
+func ScheduleModelProviderAutoDisableCheck(modelWithProviderID uint) {
+	if modelWithProviderID == 0 {
+		return
+	}
+	StartModelProviderAutoDisableQueue(RootContext())
+
+	autoDisablePendingMu.Lock()
+	if _, exists := autoDisablePending[modelWithProviderID]; exists {
+		autoDisablePendingMu.Unlock()
+		return
+	}
+	autoDisablePending[modelWithProviderID] = struct{}{}
+	autoDisablePendingMu.Unlock()
+
+	select {
+	case autoDisableQueue <- modelWithProviderID:
+	default:
+		autoDisablePendingMu.Lock()
+		delete(autoDisablePending, modelWithProviderID)
+		autoDisablePendingMu.Unlock()
+		slog.Warn("模型关联提供商自动关闭检查队列已满，丢弃检查任务",
+			"model_with_provider_id", modelWithProviderID,
+			"queue_size", modelProviderAutoDisableQueueSize,
+		)
+	}
+}
+
+func modelProviderAutoDisableWorker(ctx context.Context, workerID int) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case modelWithProviderID := <-autoDisableQueue:
+			modelProviderAutoDisableWorkerHandle(ctx, workerID, modelWithProviderID)
+		}
+	}
+}
+
+func modelProviderAutoDisableWorkerHandle(ctx context.Context, workerID int, modelWithProviderID uint) {
+	defer func() {
+		autoDisablePendingMu.Lock()
+		delete(autoDisablePending, modelWithProviderID)
+		autoDisablePendingMu.Unlock()
+	}()
+
+	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := TriggerModelProviderAutoDisableIfNeeded(checkCtx, modelWithProviderID); err != nil {
+		slog.Error("检查模型关联提供商自动关闭失败",
+			"error", err,
+			"worker", workerID,
+			"model_with_provider_id", modelWithProviderID,
+		)
+	}
 }
 
 func modelProviderAutoRecoveryLoop(ctx context.Context) {
@@ -59,14 +137,25 @@ func TriggerModelProviderAutoDisableIfNeeded(ctx context.Context, modelWithProvi
 	now := time.Now()
 	windowStart := now.Add(-modelProviderAutoDisableWindow)
 
-	logs, err := gorm.G[models.ChatLog](models.DB).
-		Where("model_with_provider_id = ?", modelWithProviderID).
-		Where("deleted_at IS NULL").
-		Where("created_at >= ?", windowStart).
-		Order("created_at DESC").
-		Limit(modelProviderAutoDisableThreshold).
-		Find(ctx)
+	union, err := models.BuildChatLogUnionQuery(models.ChatLogQueryScope{StartAt: &windowStart}, "uuid, created_at, model_with_provider_id, status")
 	if err != nil {
+		return err
+	}
+	if union.SQL == "" {
+		return nil
+	}
+	logs := make([]models.ChatLog, 0, modelProviderAutoDisableThreshold)
+	if err := models.DB.WithContext(ctx).Raw(
+		`SELECT *
+		   FROM (`+union.SQL+`) AS logs
+		  WHERE model_with_provider_id = ?
+		    AND created_at >= ?
+		  ORDER BY created_at DESC
+		  LIMIT ?`,
+		modelWithProviderID,
+		windowStart,
+		modelProviderAutoDisableThreshold,
+	).Scan(&logs).Error; err != nil {
 		return err
 	}
 
@@ -100,6 +189,22 @@ func TriggerModelProviderAutoDisableIfNeeded(ctx context.Context, modelWithProvi
 			"threshold", modelProviderAutoDisableThreshold,
 			"window_seconds", int(modelProviderAutoDisableWindow/time.Second),
 		)
+		pkg.GoSafe("service.model_provider_auto_disable_alert", func() {
+			if err := SendModelProviderAutoDisableAlert(RootContext(), ModelProviderAutoDisableAlertEvent{
+				ModelWithProviderID: modelWithProviderID,
+				ResumeAt:            resumeAt,
+				Threshold:           modelProviderAutoDisableThreshold,
+				Window:              modelProviderAutoDisableWindow,
+			}); err != nil {
+				if errors.Is(err, ErrTelegramNotifierNotConfigured) {
+					return
+				}
+				slog.Warn("发送模型关联提供商自动关闭 TG 告警失败",
+					"error", err,
+					"model_with_provider_id", modelWithProviderID,
+				)
+			}
+		})
 	}
 
 	return nil

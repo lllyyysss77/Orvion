@@ -34,6 +34,8 @@ const (
 	telegramStatusImageRefillMaxRetry  = 5
 	telegramStatusImageRefillBaseWait  = 1500 * time.Millisecond
 	telegramStatusImageDownloadRetry   = 4
+	telegramStatusImageDownloadTimeout = 18 * time.Second
+	telegramStatusImageRetryBaseWait   = 1200 * time.Millisecond
 	// Telegram sendPhoto 单图上限 10MB。
 	telegramStatusImageTGMaxBytes = 10 << 20
 
@@ -55,6 +57,7 @@ var (
 	telegramStatusImageWindowMu      sync.Mutex
 	telegramStatusImageWindowItems   []telegramStatusImageItem
 	telegramStatusImageRefillRunning bool
+	telegramStatusImageNextID        uint64
 )
 
 var errTelegramStatusImageTooLarge = errors.New("状态图片超过 TG 发送大小限制")
@@ -108,9 +111,11 @@ type telegramModelProviderRow struct {
 }
 
 type telegramStatusImageItem struct {
+	ID       uint64
 	Binary   []byte
 	FileName string
 	Source   string
+	CachedAt time.Time
 }
 
 type telegramDailyUsageTopModelRow struct {
@@ -283,23 +288,42 @@ func telegramDailyUsageReportLoop(ctx context.Context) {
 	}
 
 	runOnce := func(now time.Time) {
+		persistedLastSent, loadErr := loadTelegramDailyUsageReportLastSentDate(ctx)
+		if loadErr != nil {
+			slog.Warn("刷新 TG 每日使用日报发送游标失败", "error", loadErr)
+		} else if persistedLastSent != "" {
+			lastSentScheduleDate = persistedLastSent
+		}
+
 		scheduleDate, shouldRun := shouldRunTelegramDailyUsageReport(now, lastSentScheduleDate)
 		if !shouldRun {
 			return
 		}
 
-		sent, sendErr := dispatchTelegramDailyUsageReport(ctx, now)
-		if sendErr != nil {
-			slog.Warn("发送 TG 每日使用日报失败", "schedule_date", scheduleDate, "error", sendErr)
+		notifier, ok, resolveErr := resolveTelegramNotifier(ctx)
+		if resolveErr != nil {
+			slog.Warn("加载 TG 每日使用日报通知器失败", "schedule_date", scheduleDate, "error", resolveErr)
 			return
 		}
-		if !sent {
+		if !ok || notifier == nil {
+			return
+		}
+
+		claimed, claimErr := claimTelegramDailyUsageReportScheduleDate(ctx, scheduleDate)
+		if claimErr != nil {
+			slog.Warn("占用 TG 每日使用日报发送游标失败", "schedule_date", scheduleDate, "error", claimErr)
+			return
+		}
+		if !claimed {
+			lastSentScheduleDate = scheduleDate
 			return
 		}
 
 		lastSentScheduleDate = scheduleDate
-		if saveErr := saveTelegramDailyUsageReportLastSentDate(ctx, scheduleDate); saveErr != nil {
-			slog.Warn("保存 TG 每日使用日报发送游标失败", "schedule_date", scheduleDate, "error", saveErr)
+		sendErr := dispatchTelegramDailyUsageReportWithNotifier(ctx, notifier, now)
+		if sendErr != nil {
+			slog.Warn("发送 TG 每日使用日报失败", "schedule_date", scheduleDate, "error", sendErr)
+			return
 		}
 	}
 
@@ -340,16 +364,20 @@ func dispatchTelegramDailyUsageReport(ctx context.Context, now time.Time) (bool,
 		return false, nil
 	}
 
+	return true, dispatchTelegramDailyUsageReportWithNotifier(ctx, notifier, now)
+}
+
+func dispatchTelegramDailyUsageReportWithNotifier(ctx context.Context, notifier *telegramNotifier, now time.Time) error {
 	content := buildTelegramYesterdayUsageReportMessage(ctx, now)
 	if err := sendTelegramCaptionWithStatusImage(ctx, notifier, notifier.chatID, content); err != nil {
-		return true, err
+		return err
 	}
 
 	slog.Info("已发送 TG 每日使用日报",
 		"chat_id", notifier.chatID,
 		"yesterday", now.AddDate(0, 0, -1).Format("2006-01-02"),
 	)
-	return true, nil
+	return nil
 }
 
 func loadTelegramDailyUsageReportLastSentDate(ctx context.Context) (string, error) {
@@ -387,6 +415,47 @@ func saveTelegramDailyUsageReportLastSentDate(ctx context.Context, scheduleDate 
 			Key:   models.KeyTelegramDailyUsageReportLastSentDate,
 			Value: scheduleDate,
 		}).Error
+}
+
+func claimTelegramDailyUsageReportScheduleDate(ctx context.Context, scheduleDate string) (bool, error) {
+	scheduleDate = strings.TrimSpace(scheduleDate)
+	if scheduleDate == "" {
+		return false, nil
+	}
+	if models.DB == nil {
+		return false, errors.New("database is not initialized")
+	}
+
+	claimed := false
+	err := models.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var cfg models.Config
+		err := tx.Where("key = ?", models.KeyTelegramDailyUsageReportLastSentDate).First(&cfg).Error
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				if createErr := tx.Create(&models.Config{
+					Key:   models.KeyTelegramDailyUsageReportLastSentDate,
+					Value: scheduleDate,
+				}).Error; createErr != nil {
+					return createErr
+				}
+				claimed = true
+				return nil
+			}
+			return err
+		}
+
+		if strings.TrimSpace(cfg.Value) == scheduleDate {
+			return nil
+		}
+		if err := tx.Model(&models.Config{}).
+			Where("key = ?", models.KeyTelegramDailyUsageReportLastSentDate).
+			Update("value", scheduleDate).Error; err != nil {
+			return err
+		}
+		claimed = true
+		return nil
+	})
+	return claimed, err
 }
 
 func buildTelegramCommandPollClient(proxyURL string) (*http.Client, error) {
@@ -578,14 +647,22 @@ func buildTelegramSystemStatusMessage(ctx context.Context) string {
 
 	if models.DB != nil {
 		db := models.DB.WithContext(ctx)
-		_ = db.Model(&models.Model{}).Where("deleted_at IS NULL").Count(&modelTotal).Error
-		_ = db.Model(&models.ModelWithProvider{}).Where("deleted_at IS NULL").Where("status = ?", 1).Count(&modelProviderEnabled).Error
+		_ = db.Model(&models.Model{}).Count(&modelTotal).Error
+		_ = db.Model(&models.ModelWithProvider{}).Where("status = ?", 1).Count(&modelProviderEnabled).Error
 
 		year, month, day := now.Date()
 		startOfDay := time.Date(year, month, day, 0, 0, 0, 0, now.Location())
-		_ = db.Model(&models.ChatLog{}).Where("deleted_at IS NULL").Where("created_at >= ?", startOfDay).Count(&todayReqs).Error
-		_ = db.Model(&models.ChatLog{}).Where("deleted_at IS NULL").Where("created_at >= ?", startOfDay).Where("status = ?", "success").Count(&todaySuccess).Error
-		_ = db.Model(&models.ChatLog{}).Where("deleted_at IS NULL").Where("created_at >= ?", startOfDay).Select("COALESCE(SUM(total_cost), 0)").Scan(&todayAmount).Error
+		union, unionErr := models.BuildChatLogUnionQuery(models.ChatLogQueryScope{StartAt: &startOfDay}, "created_at, status, total_cost")
+		if unionErr == nil && union.SQL != "" {
+			_ = db.Raw(
+				`SELECT COUNT(1) AS total_reqs,
+				        COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END),0) AS success_reqs,
+				        COALESCE(SUM(total_cost),0) AS total_amount
+				   FROM (`+union.SQL+`) AS logs
+				  WHERE created_at >= ?`,
+				startOfDay,
+			).Row().Scan(&todayReqs, &todaySuccess, &todayAmount)
+		}
 	}
 
 	todayFailure := todayReqs - todaySuccess
@@ -801,9 +878,11 @@ func prefetchTelegramStatusImageIntoWindow(ctx context.Context, trigger string) 
 		return nil
 	}
 	telegramStatusImageWindowItems = append(telegramStatusImageWindowItems, telegramStatusImageItem{
+		ID:       nextTelegramStatusImageCacheIDLocked(),
 		Binary:   binary,
 		FileName: fileName,
 		Source:   sourceURL,
+		CachedAt: time.Now(),
 	})
 	cacheSize := len(telegramStatusImageWindowItems)
 	telegramStatusImageWindowMu.Unlock()
@@ -935,42 +1014,54 @@ func collectTelegramDailyUsageSummary(ctx context.Context, start time.Time, end 
 	}
 
 	db := models.DB.WithContext(ctx)
-	buildBase := func() *gorm.DB {
-		return db.Model(&models.ChatLog{}).
-			Where("deleted_at IS NULL").
-			Where("created_at >= ? AND created_at < ?", start, end)
+	union, err := models.BuildChatLogUnionQuery(
+		models.ChatLogQueryScope{StartAt: &start, EndAt: &end},
+		"id, created_at, status, total_cost, name, auth_key_id, provider_name, proxy_time_ms, first_chunk_time_ms, chunk_time_ms",
+	)
+	if err != nil || union.SQL == "" {
+		return summary
 	}
+	baseSQL := "FROM (" + union.SQL + ") AS logs WHERE created_at >= ? AND created_at < ?"
 
-	_ = buildBase().Count(&summary.TotalRequests).Error
-	_ = buildBase().Where("status = ?", "success").Count(&summary.SuccessRequests).Error
-	_ = buildBase().Select("COALESCE(SUM(total_cost), 0)").Scan(&summary.TotalCost).Error
+	_ = db.Raw(
+		`SELECT COUNT(1) AS total_reqs,
+		        COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END),0) AS success_reqs,
+		        COALESCE(SUM(total_cost),0) AS total_cost `+baseSQL,
+		start,
+		end,
+	).Row().Scan(&summary.TotalRequests, &summary.SuccessRequests, &summary.TotalCost)
 
 	var topModel telegramDailyUsageTopModelRow
-	if err := buildBase().
-		Select("name, COUNT(*) AS req_count").
-		Where("name <> ?", "").
-		Group("name").
-		Order("req_count DESC").
-		Order("name ASC").
-		Take(&topModel).Error; err == nil {
+	if err := db.Raw(
+		`SELECT name, COUNT(1) AS req_count `+baseSQL+`
+		  AND name <> ?
+		  GROUP BY name
+		  ORDER BY req_count DESC, name ASC
+		  LIMIT 1`,
+		start,
+		end,
+		"",
+	).Scan(&topModel).Error; err == nil {
 		summary.TopModelName = strings.TrimSpace(topModel.Name)
 		summary.TopModelReqs = topModel.ReqCount
 	}
 
 	var topAuthKey telegramDailyUsageTopAuthKeyRow
-	if err := buildBase().
-		Select("auth_key_id, COUNT(*) AS req_count").
-		Where("auth_key_id > ?", 0).
-		Group("auth_key_id").
-		Order("req_count DESC").
-		Order("auth_key_id ASC").
-		Take(&topAuthKey).Error; err == nil {
+	if err := db.Raw(
+		`SELECT auth_key_id, COUNT(1) AS req_count `+baseSQL+`
+		  AND auth_key_id > ?
+		  GROUP BY auth_key_id
+		  ORDER BY req_count DESC, auth_key_id ASC
+		  LIMIT 1`,
+		start,
+		end,
+		0,
+	).Scan(&topAuthKey).Error; err == nil {
 		summary.TopAuthKeyReqs = topAuthKey.ReqCount
 		summary.TopAuthKeyName = fmt.Sprintf("ID:%d", topAuthKey.AuthKeyID)
 
 		var authKey models.AuthKey
 		if findErr := models.DB.WithContext(ctx).
-			Unscoped().
 			Where("id = ?", topAuthKey.AuthKeyID).
 			First(&authKey).Error; findErr == nil {
 			name := strings.TrimSpace(authKey.Name)
@@ -981,11 +1072,14 @@ func collectTelegramDailyUsageSummary(ctx context.Context, start time.Time, end 
 	}
 
 	var slowRow telegramDailyUsageSlowRow
-	if err := buildBase().
-		Select("id, name, provider_name, status, created_at, (proxy_time_ms + first_chunk_time_ms + chunk_time_ms) AS latency_ms").
-		Order("(proxy_time_ms + first_chunk_time_ms + chunk_time_ms) DESC").
-		Order("id DESC").
-		Take(&slowRow).Error; err == nil {
+	if err := db.Raw(
+		`SELECT id, name, provider_name, status, created_at,
+		        (proxy_time_ms + first_chunk_time_ms + chunk_time_ms) AS latency_ms `+baseSQL+`
+		  ORDER BY latency_ms DESC, id DESC
+		  LIMIT 1`,
+		start,
+		end,
+	).Scan(&slowRow).Error; err == nil {
 		latency := slowRow.LatencyMs
 		if latency < 0 {
 			latency = 0
@@ -1060,6 +1154,25 @@ func resolveTelegramStatusCoverImageBaseURL(ctx context.Context) string {
 	return fallbackURL
 }
 
+func resolveTelegramStatusImageProxyURL(ctx context.Context) string {
+	envProxyURL := strings.TrimSpace(os.Getenv(envTelegramProxyURL))
+
+	cfg, found, err := loadTelegramBreakerAlertConfig(ctx)
+	if err != nil {
+		slog.Warn("读取 TG 状态图片代理配置失败，回退环境变量", "error", err)
+		return envProxyURL
+	}
+	if !found {
+		return envProxyURL
+	}
+
+	configProxyURL := strings.TrimSpace(cfg.ProxyURL)
+	if configProxyURL != "" {
+		return configProxyURL
+	}
+	return envProxyURL
+}
+
 func normalizeTelegramStatusImageURL(raw string) (string, bool) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -1082,6 +1195,17 @@ func buildTelegramStatusCoverImageURL(baseURL string) string {
 		return strings.TrimSpace(baseURL)
 	}
 	query := parsed.Query()
+	// 某些图片源参数会重复（例如 wtf_gender），去重后再追加时间戳，避免异常命中风控或缓存。
+	for key, values := range query {
+		if len(values) <= 1 {
+			continue
+		}
+		chosen := strings.TrimSpace(values[len(values)-1])
+		if chosen == "" {
+			chosen = values[len(values)-1]
+		}
+		query.Set(key, chosen)
+	}
 	query.Set("_ts", strconv.FormatInt(time.Now().UnixNano(), 10))
 	parsed.RawQuery = query.Encode()
 	return parsed.String()
@@ -1093,17 +1217,51 @@ func downloadTelegramStatusCoverImage(ctx context.Context, baseURL string) ([]by
 		return nil, "", "", fmt.Errorf("状态图片地址为空")
 	}
 
+	directClient := &http.Client{Timeout: telegramStatusImageDownloadTimeout}
+	proxyURL := resolveTelegramStatusImageProxyURL(ctx)
+	var proxyClient *http.Client
+	if proxyURL != "" {
+		client, err := buildTelegramHTTPClientWithTimeout(proxyURL, telegramStatusImageDownloadTimeout)
+		if err != nil {
+			slog.Warn("TG 状态图片代理配置无效，跳过代理重试", "proxy_url", proxyURL, "error", err)
+		} else {
+			proxyClient = client
+		}
+	}
+
 	var lastErr error
 	for attempt := 1; attempt <= telegramStatusImageDownloadRetry; attempt++ {
 		urlToDownload := buildTelegramStatusCoverImageURL(baseURL)
 
-		binary, fileName, err := downloadTelegramStatusCoverImageOnce(ctx, urlToDownload)
+		binary, fileName, err := downloadTelegramStatusCoverImageOnce(ctx, directClient, urlToDownload, false)
 		if err == nil {
 			return binary, fileName, urlToDownload, nil
 		}
+		if proxyClient != nil && !errors.Is(err, errTelegramStatusImageTooLarge) {
+			slog.Warn("下载 /status 状态图片直连失败，尝试代理获取",
+				"url", urlToDownload,
+				"attempt", attempt,
+				"max_attempt", telegramStatusImageDownloadRetry,
+				"error", err,
+			)
+			proxyBinary, proxyFileName, proxyErr := downloadTelegramStatusCoverImageOnce(ctx, proxyClient, urlToDownload, true)
+			if proxyErr == nil {
+				return proxyBinary, proxyFileName, urlToDownload, nil
+			}
+			slog.Warn("下载 /status 状态图片代理获取失败",
+				"url", urlToDownload,
+				"attempt", attempt,
+				"max_attempt", telegramStatusImageDownloadRetry,
+				"error", proxyErr,
+			)
+			err = fmt.Errorf("直连失败: %w; 代理失败: %v", err, proxyErr)
+		}
 
+		lastErr = err
+		if attempt >= telegramStatusImageDownloadRetry {
+			break
+		}
 		if errors.Is(err, errTelegramStatusImageTooLarge) {
-			lastErr = err
 			slog.Warn("下载 /status 状态图片超限，跳过并重试",
 				"url", urlToDownload,
 				"attempt", attempt,
@@ -1113,17 +1271,30 @@ func downloadTelegramStatusCoverImage(ctx context.Context, baseURL string) ([]by
 			)
 			continue
 		}
-		return nil, "", "", err
+		if !isRetryableStatusImageDownloadError(err) {
+			return nil, "", "", err
+		}
+		wait := telegramStatusImageRetryBaseWait * time.Duration(attempt)
+		slog.Warn("下载 /status 状态图片失败，准备重试",
+			"url", urlToDownload,
+			"attempt", attempt,
+			"max_attempt", telegramStatusImageDownloadRetry,
+			"next_wait", wait.String(),
+			"error", err,
+		)
+		if !waitWithContext(ctx, wait) {
+			return nil, "", "", ctx.Err()
+		}
 	}
 
 	if lastErr == nil {
 		lastErr = fmt.Errorf("下载状态图片失败")
 	}
-	return nil, "", "", fmt.Errorf("状态图片多次下载均超限: %w", lastErr)
+	return nil, "", "", fmt.Errorf("状态图片多次下载失败: %w", lastErr)
 }
 
-func downloadTelegramStatusCoverImageOnce(ctx context.Context, rawURL string) ([]byte, string, error) {
-	reqCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+func downloadTelegramStatusCoverImageOnce(ctx context.Context, client *http.Client, rawURL string, useProxy bool) ([]byte, string, error) {
+	reqCtx, cancel := context.WithTimeout(ctx, telegramStatusImageDownloadTimeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, rawURL, nil)
@@ -1134,7 +1305,9 @@ func downloadTelegramStatusCoverImageOnce(ctx context.Context, rawURL string) ([
 	req.Header.Set("Pragma", "no-cache")
 	req.Header.Set("Expires", "0")
 
-	client := &http.Client{Timeout: 12 * time.Second}
+	if client == nil {
+		client = &http.Client{Timeout: telegramStatusImageDownloadTimeout}
+	}
 	res, err := client.Do(req)
 	if err != nil {
 		return nil, "", err
@@ -1162,8 +1335,34 @@ func downloadTelegramStatusCoverImageOnce(ctx context.Context, rawURL string) ([
 
 	contentType := strings.TrimSpace(res.Header.Get("Content-Type"))
 	filename := fmt.Sprintf("status_%d%s", time.Now().UnixNano(), telegramImageExtByContentType(contentType))
-	slog.Info("下载 /status 状态图片成功", "url", rawURL, "filename", filename, "bytes", len(binary))
+	slog.Info("下载 /status 状态图片成功", "url", rawURL, "filename", filename, "bytes", len(binary), "use_proxy", useProxy)
 	return binary, filename, nil
+}
+
+func isRetryableStatusImageDownloadError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	if strings.Contains(msg, "deadline exceeded") || strings.Contains(msg, "timeout") {
+		return true
+	}
+	if strings.Contains(msg, "connection reset") || strings.Contains(msg, "broken pipe") {
+		return true
+	}
+	if strings.Contains(msg, "status=429") {
+		return true
+	}
+	for code := 500; code <= 599; code++ {
+		if strings.Contains(msg, fmt.Sprintf("status=%d", code)) {
+			return true
+		}
+	}
+	return false
 }
 
 func telegramImageExtByContentType(contentType string) string {
@@ -1310,7 +1509,6 @@ func buildTelegramModelListView(ctx context.Context, page int) (string, *telegra
 	}
 	items := make([]models.Model, 0)
 	if err := models.DB.WithContext(ctx).
-		Where("deleted_at IS NULL").
 		Order("id ASC").
 		Find(&items).Error; err != nil {
 		return "", nil, err
@@ -1397,9 +1595,8 @@ func buildTelegramModelDetailView(ctx context.Context, modelID uint, page int, n
 	if err := models.DB.WithContext(ctx).
 		Model(&models.ModelWithProvider{}).
 		Select("model_with_providers.id, model_with_providers.model_id, model_with_providers.provider_id, model_with_providers.provider_model, model_with_providers.status, model_with_providers.auto_disabled_until, model_with_providers.weight, providers.name AS provider_name").
-		Joins("LEFT JOIN providers ON providers.id = model_with_providers.provider_id AND providers.deleted_at IS NULL").
+		Joins("LEFT JOIN providers ON providers.id = model_with_providers.provider_id").
 		Where("model_with_providers.model_id = ?", modelID).
-		Where("model_with_providers.deleted_at IS NULL").
 		Order("model_with_providers.id ASC").
 		Scan(&rows).Error; err != nil {
 		return "", nil, err
@@ -1418,18 +1615,24 @@ func buildTelegramModelDetailView(ctx context.Context, modelID uint, page int, n
 			ids = append(ids, row.ID)
 		}
 		stats := make([]modelProviderSuccessStat, 0, len(rows))
-		if err := models.DB.WithContext(ctx).
-			Model(&models.ChatLog{}).
-			Select("model_with_provider_id AS model_with_provider_id, COUNT(*) AS total_count, SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count").
-			Where("deleted_at IS NULL").
-			Where("model_with_provider_id IN ?", ids).
-			Group("model_with_provider_id").
-			Scan(&stats).Error; err == nil {
-			for _, stat := range stats {
-				if stat.TotalCount <= 0 {
-					continue
+		union, unionErr := models.BuildChatLogUnionQuery(models.ChatLogQueryScope{}, "model_with_provider_id, status")
+		if unionErr == nil && union.SQL != "" {
+			err := models.DB.WithContext(ctx).Raw(
+				`SELECT model_with_provider_id AS model_with_provider_id,
+				        COUNT(1) AS total_count,
+				        COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END),0) AS success_count
+				   FROM (`+union.SQL+`) AS logs
+				  WHERE model_with_provider_id IN ?
+				  GROUP BY model_with_provider_id`,
+				ids,
+			).Scan(&stats).Error
+			if err == nil {
+				for _, stat := range stats {
+					if stat.TotalCount <= 0 {
+						continue
+					}
+					successRateByModelProvider[stat.ModelWithProviderID] = float64(stat.SuccessCount) / float64(stat.TotalCount) * 100
 				}
-				successRateByModelProvider[stat.ModelWithProviderID] = float64(stat.SuccessCount) / float64(stat.TotalCount) * 100
 			}
 		}
 	}

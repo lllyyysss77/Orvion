@@ -13,6 +13,7 @@ import { cliSections, sectionTabs, type SectionId } from "./login/home-config";
 import {
   clearStoredAuthToken,
   getStoredAuthToken,
+  normalizeAuthToken,
   setStoredAuthToken,
   setStoredAuthTokenMode,
 } from "@/lib/auth";
@@ -180,12 +181,14 @@ export default function LoginPage() {
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (submitting) return;
-    const normalized = setStoredAuthToken(token);
+    const normalized = normalizeAuthToken(token);
     if (!normalized) {
+      clearStoredAuthToken();
       setLoginError("访问令牌不能为空");
       return;
     }
 
+    clearStoredAuthToken();
     setSubmitting(true);
     setLoginError("");
 
@@ -199,6 +202,7 @@ export default function LoginPage() {
       });
 
       if (authKeyResponse.ok) {
+        setStoredAuthToken(normalized);
         setStoredAuthTokenMode("auth_key");
         navigate("/", { replace: true });
         return;
@@ -213,6 +217,7 @@ export default function LoginPage() {
       });
 
       if (adminResponse.ok) {
+        setStoredAuthToken(normalized);
         setStoredAuthTokenMode("admin");
         navigate("/", { replace: true });
         return;
@@ -233,6 +238,7 @@ export default function LoginPage() {
         `登录校验失败（auth-key: ${authKeyResponse.status} / admin: ${adminResponse.status}）`
       );
     } catch {
+      clearStoredAuthToken();
       setLoginError("登录校验请求失败，请确认服务可用后重试");
     } finally {
       setSubmitting(false);
@@ -248,10 +254,6 @@ export default function LoginPage() {
   };
 
   const openLogin = () => {
-    if (hasToken) {
-      navigate("/", { replace: true });
-      return;
-    }
     setLoginError("");
     setShowLoginForm(true);
   };
@@ -549,7 +551,7 @@ export default function LoginPage() {
                 onClick={openLogin}
                 className="min-w-[64px] rounded-xl bg-[#cc785c] px-3 py-1.5 text-xs font-medium text-white shadow-lg shadow-[#cc785c]/30 transition hover:bg-[#d4a27f] sm:min-w-[72px] sm:px-4 sm:py-2 sm:text-sm"
               >
-                {hasToken ? "进入" : "登录"}
+                {hasToken ? "重新登录" : "登录"}
               </button>
               <button
                 className={`flex h-8 w-8 items-center justify-center rounded-lg transition sm:h-9 sm:w-9 ${

@@ -283,7 +283,7 @@ func checkProvidersHealth(windowMinutes int) struct {
 
 	// 1) 一次性获取所有提供商
 	var providers []models.Provider
-	if err := models.DB.Where("deleted_at IS NULL").Find(&providers).Error; err != nil {
+	if err := models.DB.Find(&providers).Error; err != nil {
 		result.Status = "unhealthy"
 		return result
 	}
@@ -302,7 +302,7 @@ func checkProvidersHealth(windowMinutes int) struct {
 
 	// 2) 一次性获取所有 model_with_providers 关联（避免 N+1）
 	var modelProviders []models.ModelWithProvider
-	if err := models.DB.Where("deleted_at IS NULL").Find(&modelProviders).Error; err != nil {
+	if err := models.DB.Find(&modelProviders).Error; err != nil {
 		result.Status = "unhealthy"
 		return result
 	}
@@ -329,7 +329,7 @@ func checkProvidersHealth(windowMinutes int) struct {
 	}
 	var modelList []models.Model
 	if len(modelIDs) > 0 {
-		if err := models.DB.Where("id IN ? AND deleted_at IS NULL", modelIDs).Find(&modelList).Error; err != nil {
+		if err := models.DB.Where("id IN ?", modelIDs).Find(&modelList).Error; err != nil {
 			result.Status = "unhealthy"
 			return result
 		}
@@ -346,7 +346,7 @@ func checkProvidersHealth(windowMinutes int) struct {
 		providerModels = append(providerModels, pm)
 	}
 
-	// 4) 批量查询 chat_logs：用窗口函数取每组（provider_name,name,provider_model）最新 100 条
+	// 4) 批量查询 chat_logs 月表：用窗口函数取每组（provider_name,name,provider_model）最新 100 条
 	type logRow struct {
 		Name          string    `gorm:"column:name"`
 		ProviderName  string    `gorm:"column:provider_name"`
@@ -365,13 +365,22 @@ func checkProvidersHealth(windowMinutes int) struct {
 
 	logsByKey := make(map[logKey][]logRow)
 	if len(providerNames) > 0 && len(modelNames) > 0 && len(providerModels) > 0 {
+		union, err := models.BuildChatLogUnionQuery(models.ChatLogQueryScope{StartAt: &windowStart}, "name, provider_name, provider_model, status, error, proxy_time_ms, created_at")
+		if err != nil {
+			// 日志查询失败会严重影响健康统计，直接标记为不健康
+			result.Status = "unhealthy"
+			return result
+		}
+		if union.SQL == "" {
+			return result
+		}
 		sql := `
 SELECT name, provider_name, provider_model, status, error, proxy_time_ms, created_at
 FROM (
   SELECT name, provider_name, provider_model, status, error, proxy_time_ms, created_at,
          row_number() OVER (PARTITION BY provider_name, name, provider_model ORDER BY created_at DESC) AS rn
-  FROM chat_logs
-  WHERE created_at >= ? AND deleted_at IS NULL
+  FROM (` + union.SQL + `) AS logs
+  WHERE created_at >= ?
     AND provider_name IN (?)
     AND name IN (?)
     AND provider_model IN (?)

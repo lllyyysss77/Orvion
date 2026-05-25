@@ -1,5 +1,5 @@
 // API client for interacting with the backend
-import { getStoredAuthToken, getStoredAuthTokenMode } from "./auth";
+import { clearStoredAuthTokenAndRedirect, getStoredAuthToken, getStoredAuthTokenMode } from "./auth";
 
 const API_BASE = '/api';
 
@@ -77,7 +77,6 @@ export interface AuthKey {
   ID: number;
   CreatedAt: string;
   UpdatedAt: string;
-  DeletedAt?: string | null;
   Name: string;
   Key: string;
   Status: boolean;
@@ -164,6 +163,42 @@ export interface SystemStatus {
   version: string;
 }
 
+export interface DatabaseTableInfo {
+  name: string;
+  kind: string;
+}
+
+export interface DatabaseTableListResponse {
+  tables: DatabaseTableInfo[];
+}
+
+export interface DatabaseTableRowsResponse {
+  table_name: string;
+  columns: string[];
+  rows: Record<string, unknown>[];
+  total: number;
+  page: number;
+  page_size: number;
+  pages: number;
+}
+
+export interface ImageCacheItem {
+  id: number;
+  file_name: string;
+  source: string;
+  size: number;
+  mime_type: string;
+  cached_at: string;
+  index: number;
+}
+
+export interface ImageCacheSnapshot {
+  items: ImageCacheItem[];
+  total: number;
+  capacity: number;
+  bytes: number;
+}
+
 // Generic API request function
 async function apiRequest<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const url = `${API_BASE}${endpoint}`;
@@ -179,11 +214,8 @@ async function apiRequest<T>(endpoint: string, options: RequestInit = {}): Promi
     ...options,
   });
 
-  // Handle 401 Unauthorized response
   if (response.status === 401) {
-    // Redirect to login page
-    window.location.href = '/login';
-    throw new Error('Unauthorized');
+    clearStoredAuthTokenAndRedirect();
   }
 
   if (!response.ok) {
@@ -210,8 +242,7 @@ async function apiRequestFormData<T>(endpoint: string, formData: FormData): Prom
   });
 
   if (response.status === 401) {
-    window.location.href = '/login';
-    throw new Error('Unauthorized');
+    clearStoredAuthTokenAndRedirect();
   }
 
   if (!response.ok) {
@@ -238,8 +269,7 @@ async function authKeyRequest<T>(endpoint: string, options: RequestInit = {}): P
   });
 
   if (response.status === 401) {
-    window.location.href = '/login';
-    throw new Error('Unauthorized');
+    clearStoredAuthTokenAndRedirect();
   }
 
   if (!response.ok) {
@@ -564,6 +594,54 @@ export async function getSystemStatus(): Promise<SystemStatus> {
   return apiRequest<SystemStatus>('/status');
 }
 
+export async function getDatabaseTables(): Promise<DatabaseTableListResponse> {
+  return apiRequest<DatabaseTableListResponse>('/system/tables');
+}
+
+export async function getDatabaseTableRows(
+  tableName: string,
+  page = 1,
+  pageSize = 30,
+): Promise<DatabaseTableRowsResponse> {
+  const query = new URLSearchParams({
+    page: String(page),
+    page_size: String(pageSize),
+  });
+  return apiRequest<DatabaseTableRowsResponse>(`/system/tables/${encodeURIComponent(tableName)}/rows?${query}`);
+}
+
+export async function getImageCache(): Promise<ImageCacheSnapshot> {
+  return apiRequest<ImageCacheSnapshot>("/system/image-cache");
+}
+
+export async function deleteImageCacheItem(id: number): Promise<void> {
+  await apiRequest<void>(`/system/image-cache/${id}`, {
+    method: "DELETE",
+  });
+}
+
+export async function getImageCacheBlob(id: number): Promise<Blob> {
+  const token = getStoredAuthToken();
+  const response = await fetch(`${API_BASE}/system/image-cache/${id}/content`, {
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  });
+
+  if (response.status === 401) {
+    clearStoredAuthTokenAndRedirect();
+  }
+  if (!response.ok) {
+    throw new Error(`API request failed: ${response.status} ${response.statusText}`);
+  }
+
+  const contentType = response.headers.get("Content-Type") || "";
+  if (!contentType.toLowerCase().startsWith("image/")) {
+    throw new Error("图片缓存内容无效");
+  }
+  return response.blob();
+}
+
 // Metrics API functions
 export interface MetricsData {
   reqs: number;
@@ -758,6 +836,7 @@ export const configAPI = {
 // Logs API functions
 export interface ChatLog {
   ID: number;
+  UUID: string;
   CreatedAt: string;
   Name: string;
   ProviderModel: string;
@@ -780,22 +859,32 @@ export interface ChatLog {
   completion_tokens: number;
   total_tokens: number;
   cached_tokens: number;
+  cache_hit_rate: number;
   total_cost: number;
   // 后端存的是 JSON 字符串（或空字符串）；前端使用时需要做解析/兜底
   prompt_tokens_details: PromptTokensDetails | string | null;
   key_name: string;
 }
 
+type RawChatLog = ChatLog & {
+  provider_name?: string;
+  provider_model?: string;
+  request_path?: string;
+  KeyName?: string;
+  key_name?: string;
+};
+
 export interface PromptTokensDetails {
   cached_tokens: number;
+  cache_hit_rate?: number;
 }
 
 export interface ChatIO {
   ID: number;
   CreatedAt: string;
   UpdatedAt: string;
-  DeletedAt?: unknown;
   LogId: number;
+  LogUUID?: string;
   Input: string;
   OfString?: string | null;
   OfStringArray?: string[] | null;
@@ -821,6 +910,26 @@ export interface LogsResponse {
   pages: number;
 }
 
+const firstNonEmptyString = (...values: unknown[]) => {
+  for (const value of values) {
+    if (typeof value !== "string") continue;
+    const trimmed = value.trim();
+    if (trimmed) return trimmed;
+  }
+  return "";
+};
+
+const normalizeChatLog = (raw: unknown): ChatLog => {
+  const record = asRecord(raw) as unknown as RawChatLog;
+  return {
+    ...record,
+    ProviderName: firstNonEmptyString(record.ProviderName, record.provider_name),
+    ProviderModel: firstNonEmptyString(record.ProviderModel, record.provider_model),
+    RequestPath: firstNonEmptyString(record.RequestPath, record.request_path),
+    key_name: firstNonEmptyString(record.key_name, record.KeyName),
+  } as ChatLog;
+};
+
 export interface SystemLogSnapshot {
   path: string;
   exists: boolean;
@@ -832,6 +941,15 @@ export interface SystemLogSnapshot {
     memory_bytes: number;
     cpu_percent: number;
     goroutines: number;
+    gc_count: number;
+  };
+  slow_sql?: {
+    total_queries: number;
+    slow_queries: number;
+    normal_rate: number;
+    slow_rate: number;
+    threshold_ms: number;
+    window_size: number;
   };
 }
 
@@ -902,9 +1020,17 @@ export async function getLogs(
   const query = `/logs?${params.toString()}`;
   const mode = getStoredAuthTokenMode();
   if (mode === "auth_key") {
-    return authKeyRequest<LogsResponse>(`/auth-key${query}`);
+    const res = await authKeyRequest<LogsResponse>(`/auth-key${query}`);
+    return {
+      ...res,
+      data: (res.data ?? []).map(normalizeChatLog),
+    };
   }
-  return apiRequest<LogsResponse>(query);
+  const res = await apiRequest<LogsResponse>(query);
+  return {
+    ...res,
+    data: (res.data ?? []).map(normalizeChatLog),
+  };
 }
 
 export async function getSystemLogs(limit: number = 200): Promise<SystemLogSnapshot> {

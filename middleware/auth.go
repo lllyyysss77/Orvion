@@ -10,7 +10,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/racio/orvion/common"
 	"github.com/racio/orvion/consts"
-	"github.com/racio/orvion/pkg"
 	"github.com/racio/orvion/service"
 )
 
@@ -119,8 +118,7 @@ func checkAuthKey(c *gin.Context, key string, adminToken string, allowAdminBypas
 		c.Abort()
 		return
 	}
-	// 异步更新使用次数
-	pkg.GoSafe("middleware.key_update", func() { service.KeyUpdate(authKey.ID, time.Now()) })
+	service.KeyUpdate(authKey.ID, time.Now())
 
 	allowAll := authKey.AllowAll == 1
 	ctx = context.WithValue(ctx, consts.ContextKeyAuthKeyID, authKey.ID)

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -33,46 +34,85 @@ func GetAuthKeyRequestLogs(c *gin.Context) {
 		return
 	}
 
-	providerName := strings.TrimSpace(c.Query("provider_name"))
 	name := strings.TrimSpace(c.Query("name"))
 	status := strings.TrimSpace(c.Query("status"))
 	style := strings.TrimSpace(c.Query("style"))
 	startAtRaw := strings.TrimSpace(c.Query("start_at"))
 	endAtRaw := strings.TrimSpace(c.Query("end_at"))
 
-	query := models.DB.Model(&models.ChatLog{}).Where("auth_key_id = ?", authKeyID)
-	if providerName != "" {
-		query = query.Where("provider_name = ?", providerName)
-	}
-	if name != "" {
-		query = query.Where("name = ?", name)
-	}
-	if status != "" {
-		query = query.Where("status = ?", status)
-	}
-	if style != "" {
-		query = query.Where("style = ?", style)
-	}
+	var startAt *time.Time
+	var endAt *time.Time
 	if startAtRaw != "" {
-		startAt, parseErr := parseAuthKeyLogQueryTime(startAtRaw)
+		parsed, parseErr := parseAuthKeyLogQueryTime(startAtRaw)
 		if parseErr != nil {
 			common.BadRequest(c, "Invalid start_at format")
 			return
 		}
-		query = query.Where("created_at >= ?", startAt)
+		startAt = &parsed
 	}
 	if endAtRaw != "" {
-		endAt, parseErr := parseAuthKeyLogQueryTime(endAtRaw)
+		parsed, parseErr := parseAuthKeyLogQueryTime(endAtRaw)
 		if parseErr != nil {
 			common.BadRequest(c, "Invalid end_at format")
 			return
 		}
-		query = query.Where("created_at <= ?", endAt)
+		endAt = &parsed
+	}
+
+	union, err := models.BuildChatLogUnionQuery(models.ChatLogQueryScope{StartAt: startAt, EndAt: endAt}, models.ChatLogColumnsSQL())
+	if err != nil {
+		common.InternalServerError(c, "Failed to build log query: "+err.Error())
+		return
+	}
+	if union.SQL == "" {
+		response := common.NewPaginationResponse([]authKeyWrapLog{}, 0, params)
+		common.Success(c, response)
+		return
+	}
+
+	clauses := []string{"auth_key_id = ?"}
+	args := []any{authKeyID}
+	if name != "" {
+		clauses = append(clauses, "name = ?")
+		args = append(args, name)
+	}
+	if status != "" {
+		clauses = append(clauses, "status = ?")
+		args = append(args, status)
+	}
+	if style != "" {
+		clauses = append(clauses, "style = ?")
+		args = append(args, style)
+	}
+	if startAt != nil {
+		clauses = append(clauses, "created_at >= ?")
+		args = append(args, *startAt)
+	}
+	if endAt != nil {
+		clauses = append(clauses, "created_at <= ?")
+		args = append(args, *endAt)
+	}
+
+	whereSQL := strings.Join(clauses, " AND ")
+	type countRow struct {
+		Total int64 `gorm:"column:total"`
+	}
+	var count countRow
+	if err := models.DB.WithContext(c.Request.Context()).Raw(
+		"SELECT COUNT(1) AS total FROM ("+union.SQL+") AS logs WHERE "+whereSQL,
+		args...,
+	).Scan(&count).Error; err != nil {
+		common.InternalServerError(c, "Failed to count logs: "+err.Error())
+		return
 	}
 
 	logs := make([]models.ChatLog, 0)
-	total, err := common.PaginateQuery(query.Order("id DESC"), params, &logs)
-	if err != nil {
+	offset := (params.Page - 1) * params.PageSize
+	pageArgs := append(append(make([]any, 0, len(args)+2), args...), params.PageSize, offset)
+	if err := models.DB.WithContext(c.Request.Context()).Raw(
+		"SELECT "+models.ChatLogColumnsSQL()+" FROM ("+union.SQL+") AS logs WHERE "+whereSQL+" ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+		pageArgs...,
+	).Scan(&logs).Error; err != nil {
 		common.InternalServerError(c, "Failed to query logs: "+err.Error())
 		return
 	}
@@ -92,13 +132,15 @@ func GetAuthKeyRequestLogs(c *gin.Context) {
 
 	wrapLogs := make([]authKeyWrapLog, 0, len(logs))
 	for _, log := range logs {
+		log.ProviderName = ""
+		log.ProviderModel = ""
 		wrapLogs = append(wrapLogs, authKeyWrapLog{
 			ChatLog: log,
 			KeyName: authKey.Name,
 		})
 	}
 
-	response := common.NewPaginationResponse(wrapLogs, total, params)
+	response := common.NewPaginationResponse(wrapLogs, count.Total, params)
 	common.Success(c, response)
 }
 
@@ -116,22 +158,43 @@ func GetAuthKeyChatIO(c *gin.Context) {
 		return
 	}
 
-	logRecord, err := gorm.G[models.ChatLog](models.DB).
-		Select("id", "auth_key_id").
-		Where("id = ? AND auth_key_id = ?", id, authKeyID).
-		First(c.Request.Context())
+	logFound := false
+	union, err := models.BuildChatLogUnionQuery(models.ChatLogQueryScope{}, "id, uuid, auth_key_id")
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			common.NotFound(c, "log not found")
+		common.InternalServerError(c, "Failed to build log query: "+err.Error())
+		return
+	}
+	if union.SQL != "" {
+		clauses := []string{"auth_key_id = ?", "uuid = ?"}
+		args := []any{authKeyID, id}
+		if numericID, parseErr := strconv.ParseUint(id, 10, 64); parseErr == nil {
+			clauses = []string{"auth_key_id = ?", "(uuid = ? OR id = ?)"}
+			args = []any{authKeyID, id, numericID}
+		}
+
+		type existsRow struct {
+			Total int64 `gorm:"column:total"`
+		}
+		var exists existsRow
+		if err := models.DB.WithContext(c.Request.Context()).Raw(
+			"SELECT COUNT(1) AS total FROM ("+union.SQL+") AS logs WHERE "+strings.Join(clauses, " AND "),
+			args...,
+		).Scan(&exists).Error; err != nil {
+			common.InternalServerError(c, "Failed to verify log ownership: "+err.Error())
 			return
 		}
-		common.InternalServerError(c, "Failed to retrieve log: "+err.Error())
+		logFound = exists.Total > 0
+	}
+	if !logFound {
+		common.NotFound(c, "chat io not found")
 		return
 	}
 
-	chatIO, err := gorm.G[models.ChatIO](models.DB).
-		Where("log_id = ?", logRecord.ID).
-		First(c.Request.Context())
+	query := gorm.G[models.ChatIO](models.DB).Where("log_uuid = ?", id)
+	if _, parseErr := strconv.ParseUint(id, 10, 64); parseErr == nil {
+		query = gorm.G[models.ChatIO](models.DB).Where("log_uuid = ? OR log_id = ?", id, id)
+	}
+	chatIO, err := query.First(c.Request.Context())
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			common.NotFound(c, "chat io not found")

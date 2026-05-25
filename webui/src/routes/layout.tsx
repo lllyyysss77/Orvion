@@ -126,7 +126,32 @@ export default function Layout() {
     let active = true;
 
     const fetchVersionAndUpdate = async () => {
+      const fetchCurrentVersion = async () => {
+        try {
+          const value = await getVersion();
+          if (active && value) {
+            setVersion(value);
+          }
+        } catch {
+          // 保持默认版本号。
+        }
+      };
+
       try {
+        const config = await configAPI.getConfig("github_version_check");
+        if (!active) {
+          return;
+        }
+        if (config.value) {
+          const parsed = JSON.parse(config.value) as { enabled?: boolean };
+          if (parsed.enabled === false) {
+            setVersionUpdate(null);
+            setUpdatePopoverOpen(false);
+            await fetchCurrentVersion();
+            return;
+          }
+        }
+
         const info = await checkVersionUpdate();
         if (!active) {
           return;
@@ -139,14 +164,7 @@ export default function Layout() {
         console.error("检查版本更新失败:", error);
         setVersionUpdate(null);
         setUpdatePopoverOpen(false);
-        try {
-          const value = await getVersion();
-          if (active && value) {
-            setVersion(value);
-          }
-        } catch {
-          // 保持默认版本号。
-        }
+        await fetchCurrentVersion();
       }
     };
 
@@ -155,7 +173,7 @@ export default function Layout() {
     return () => {
       active = false;
     };
-  }, [isAuthKeyToken, location.pathname]);
+  }, [isAuthKeyToken]);
 
   useEffect(() => {
     if (!versionUpdate?.hasUpdate) {

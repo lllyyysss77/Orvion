@@ -676,7 +676,7 @@ func resolveTestLogProcesser(style string) service.Processer {
 }
 
 func recordTestChatSuccess(ctx context.Context, c *gin.Context, chatModel *ChatModel, style string, endpoint string, startReq time.Time, requestBody []byte, responseBody []byte) error {
-	logID, err := service.SaveChatLog(ctx, models.ChatLog{
+	logRef, err := service.SaveChatLog(ctx, models.ChatLog{
 		Name:                chatModel.LogicalModelName(),
 		ProviderModel:       chatModel.Model,
 		ProviderName:        chatModel.DisplayProviderName(),
@@ -695,15 +695,15 @@ func recordTestChatSuccess(ctx context.Context, c *gin.Context, chatModel *ChatM
 	beforer := resolveTestLogBeforer(style, endpoint)
 	processer := resolveTestLogProcesser(style)
 	if beforer == nil || processer == nil {
-		return saveTestChatIO(ctx, logID, requestBody, string(responseBody))
+		return saveTestChatIO(ctx, logRef, requestBody, string(responseBody))
 	}
 
 	before, err := beforer(requestBody)
 	if err != nil {
-		return saveTestChatIO(ctx, logID, requestBody, string(responseBody))
+		return saveTestChatIO(ctx, logRef, requestBody, string(responseBody))
 	}
 
-	service.RecordLog(ctx, startReq, 0, io.NopCloser(bytes.NewReader(responseBody)), processer, logID, 0, *before, true, style)
+	service.RecordLog(ctx, startReq, 0, io.NopCloser(bytes.NewReader(responseBody)), processer, logRef, 0, *before, true, style)
 	return nil
 }
 
@@ -712,7 +712,7 @@ func recordTestChatFailure(ctx context.Context, c *gin.Context, chatModel *ChatM
 		return
 	}
 
-	logID, err := service.SaveChatLog(ctx, models.ChatLog{
+	logRef, err := service.SaveChatLog(ctx, models.ChatLog{
 		Name:                chatModel.LogicalModelName(),
 		ProviderModel:       chatModel.Model,
 		ProviderName:        chatModel.DisplayProviderName(),
@@ -730,14 +730,15 @@ func recordTestChatFailure(ctx context.Context, c *gin.Context, chatModel *ChatM
 		return
 	}
 
-	if err := saveTestChatIO(ctx, logID, requestBody, errText); err != nil {
-		slog.Error("保存测试场失败日志 IO 失败", "error", err, "log_id", logID)
+	if err := saveTestChatIO(ctx, logRef, requestBody, errText); err != nil {
+		slog.Error("保存测试场失败日志 IO 失败", "error", err, "log_id", logRef.ID, "log_uuid", logRef.UUID)
 	}
 }
 
-func saveTestChatIO(ctx context.Context, logID uint, requestBody []byte, output string) error {
+func saveTestChatIO(ctx context.Context, logRef models.ChatLogRef, requestBody []byte, output string) error {
 	return gorm.G[models.ChatIO](models.DB).Create(ctx, &models.ChatIO{
-		LogId:        logID,
+		LogId:        logRef.ID,
+		LogUUID:      logRef.UUID,
 		Input:        string(requestBody),
 		OutputString: output,
 	})
@@ -910,7 +911,7 @@ func buildOpenAIImageEditRequest(ctx context.Context, chatModel *ChatModel, head
 		}
 	}
 
-	imageBytes, imageName, err := fetchRemoteFile(ctx, strings.TrimSpace(req.ImageURL))
+	imageBytes, imageName, err := fetchRemoteFile(ctx, strings.TrimSpace(req.ImageURL), chatModel.ProxyURL)
 	if err != nil {
 		return nil, err
 	}
@@ -919,7 +920,7 @@ func buildOpenAIImageEditRequest(ctx context.Context, chatModel *ChatModel, head
 	}
 
 	if strings.TrimSpace(req.MaskURL) != "" {
-		maskBytes, maskName, err := fetchRemoteFile(ctx, strings.TrimSpace(req.MaskURL))
+		maskBytes, maskName, err := fetchRemoteFile(ctx, strings.TrimSpace(req.MaskURL), chatModel.ProxyURL)
 		if err != nil {
 			return nil, err
 		}
@@ -1015,12 +1016,34 @@ func buildOpenAIImageEditRequestFromUpload(
 	return request, nil
 }
 
-func fetchRemoteFile(ctx context.Context, rawURL string) ([]byte, string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+func fetchRemoteFile(ctx context.Context, rawURL string, proxyURL string) ([]byte, string, error) {
+	data, name, err := fetchRemoteFileOnce(ctx, rawURL, "")
+	if err == nil {
+		return data, name, nil
+	}
+	if strings.TrimSpace(proxyURL) == "" {
+		return nil, "", err
+	}
+
+	proxyData, proxyName, proxyErr := fetchRemoteFileOnce(ctx, rawURL, proxyURL)
+	if proxyErr == nil {
+		return proxyData, proxyName, nil
+	}
+	return nil, "", fmt.Errorf("直连下载失败: %w; 代理下载失败: %w", err, proxyErr)
+}
+
+func fetchRemoteFileOnce(ctx context.Context, rawURL string, proxyURL string) ([]byte, string, error) {
+	downloadCtx, cancel := context.WithTimeout(ctx, time.Second*20)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(downloadCtx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, "", err
 	}
-	client := &http.Client{Timeout: time.Second * 20}
+	client, err := providers.GetClientWithProxy(time.Second*20, proxyURL)
+	if err != nil {
+		return nil, "", err
+	}
 	res, err := client.Do(req)
 	if err != nil {
 		return nil, "", err

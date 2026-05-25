@@ -211,10 +211,10 @@ const ModelIcon = ({ name, size = "md" }: { name: string; size?: "md" | "sm" }) 
 
   const wrapperClass = compact
     ? "inline-flex size-5 shrink-0 items-center justify-center leading-none"
-    : "inline-flex size-10 shrink-0 items-center justify-center rounded-2xl bg-muted/60 leading-none";
+    : "inline-flex size-8 shrink-0 items-center justify-center rounded-xl bg-muted/60 leading-none";
   const fallbackClass = compact
     ? "inline-flex size-5 shrink-0 items-center justify-center text-muted-foreground font-semibold text-[10px] leading-none"
-    : "inline-flex size-10 shrink-0 items-center justify-center rounded-2xl bg-primary/10 text-primary font-semibold text-sm leading-none";
+    : "inline-flex size-8 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary font-semibold text-xs leading-none";
 
   if (!config) {
     return (
@@ -226,7 +226,7 @@ const ModelIcon = ({ name, size = "md" }: { name: string; size?: "md" | "sm" }) 
 
   return (
     <div className={wrapperClass}>
-      <img src={config.src} alt={config.alt} className={cn("block object-contain", compact ? "size-[18px]" : "size-5")} />
+      <img src={config.src} alt={config.alt} className={cn("block object-contain", compact ? "size-[18px]" : "size-4")} />
     </div>
   );
 };
@@ -515,7 +515,7 @@ export default function ModelsPage() {
   const rowVirtualizer = useVirtualizer({
     count: visibleModels.length,
     getScrollElement: () => listRef.current,
-    estimateSize: () => 108,
+    estimateSize: () => 84,
     overscan: 8,
   });
 
@@ -952,7 +952,7 @@ export default function ModelsPage() {
           <div className="h-full flex flex-col">
             <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-[28px] border border-border/70 bg-card/88 shadow-[0_18px_50px_rgba(98,71,47,0.08)]">
               <div
-                className="hidden xl:grid xl:[grid-template-columns:var(--model-cols)] items-center gap-4 border-b border-border/60 px-5 py-3 text-xs font-medium text-muted-foreground"
+                className="hidden xl:grid xl:[grid-template-columns:var(--model-cols)] items-center gap-3 border-b border-border/60 px-5 py-2.5 text-xs font-medium text-muted-foreground"
                 style={{ ["--model-cols" as any]: desktopGridTemplate }}
               >
                 {columnVisibility.model ? <div>模型</div> : null}
@@ -974,7 +974,7 @@ export default function ModelsPage() {
                       key={model.ID}
                       data-index={virtualRow.index}
                       ref={rowVirtualizer.measureElement}
-                      className="group absolute left-0 top-0 grid w-full gap-4 overflow-hidden border-b border-border/50 px-4 py-3 transform-gpu transition-[background-color,transform,box-shadow,border-color] duration-200 hover:translate-x-1 hover:border-border/30 hover:bg-gradient-to-r hover:from-primary/5 hover:via-background hover:to-background hover:shadow-[0_12px_28px_rgba(98,71,47,0.10)] last:border-b-0 xl:[grid-template-columns:var(--model-cols)] xl:items-center xl:px-5"
+                      className="group absolute left-0 top-0 grid w-full gap-3 overflow-hidden border-b border-border/50 px-4 py-2 transform-gpu transition-[background-color,transform,box-shadow,border-color] duration-200 hover:translate-x-1 hover:border-border/30 hover:bg-gradient-to-r hover:from-primary/5 hover:via-background hover:to-background hover:shadow-[0_10px_22px_rgba(98,71,47,0.09)] last:border-b-0 xl:[grid-template-columns:var(--model-cols)] xl:items-center xl:px-5"
                       style={{
                         transform: `translateY(${virtualRow.start}px)`,
                         ["--model-cols" as any]: desktopGridTemplate,
@@ -984,14 +984,14 @@ export default function ModelsPage() {
                       {columnVisibility.model ? (
                       <div className="min-w-0">
                         <div className="mb-1 text-[11px] font-medium text-muted-foreground xl:hidden">模型</div>
-                        <div className="grid min-w-0 grid-cols-[2.5rem_minmax(0,1fr)] items-center gap-3">
+                        <div className="grid min-w-0 grid-cols-[2rem_minmax(0,1fr)] items-center gap-2.5">
                           <ModelIcon name={model.Name} />
                           <div className="min-w-0 leading-tight">
                             <Tooltip>
                               <TooltipTrigger asChild>
                                 <button
                                   type="button"
-                                  className="w-full truncate text-left cursor-pointer text-base font-semibold leading-6 transition-colors group-hover:text-primary"
+                                  className="w-full truncate text-left cursor-pointer text-sm font-semibold leading-5 transition-colors group-hover:text-primary"
                                   title={model.Name}
                                   onClick={() => void handleCopyModelName(model.Name)}
                                 >
@@ -1003,7 +1003,7 @@ export default function ModelsPage() {
                               </TooltipContent>
                             </Tooltip>
                             {model.Remark ? (
-                              <div className="mt-1 text-[11px] text-muted-foreground truncate" title={model.Remark}>
+                              <div className="mt-0.5 text-[11px] text-muted-foreground truncate" title={model.Remark}>
                                 {model.Remark}
                               </div>
                             ) : null}
@@ -1067,7 +1067,7 @@ export default function ModelsPage() {
                       {columnVisibility.status ? (
                       <div className="min-w-0 xl:justify-self-center xl:w-full">
                         <div className="mb-1 text-[11px] font-medium text-muted-foreground xl:hidden">状态</div>
-                        <div className="flex items-center gap-3 xl:justify-center">
+                        <div className="flex items-center gap-2 xl:justify-center">
                           <span
                             className={cn(
                               "inline-flex min-w-[52px] items-center justify-center rounded-full border px-2 py-0.5 text-[11px] font-medium",
@@ -1092,7 +1092,7 @@ export default function ModelsPage() {
                       <div className="flex flex-wrap items-center justify-start gap-2 xl:justify-self-end xl:justify-end">
                         <Button
                           variant="outline"
-                          className="h-9 rounded-full px-4 leading-none"
+                          className="h-8 rounded-full px-3 text-xs leading-none"
                           onClick={(event) => {
                             event.stopPropagation();
                             openProviderPanel(model);
@@ -1105,7 +1105,7 @@ export default function ModelsPage() {
                         </Button>
                         <Button
                           variant="outline"
-                          className="h-9 rounded-full px-4 leading-none"
+                          className="h-8 rounded-full px-3 text-xs leading-none"
                           onClick={(event) => {
                             event.stopPropagation();
                             openEditDialog(model);
@@ -1120,7 +1120,7 @@ export default function ModelsPage() {
                           <AlertDialogTrigger asChild>
                             <Button
                               variant="destructive"
-                              className="h-9 rounded-full px-4 leading-none"
+                              className="h-8 rounded-full px-3 text-xs leading-none"
                               onClick={(event) => {
                                 event.stopPropagation();
                                 openDeleteDialog(model.ID);

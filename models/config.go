@@ -1,11 +1,13 @@
 package models
 
-import "gorm.io/gorm"
+import "time"
 
 type Config struct {
-	gorm.Model
-	Key   string `gorm:"uniqueIndex"` // 配置类型
-	Value string // 配置内容
+	ID        uint `gorm:"primaryKey"`
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	Key       string `gorm:"uniqueIndex"` // 配置类型
+	Value     string // 配置内容
 }
 
 const (

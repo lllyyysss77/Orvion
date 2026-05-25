@@ -3,12 +3,12 @@ package models
 import (
 	"net/http"
 	"time"
-
-	"gorm.io/gorm"
 )
 
 type Provider struct {
-	gorm.Model
+	ID              uint `gorm:"primaryKey"`
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 	Name            string
 	Config          string
 	Console         string // 控制台地址
@@ -27,7 +27,9 @@ type AnthropicConfig struct {
 }
 
 type Model struct {
-	gorm.Model
+	ID           uint `gorm:"primaryKey"`
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 	Name         string
 	Remark       string
 	MaxRetry     int               // 重试次数限制
@@ -40,7 +42,9 @@ type Model struct {
 }
 
 type ModelWithProvider struct {
-	gorm.Model
+	ID                uint `gorm:"primaryKey"`
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 	ModelID           uint
 	ProviderModel     string
 	ProviderID        uint
@@ -52,7 +56,9 @@ type ModelWithProvider struct {
 }
 
 type ChatLog struct {
-	gorm.Model
+	ID                  uint `gorm:"primaryKey"`
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
 	UUID                string `gorm:"column:uuid"`
 	Name                string `gorm:"index"`
 	ProviderModel       string `gorm:"index"`
@@ -92,6 +98,7 @@ type Usage struct {
 	CompletionTokens    int64   `json:"completion_tokens" gorm:"column:completion_tokens"`
 	TotalTokens         int64   `json:"total_tokens" gorm:"column:total_tokens"`
 	CachedTokens        int64   `json:"cached_tokens" gorm:"column:cached_tokens"`
+	CacheHitRate        float64 `json:"cache_hit_rate" gorm:"column:cache_hit_rate"`               // 缓存命中率（0-100）
 	PromptTokensDetails string  `json:"prompt_tokens_details" gorm:"column:prompt_tokens_details"` // JSON 字符串
 	TotalCost           float64 `json:"total_cost" gorm:"column:total_cost"`                       // 总消费
 }
@@ -104,8 +111,11 @@ type PromptTokensDetails struct {
 }
 
 type ChatIO struct {
-	gorm.Model
-	LogId             uint `gorm:"column:log_id"`
+	ID                uint `gorm:"primaryKey"`
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+	LogId             uint   `gorm:"column:log_id"`
+	LogUUID           string `gorm:"column:log_uuid;index"`
 	Input             string
 	OutputString      string `gorm:"column:output_string"`
 	OutputStringArray string `gorm:"column:output_string_array"` // JSON 数组字符串
@@ -128,7 +138,9 @@ type ReqMeta struct {
 }
 
 type AuthKey struct {
-	gorm.Model
+	ID         uint `gorm:"primaryKey"`
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 	Name       string // 项目名称
 	Key        string
 	Status     int        // 是否启用 (0/1)

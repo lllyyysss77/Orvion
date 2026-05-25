@@ -60,60 +60,72 @@ func AuthKeySummary(c *gin.Context) {
 		return
 	}
 
-	base := models.DB.WithContext(ctx).
-		Model(&models.ChatLog{}).
-		Where("deleted_at IS NULL").
-		Where("auth_key_id = ?", authKeyID)
+	allowAll, _ := ctx.Value(consts.ContextKeyAllowAllModel).(bool)
+	allowedModels := make([]string, 0)
+	if !allowAll {
+		unique := make(map[string]struct{})
+		if raw := ctx.Value(consts.ContextKeyAllowModels); raw != nil {
+			if list, ok := raw.([]string); ok {
+				for _, name := range list {
+					name = strings.TrimSpace(name)
+					if name != "" {
+						if _, exists := unique[name]; exists {
+							continue
+						}
+						unique[name] = struct{}{}
+						allowedModels = append(allowedModels, name)
+					}
+				}
+			}
+		}
+		sort.Strings(allowedModels)
+	}
 
-	totalRequests, err := gorm.G[models.ChatLog](models.DB).
-		Where("deleted_at IS NULL").
-		Where("auth_key_id = ?", authKeyID).
-		Count(ctx, "id")
+	union, err := models.BuildChatLogUnionQuery(models.ChatLogQueryScope{}, "auth_key_id, status, prompt_tokens, completion_tokens, total_tokens, total_cost, proxy_time_ms, name")
 	if err != nil {
-		common.InternalServerError(c, "Failed to count requests: "+err.Error())
+		common.InternalServerError(c, "Failed to build log query: "+err.Error())
+		return
+	}
+	if union.SQL == "" {
+		common.Success(c, AuthKeySummaryRes{Name: authKey.Name, KeyMasked: maskAuthKey(authKey.Key), AllowAll: allowAll, Models: allowedModels})
 		return
 	}
 
-	successRequests, err := gorm.G[models.ChatLog](models.DB).
-		Where("deleted_at IS NULL").
-		Where("auth_key_id = ?", authKeyID).
-		Where("status = ?", "success").
-		Count(ctx, "id")
-	if err != nil {
-		common.InternalServerError(c, "Failed to count success requests: "+err.Error())
+	type authKeySummaryAgg struct {
+		TotalRequests   int64           `gorm:"column:total_requests"`
+		SuccessRequests int64           `gorm:"column:success_requests"`
+		Prompt          sql.NullInt64   `gorm:"column:prompt"`
+		Completion      sql.NullInt64   `gorm:"column:completion"`
+		Total           sql.NullInt64   `gorm:"column:total"`
+		TotalCost       sql.NullFloat64 `gorm:"column:total_cost"`
+		TotalTime       sql.NullInt64   `gorm:"column:total_time"`
+	}
+	var agg authKeySummaryAgg
+	if err := models.DB.WithContext(ctx).Raw(
+		`SELECT COUNT(1) AS total_requests,
+		        COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END),0) AS success_requests,
+		        COALESCE(SUM(prompt_tokens),0) AS prompt,
+		        COALESCE(SUM(completion_tokens),0) AS completion,
+		        COALESCE(SUM(total_tokens),0) AS total,
+		        COALESCE(SUM(total_cost),0) AS total_cost,
+		        COALESCE(SUM(proxy_time_ms),0) AS total_time
+		   FROM (`+union.SQL+`) AS logs
+		  WHERE auth_key_id = ?`,
+		authKeyID,
+	).Scan(&agg).Error; err != nil {
+		common.InternalServerError(c, "Failed to summarize auth key logs: "+err.Error())
 		return
 	}
-	failureRequests := totalRequests - successRequests
-
-	type tokenAgg struct {
-		Prompt     sql.NullInt64 `gorm:"column:prompt"`
-		Completion sql.NullInt64 `gorm:"column:completion"`
-		Total      sql.NullInt64 `gorm:"column:total"`
-	}
-	var tokens tokenAgg
-	if err := base.Select(
-		"COALESCE(SUM(prompt_tokens),0) AS prompt, COALESCE(SUM(completion_tokens),0) AS completion, COALESCE(SUM(total_tokens),0) AS total",
-	).Scan(&tokens).Error; err != nil {
-		common.InternalServerError(c, "Failed to sum tokens: "+err.Error())
-		return
-	}
-
-	var totalCost sql.NullFloat64
-	if err := base.Select("COALESCE(SUM(total_cost),0) AS total_cost").Scan(&totalCost).Error; err != nil {
-		common.InternalServerError(c, "Failed to sum total cost: "+err.Error())
-		return
-	}
-
-	var totalTime sql.NullInt64
-	if err := base.Select("COALESCE(SUM(proxy_time_ms),0) AS total_time").Scan(&totalTime).Error; err != nil {
-		common.InternalServerError(c, "Failed to sum proxy time: "+err.Error())
-		return
-	}
+	failureRequests := agg.TotalRequests - agg.SuccessRequests
 
 	modelAgg := make([]authKeyTokenAgg, 0)
-	if err := base.Select(
-		"LOWER(name) AS model, COALESCE(SUM(completion_tokens),0) AS completion",
-	).Group("LOWER(name)").Scan(&modelAgg).Error; err != nil {
+	if err := models.DB.WithContext(ctx).Raw(
+		`SELECT LOWER(name) AS model, COALESCE(SUM(completion_tokens),0) AS completion
+		   FROM (`+union.SQL+`) AS logs
+		  WHERE auth_key_id = ?
+		  GROUP BY LOWER(name)`,
+		authKeyID,
+	).Scan(&modelAgg).Error; err != nil {
 		common.InternalServerError(c, "Failed to aggregate tokens: "+err.Error())
 		return
 	}
@@ -153,30 +165,9 @@ func AuthKeySummary(c *gin.Context) {
 			}
 		}
 	}
-	inputCost := totalCost.Float64 - outputCost
+	inputCost := agg.TotalCost.Float64 - outputCost
 	if inputCost < 0 {
 		inputCost = 0
-	}
-
-	allowAll, _ := ctx.Value(consts.ContextKeyAllowAllModel).(bool)
-	allowedModels := make([]string, 0)
-	if !allowAll {
-		unique := make(map[string]struct{})
-		if raw := ctx.Value(consts.ContextKeyAllowModels); raw != nil {
-			if list, ok := raw.([]string); ok {
-				for _, name := range list {
-					name = strings.TrimSpace(name)
-					if name != "" {
-						if _, exists := unique[name]; exists {
-							continue
-						}
-						unique[name] = struct{}{}
-						allowedModels = append(allowedModels, name)
-					}
-				}
-			}
-		}
-		sort.Strings(allowedModels)
 	}
 
 	var expireInDays *int
@@ -193,14 +184,14 @@ func AuthKeySummary(c *gin.Context) {
 		KeyMasked:        maskAuthKey(authKey.Key),
 		ExpiresAt:        authKey.ExpiresAt,
 		ExpireInDays:     expireInDays,
-		TotalCost:        totalCost.Float64,
-		TotalRequests:    totalRequests,
-		SuccessRequests:  successRequests,
+		TotalCost:        agg.TotalCost.Float64,
+		TotalRequests:    agg.TotalRequests,
+		SuccessRequests:  agg.SuccessRequests,
 		FailureRequests:  failureRequests,
-		TotalTimeMs:      totalTime.Int64,
-		PromptTokens:     tokens.Prompt.Int64,
-		CompletionTokens: tokens.Completion.Int64,
-		TotalTokens:      tokens.Total.Int64,
+		TotalTimeMs:      agg.TotalTime.Int64,
+		PromptTokens:     agg.Prompt.Int64,
+		CompletionTokens: agg.Completion.Int64,
+		TotalTokens:      agg.Total.Int64,
 		InputCost:        inputCost,
 		OutputCost:       outputCost,
 		AllowAll:         allowAll,

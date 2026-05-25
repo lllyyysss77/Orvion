@@ -11,3 +11,5 @@ webui/node_modules
 orvion.log
 .DS_Store
 /CLAUDE.md
+.codex
+/tmp

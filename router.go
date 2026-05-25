@@ -193,6 +193,11 @@ func registerSystemRoutes(api *gin.RouterGroup) {
 	api.GET("/logs/:id/chat-io", adminhandler.GetChatIO)
 	api.GET("/system-logs", adminhandler.GetSystemLogs)
 	api.POST("/system-logs/clear", adminhandler.ClearSystemLogs)
+	api.GET("/system/image-cache", adminhandler.GetImageCache)
+	api.GET("/system/image-cache/:id/content", adminhandler.GetImageCacheContent)
+	api.DELETE("/system/image-cache/:id", adminhandler.DeleteImageCache)
+	api.GET("/system/tables", adminhandler.GetDatabaseTables)
+	api.GET("/system/tables/:name/rows", adminhandler.GetDatabaseTableRows)
 	api.GET("/user-agents", adminhandler.GetUserAgents)
 	api.POST("/logs/cleanup", adminhandler.CleanLogs)
 }

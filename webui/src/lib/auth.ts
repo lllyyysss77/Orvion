@@ -65,3 +65,11 @@ export function clearStoredAuthToken(): void {
 export function hasStoredAuthToken(): boolean {
   return getStoredAuthToken().length > 0;
 }
+
+export function clearStoredAuthTokenAndRedirect(): never {
+  clearStoredAuthToken();
+  if (window.location.pathname !== "/login") {
+    window.location.replace("/login");
+  }
+  throw new Error("Unauthorized");
+}
