@@ -21,8 +21,11 @@ type ComponentStatus struct {
 
 // ModelHealthRequestBlock 模型健康请求块
 type ModelHealthRequestBlock struct {
-	Success   bool   `json:"success"`
-	Timestamp string `json:"timestamp"`
+	Success        bool    `json:"success"`
+	SuccessRate    float64 `json:"successRate"`
+	TotalRequests  int     `json:"totalRequests"`
+	FailedRequests int     `json:"failedRequests"`
+	Timestamp      string  `json:"timestamp"`
 }
 
 // ModelHealth 模型健康状态
@@ -50,6 +53,16 @@ type ProviderHealth struct {
 	TotalRequests  int           `json:"totalRequests"`
 	FailedRequests int           `json:"failedRequests"`
 	Models         []ModelHealth `json:"models"`
+}
+
+type healthLogRow struct {
+	Name          string    `gorm:"column:name"`
+	ProviderName  string    `gorm:"column:provider_name"`
+	ProviderModel string    `gorm:"column:provider_model"`
+	Status        string    `gorm:"column:status"`
+	Error         string    `gorm:"column:error"`
+	ProxyTimeMs   int       `gorm:"column:proxy_time_ms"`
+	CreatedAt     time.Time `gorm:"column:created_at"`
 }
 
 // SystemHealth 系统健康状态
@@ -258,7 +271,7 @@ func checkDatabaseHealth() ComponentStatus {
 }
 
 // checkProvidersHealth 检查提供商健康状态
-func checkProvidersHealth(windowMinutes int) struct {
+func checkProvidersHealth(_ int) struct {
 	Status    string           `json:"status"`
 	Total     int              `json:"total"`
 	Healthy   int              `json:"healthy"`
@@ -279,7 +292,9 @@ func checkProvidersHealth(windowMinutes int) struct {
 	}
 
 	now := time.Now()
-	windowStart := now.Add(-time.Duration(windowMinutes) * time.Minute)
+	year, month, day := now.Date()
+	windowStart := time.Date(year, month, day, 0, 0, 0, 0, now.Location())
+	windowEnd := windowStart.Add(24 * time.Hour)
 
 	// 1) 一次性获取所有提供商
 	var providers []models.Provider
@@ -346,26 +361,16 @@ func checkProvidersHealth(windowMinutes int) struct {
 		providerModels = append(providerModels, pm)
 	}
 
-	// 4) 批量查询 chat_logs 月表：用窗口函数取每组（provider_name,name,provider_model）最新 100 条
-	type logRow struct {
-		Name          string    `gorm:"column:name"`
-		ProviderName  string    `gorm:"column:provider_name"`
-		ProviderModel string    `gorm:"column:provider_model"`
-		Status        string    `gorm:"column:status"`
-		Error         string    `gorm:"column:error"`
-		ProxyTimeMs   int       `gorm:"column:proxy_time_ms"`
-		CreatedAt     time.Time `gorm:"column:created_at"`
-	}
-
+	// 4) 批量查询 chat_logs 月表：取窗口期内所有记录，后续按固定时间段聚合
 	type logKey struct {
 		providerName  string
 		modelName     string
 		providerModel string
 	}
 
-	logsByKey := make(map[logKey][]logRow)
+	logsByKey := make(map[logKey][]healthLogRow)
 	if len(providerNames) > 0 && len(modelNames) > 0 && len(providerModels) > 0 {
-		union, err := models.BuildChatLogUnionQuery(models.ChatLogQueryScope{StartAt: &windowStart}, "name, provider_name, provider_model, status, error, proxy_time_ms, created_at")
+		union, err := models.BuildChatLogUnionQuery(models.ChatLogQueryScope{StartAt: &windowStart, EndAt: &windowEnd}, "name, provider_name, provider_model, status, error, proxy_time_ms, created_at")
 		if err != nil {
 			// 日志查询失败会严重影响健康统计，直接标记为不健康
 			result.Status = "unhealthy"
@@ -376,19 +381,15 @@ func checkProvidersHealth(windowMinutes int) struct {
 		}
 		sql := `
 SELECT name, provider_name, provider_model, status, error, proxy_time_ms, created_at
-FROM (
-  SELECT name, provider_name, provider_model, status, error, proxy_time_ms, created_at,
-         row_number() OVER (PARTITION BY provider_name, name, provider_model ORDER BY created_at DESC) AS rn
-  FROM (` + union.SQL + `) AS logs
-  WHERE created_at >= ?
-    AND provider_name IN (?)
-    AND name IN (?)
-    AND provider_model IN (?)
-) t
-WHERE rn <= 100
+FROM (` + union.SQL + `) AS logs
+WHERE created_at >= ?
+  AND created_at < ?
+  AND provider_name IN (?)
+  AND name IN (?)
+  AND provider_model IN (?)
 `
-		var rows []logRow
-		if err := models.DB.Raw(sql, windowStart, providerNames, modelNames, providerModels).Scan(&rows).Error; err != nil {
+		var rows []healthLogRow
+		if err := models.DB.Raw(sql, windowStart, windowEnd, providerNames, modelNames, providerModels).Scan(&rows).Error; err != nil {
 			// 日志查询失败会严重影响健康统计，直接标记为不健康
 			result.Status = "unhealthy"
 			return result
@@ -446,9 +447,9 @@ WHERE rn <= 100
 		modelHealth.TotalRequests = len(rows)
 		totalResponseTime := 0.0
 
-		// blocks 需要从旧到新
+		// 请求记录按旧到新排序，便于生成稳定的时间段统计。
 		if len(rows) > 0 {
-			slices.SortFunc(rows, func(a, b logRow) int {
+			slices.SortFunc(rows, func(a, b healthLogRow) int {
 				if a.CreatedAt.Before(b.CreatedAt) {
 					return -1
 				}
@@ -458,16 +459,13 @@ WHERE rn <= 100
 				return 0
 			})
 		}
+		modelHealth.RequestBlocks = buildModelHealthRequestBlocks(rows, windowStart, windowEnd, 100)
 
 		for _, r := range rows {
 			isSuccess := r.Status == "success"
 			if !isSuccess {
 				modelHealth.FailedRequests++
 			}
-			modelHealth.RequestBlocks = append(modelHealth.RequestBlocks, ModelHealthRequestBlock{
-				Success:   isSuccess,
-				Timestamp: r.CreatedAt.UTC().Format(time.RFC3339),
-			})
 			if r.ProxyTimeMs > 0 {
 				totalResponseTime += float64(r.ProxyTimeMs)
 			}
@@ -554,6 +552,59 @@ WHERE rn <= 100
 	}
 
 	return result
+}
+
+func buildModelHealthRequestBlocks(rows []healthLogRow, windowStart, windowEnd time.Time, bucketCount int) []ModelHealthRequestBlock {
+	if bucketCount <= 0 {
+		return []ModelHealthRequestBlock{}
+	}
+	if !windowEnd.After(windowStart) {
+		windowEnd = windowStart.Add(24 * time.Hour)
+	}
+
+	windowDuration := windowEnd.Sub(windowStart)
+	bucketDuration := windowDuration / time.Duration(bucketCount)
+	if bucketDuration <= 0 {
+		bucketDuration = time.Second
+	}
+
+	blocks := make([]ModelHealthRequestBlock, bucketCount)
+	for i := range blocks {
+		bucketStart := windowStart.Add(time.Duration(i) * bucketDuration)
+		blocks[i] = ModelHealthRequestBlock{
+			Success:     false,
+			SuccessRate: 0,
+			Timestamp:   bucketStart.UTC().Format(time.RFC3339),
+		}
+	}
+
+	for _, row := range rows {
+		if row.CreatedAt.Before(windowStart) || !row.CreatedAt.Before(windowEnd) {
+			continue
+		}
+		idx := int(row.CreatedAt.Sub(windowStart) / bucketDuration)
+		if idx < 0 {
+			idx = 0
+		}
+		if idx >= bucketCount {
+			idx = bucketCount - 1
+		}
+		blocks[idx].TotalRequests++
+		if row.Status != "success" {
+			blocks[idx].FailedRequests++
+		}
+	}
+
+	for i := range blocks {
+		if blocks[i].TotalRequests == 0 {
+			continue
+		}
+		successCount := blocks[i].TotalRequests - blocks[i].FailedRequests
+		blocks[i].SuccessRate = float64(successCount) / float64(blocks[i].TotalRequests) * 100
+		blocks[i].Success = blocks[i].FailedRequests == 0
+	}
+
+	return blocks
 }
 
 // stringPtr 返回字符串指针

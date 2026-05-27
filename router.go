@@ -165,6 +165,7 @@ func registerProviderRoutes(api *gin.RouterGroup) {
 	api.GET("/providers/models/:id", adminhandler.GetProviderModels)
 	api.POST("/providers", adminhandler.CreateProvider)
 	api.PUT("/providers/:id", adminhandler.UpdateProvider)
+	api.PATCH("/providers/:id/status", adminhandler.UpdateProviderStatus)
 	api.DELETE("/providers/:id", adminhandler.DeleteProvider)
 }
 

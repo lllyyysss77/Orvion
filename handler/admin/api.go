@@ -38,6 +38,17 @@ type ProviderRequest struct {
 	InterfaceConversionTarget  string `json:"interface_conversion_target"`
 }
 
+type ProviderStatusRequest struct {
+	Status bool `json:"status"`
+}
+
+type ProviderListItem struct {
+	models.Provider
+	ProviderEnabled           bool `json:"ProviderEnabled"`
+	ProviderModelCount        int  `json:"ProviderModelCount"`
+	EnabledProviderModelCount int  `json:"EnabledProviderModelCount"`
+}
+
 const (
 	modelsFetchModeV1Models = "v1_models"
 	modelsFetchModePricing  = "api_pricing"
@@ -147,7 +158,49 @@ func GetProviders(c *gin.Context) {
 		return
 	}
 
-	common.Success(c, providers)
+	items := buildProviderListItems(ctx, providers)
+	common.Success(c, items)
+}
+
+func buildProviderListItems(ctx context.Context, providers []models.Provider) []ProviderListItem {
+	items := make([]ProviderListItem, 0, len(providers))
+	if len(providers) == 0 {
+		return items
+	}
+
+	providerIDs := lo.Map(providers, func(provider models.Provider, _ int) uint {
+		return provider.ID
+	})
+	type providerStatusAgg struct {
+		ProviderID   uint `gorm:"column:provider_id"`
+		TotalCount   int  `gorm:"column:total_count"`
+		EnabledCount int  `gorm:"column:enabled_count"`
+	}
+	var rows []providerStatusAgg
+	if err := models.DB.WithContext(ctx).
+		Model(&models.ModelWithProvider{}).
+		Select("provider_id, COUNT(*) AS total_count, COALESCE(SUM(CASE WHEN status = 1 THEN 1 ELSE 0 END),0) AS enabled_count").
+		Where("provider_id IN ?", providerIDs).
+		Group("provider_id").
+		Scan(&rows).Error; err != nil {
+		rows = nil
+	}
+
+	statsByProviderID := make(map[uint]providerStatusAgg, len(rows))
+	for _, row := range rows {
+		statsByProviderID[row.ProviderID] = row
+	}
+
+	for _, provider := range providers {
+		stats := statsByProviderID[provider.ID]
+		items = append(items, ProviderListItem{
+			Provider:                  provider,
+			ProviderEnabled:           stats.EnabledCount > 0,
+			ProviderModelCount:        stats.TotalCount,
+			EnabledProviderModelCount: stats.EnabledCount,
+		})
+	}
+	return items
 }
 
 func GetProviderModels(c *gin.Context) {
@@ -462,6 +515,52 @@ func UpdateProvider(c *gin.Context) {
 	}
 
 	common.Success(c, updatedProvider)
+}
+
+// UpdateProviderStatus 批量切换提供商下所有模型关联状态，不在 providers 表新增状态字段。
+func UpdateProviderStatus(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseUint(idStr, 10, 64)
+	if err != nil {
+		common.BadRequest(c, "Invalid ID")
+		return
+	}
+
+	var req ProviderStatusRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.BadRequest(c, "Invalid request body: "+err.Error())
+		return
+	}
+
+	ctx := c.Request.Context()
+	provider, err := gorm.G[models.Provider](models.DB).Where("id = ?", id).First(ctx)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			common.NotFound(c, "Provider not found")
+			return
+		}
+		common.InternalServerError(c, "Failed to load provider: "+err.Error())
+		return
+	}
+
+	status := 0
+	if req.Status {
+		status = 1
+	}
+	if err := models.DB.WithContext(ctx).
+		Model(&models.ModelWithProvider{}).
+		Where("provider_id = ?", id).
+		Update("status", status).Error; err != nil {
+		common.InternalServerError(c, "Failed to update provider status: "+err.Error())
+		return
+	}
+
+	items := buildProviderListItems(ctx, []models.Provider{provider})
+	if len(items) == 0 {
+		common.Success(c, provider)
+		return
+	}
+	common.Success(c, items[0])
 }
 
 // DeleteProvider 删除提供商

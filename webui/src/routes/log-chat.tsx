@@ -1238,7 +1238,11 @@ export default function LogChatPage() {
   }, [logId]);
 
   if (loading) {
-    return <Loading message="加载会话详情" />;
+    return (
+      <div className="flex h-full items-center justify-center">
+        <Loading message="加载会话详情" />
+      </div>
+    );
   }
 
   return (

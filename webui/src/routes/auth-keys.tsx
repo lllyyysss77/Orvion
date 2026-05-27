@@ -73,7 +73,10 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 
 const formSchema = z.object({
   name: z.string().min(1, { message: "项目名称不能为空" }),
-  key: z.string().optional(),
+  key: z.string()
+    .max(128, { message: "自定义令牌后缀不能超过 128 个字符" })
+    .refine((value) => !/\s/.test(value), { message: "自定义令牌后缀不能包含空白字符" })
+    .optional(),
   status: z.boolean(),
   allow_all: z.boolean(),
   models: z.array(z.string()),
@@ -88,6 +91,7 @@ type AuthKeyFormValues = z.infer<typeof formSchema>;
 
 const defaultFormValues: AuthKeyFormValues = {
   name: "",
+  key: "",
   status: true,
   allow_all: true,
   models: [],
@@ -294,7 +298,7 @@ export default function AuthKeysPage() {
     try {
       const payload = {
         name: values.name,
-        key: values.key?.trim() || undefined,
+        key: editingKey ? undefined : values.key?.trim() || undefined,
         status: values.status,
         allow_all: values.allow_all,
         models: values.allow_all ? [] : values.models,
@@ -713,7 +717,7 @@ export default function AuthKeysPage() {
             <DialogTitle>{editingKey ? "编辑 API Key" : "新建 API Key"}</DialogTitle>
           </DialogHeader>
           <Form {...form}>
-            <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+            <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-3">
               <FormField
                 control={form.control}
                 name="name"
@@ -728,11 +732,42 @@ export default function AuthKeysPage() {
                 )}
               />
 
+              {!editingKey ? (
+                <FormField
+                  control={form.control}
+                  name="key"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>自定义令牌后缀（可选）</FormLabel>
+                      <FormControl>
+                        <div className="flex overflow-hidden rounded-md border bg-background focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2">
+                          <div className="flex h-10 items-center border-r bg-muted px-3 font-mono text-sm text-muted-foreground">
+                            sk-
+                          </div>
+                          <Input
+                            {...field}
+                            value={field.value ?? ""}
+                            className="h-10 border-0 font-mono shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
+                            placeholder="留空则自动生成默认 Key"
+                            autoComplete="off"
+                            onChange={(event) => field.onChange(event.target.value.replace(/^sk-/, ""))}
+                          />
+                        </div>
+                      </FormControl>
+                      <p className="text-xs text-muted-foreground">
+                        填写后会生成 sk- + 自定义后缀；留空时使用默认生成规则。
+                      </p>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              ) : null}
+
               <FormField
                 control={form.control}
                 name="models"
                 render={({ field }) => (
-                  <FormItem className="rounded-lg space-y-3">
+                  <FormItem className="rounded-lg space-y-2.5">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <FormLabel >模型权限</FormLabel>
                       <FormField
@@ -752,15 +787,16 @@ export default function AuthKeysPage() {
                       />
                     </div>
                     <FormControl>
-                      <div className="space-y-3">
+                      <div className="space-y-2">
                         <Input
                           placeholder="搜索模型"
                           value={modelSearch}
                           onChange={(event) => setModelSearch(event.target.value)}
                           disabled={allowAll}
+                          className="h-9"
                         />
                         <div className={cn(
-                          "border rounded-md p-3 h-48 overflow-y-auto space-y-2",
+                          "border rounded-md p-2 h-32 overflow-y-auto space-y-1.5",
                           allowAll ? "opacity-50 pointer-events-none" : ""
                         )}>
                           {filteredModels.length === 0 ? (
@@ -769,7 +805,7 @@ export default function AuthKeysPage() {
                             filteredModels.map((model) => {
                               const checked = field.value.includes(model.Name);
                               return (
-                                <label key={model.ID} className="flex items-center gap-2 text-sm cursor-pointer">
+                                <label key={model.ID} className="flex items-center gap-2 text-xs cursor-pointer">
                                   <Checkbox
                                     checked={checked}
                                     onCheckedChange={(checkedState) => {
@@ -785,7 +821,7 @@ export default function AuthKeysPage() {
                                     className="border-muted-foreground/50"
                                   />
                                   <div className="flex flex-col">
-                                    <span className="text-foreground">{model.Name}</span>
+                                    <span className="text-foreground leading-5">{model.Name}</span>
                                   </div>
                                 </label>
                               );
@@ -799,47 +835,47 @@ export default function AuthKeysPage() {
                 )}
               />
 
-              <FormField
-                control={form.control}
-                name="rpm_limit"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>RPM 限制</FormLabel>
-                    <FormControl>
-                      <Input
-                        type="number"
-                        min={0}
-                        placeholder="0 表示无限制"
-                        value={field.value ?? 0}
-                        onChange={(event) => field.onChange(Number(event.target.value) || 0)}
-                      />
-                    </FormControl>
-                    <p className="text-xs text-muted-foreground">
-                      每分钟最大请求数，0 表示无限制。
-                    </p>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-
-              <FormField
-                control={form.control}
-                name="expires_at"
-                render={({ field }) => {
-                  const selected = field.value ? new Date(field.value) : undefined;
-                  const isValidDate = selected && !Number.isNaN(selected.getTime()) ? selected : undefined;
-                  return (
-                    <FormItem className="grid gap-2">
-                      <FormLabel>有效期至（可选）</FormLabel>
+              <div className="grid gap-3 md:grid-cols-2">
+                <FormField
+                  control={form.control}
+                  name="rpm_limit"
+                  render={({ field }) => (
+                    <FormItem className="grid grid-rows-[auto_2.5rem_1rem] gap-2">
+                      <FormLabel>RPM 限制</FormLabel>
                       <FormControl>
-                        <div className="flex flex-col gap-3">
-                          <div className="flex items-center gap-2">
+                        <Input
+                          type="number"
+                          min={0}
+                          placeholder="0 表示无限制"
+                          value={field.value ?? 0}
+                          onChange={(event) => field.onChange(Number(event.target.value) || 0)}
+                        />
+                      </FormControl>
+                      <p className="min-h-4 text-xs text-muted-foreground">
+                        0 表示无限制。
+                      </p>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name="expires_at"
+                  render={({ field }) => {
+                    const selected = field.value ? new Date(field.value) : undefined;
+                    const isValidDate = selected && !Number.isNaN(selected.getTime()) ? selected : undefined;
+                    return (
+                      <FormItem className="grid grid-rows-[auto_2.5rem_1rem] gap-2">
+                        <FormLabel>有效期至（可选）</FormLabel>
+                        <FormControl>
+                          <div className="flex h-10 items-center gap-2">
                             <Popover open={open} onOpenChange={setOpen} modal={true}>
                               <PopoverTrigger asChild>
                                 <Button
                                   variant="outline"
                                   id="date"
-                                  className="w-48 justify-between font-normal"
+                                  className="h-10 flex-1 justify-between font-normal"
                                 >
                                   {isValidDate ? isValidDate.toLocaleDateString() : "Select date"}
                                   <ChevronDownIcon />
@@ -864,7 +900,7 @@ export default function AuthKeysPage() {
                               type="button"
                               variant="ghost"
                               size="sm"
-                              className="ml-auto text-muted-foreground"
+                              className="text-muted-foreground"
                               onClick={() => {
                                 field.onChange(null);
                                 setOpen(false);
@@ -874,13 +910,14 @@ export default function AuthKeysPage() {
                               重置
                             </Button>
                           </div>
-                        </div>
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  );
-                }}
-              />
+                        </FormControl>
+                        <p className="min-h-4 text-xs text-muted-foreground">&nbsp;</p>
+                        <FormMessage />
+                      </FormItem>
+                    );
+                  }}
+                />
+              </div>
 
               <DialogFooter>
                 <Button type="button" variant="outline" onClick={() => handleDialogOpenChange(false)}>

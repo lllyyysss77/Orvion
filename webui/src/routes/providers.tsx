@@ -45,6 +45,7 @@ import {
   getProviders,
   createProvider,
   updateProvider,
+  updateProviderStatus,
   deleteProvider,
   getProviderTemplates,
   getProviderModels
@@ -52,7 +53,7 @@ import {
 import type { Provider, ProviderTemplate, ProviderModel } from "@/lib/api";
 import { openExternalUrl } from "@/lib/utils";
 import { toast } from "sonner";
-import { ExternalLink, Pencil, Trash2, Boxes, Plus, Copy } from "lucide-react";
+import { Check, ExternalLink, Pencil, Trash2, Boxes, Plus, Copy } from "lucide-react";
 
 type ProviderCapability = "chat" | "openai" | "claude";
 
@@ -130,6 +131,7 @@ export default function ProvidersPage() {
   const [providerModels, setProviderModels] = useState<ProviderModel[]>([]);
   const [filteredProviderModels, setFilteredProviderModels] = useState<ProviderModel[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
+  const [providerStatusLoadingId, setProviderStatusLoadingId] = useState<number | null>(null);
   const [structuredConfigEnabled, setStructuredConfigEnabled] = useState(false);
   const configCacheRef = useRef<Record<string, string>>({});
   const providerConfigEditorRef = useRef<ProviderConfigEditorRef | null>(null);
@@ -380,6 +382,34 @@ export default function ProvidersPage() {
     }
   };
 
+  const handleToggleProviderStatus = async (provider: Provider) => {
+    const nextStatus = !Boolean(provider.ProviderEnabled);
+    setProviderStatusLoadingId(provider.ID);
+    setProviders((prev) =>
+      prev.map((item) =>
+        item.ID === provider.ID
+          ? {
+            ...item,
+            ProviderEnabled: nextStatus,
+            EnabledProviderModelCount: nextStatus ? item.ProviderModelCount : 0,
+          }
+          : item
+      )
+    );
+    try {
+      const updated = await updateProviderStatus(provider.ID, nextStatus);
+      setProviders((prev) => prev.map((item) => item.ID === provider.ID ? updated : item));
+      toast.success(`${provider.Name} 已${nextStatus ? "启用" : "关闭"}`);
+    } catch (err) {
+      setProviders((prev) => prev.map((item) => item.ID === provider.ID ? provider : item));
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error(`切换提供商状态失败: ${message}`);
+      console.error(err);
+    } finally {
+      setProviderStatusLoadingId(null);
+    }
+  };
+
   const openEditDialog = (provider: Provider) => {
     configCacheRef.current = {};
     setEditingProvider(provider);
@@ -476,6 +506,8 @@ export default function ProvidersPage() {
                     {(() => {
                       const hasProxy = Boolean(provider.ProxyURL && provider.ProxyURL.trim() !== "");
                       const proxyStatusLabel = hasProxy ? "代理" : "直连";
+                      const providerEnabled = Boolean(provider.ProviderEnabled);
+                      const statusLoading = providerStatusLoadingId === provider.ID;
                       return (
                     <div className="mb-3 flex items-start justify-between gap-3">
                       <div className="min-w-0">
@@ -484,6 +516,20 @@ export default function ProvidersPage() {
                         </h3>
                       </div>
                       <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          title={providerEnabled ? "关闭提供商" : "启用提供商"}
+                          aria-label={providerEnabled ? "关闭提供商" : "启用提供商"}
+                          disabled={statusLoading}
+                          onClick={() => void handleToggleProviderStatus(provider)}
+                          className={`relative flex size-7 shrink-0 items-center justify-center rounded-full border shadow-sm transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/50 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60 ${
+                            providerEnabled
+                              ? "border-emerald-200 bg-emerald-50 text-emerald-600 shadow-emerald-500/10 hover:border-emerald-300 hover:bg-emerald-100 hover:text-emerald-700"
+                              : "border-border/80 bg-background/85 text-muted-foreground/45 hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-600"
+                          }`}
+                        >
+                          <Check className="size-4 stroke-[2.5]" />
+                        </button>
                         <div className={`rounded-full border px-2 py-0.5 text-[11px] font-medium ${hasProxy ? "border-sky-200 bg-sky-50 text-sky-700" : "border-slate-200 bg-slate-100 text-slate-700"}`}>
                           {proxyStatusLabel}
                         </div>

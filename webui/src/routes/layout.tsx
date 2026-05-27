@@ -44,7 +44,7 @@ const navSections = [
     title: "仪表盘",
     items: [
       { to: "/", label: "仪表板", icon: House },
-      { to: "/health-ui", label: "模型监控", icon: Activity },
+      { to: "/health-ui", label: "健康监控", icon: Activity },
     ],
   },
   {

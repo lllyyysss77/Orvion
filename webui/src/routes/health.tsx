@@ -1,14 +1,42 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import Loading from "@/components/loading";
 import { getSystemHealthDetail, getProviders, type Provider, type SystemHealth, type ProviderHealth, type ModelHealth } from "@/lib/api";
 import { toast } from "sonner";
 import { CheckCircle2, AlertCircle, XCircle, Activity, ChevronDown } from "lucide-react";
 
-const HEALTH_WINDOW_MINUTES = 1440;
 const AUTO_REFRESH_INTERVAL_MS = 10_000;
+const TIMELINE_BUCKET_COUNT = 100;
+type MonitorView = "providers" | "models";
+
+interface ModelMonitorProviderItem extends ModelHealth {
+  providerId: number;
+  providerName: string;
+}
+
+interface ModelMonitorItem {
+  name: string;
+  status: ModelHealth["status"];
+  providerCount: number;
+  totalRequests: number;
+  failedRequests: number;
+  successRate: number;
+  avgResponseTimeMs: number;
+  lastCheck: string;
+  providers: ModelMonitorProviderItem[];
+  requestBlocks: ModelHealth["requestBlocks"];
+}
+
+interface TimelineBlock {
+  success: boolean;
+  successRate: number;
+  totalRequests: number;
+  failedRequests: number;
+  timestamp: string;
+}
 
 // 状态指示器组件
 const StatusBadge = ({ status }: { status: "healthy" | "degraded" | "unhealthy" | "unknown" }) => {
@@ -112,24 +140,127 @@ const pickSuccessRateClass = (successRate: number): string => {
   return "bg-rose-500/90 text-white";
 };
 
-const mergeProviderBlocks = (models: ModelHealth[], limit: number) => {
-  const merged = models.flatMap((model) =>
-    model.requestBlocks.map((block) => ({
-      success: block.success,
-      timestamp: block.timestamp,
-    }))
-  );
-  merged.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+const mergeTimelineBlocks = (blockGroups: TimelineBlock[][], limit: number): TimelineBlock[] => {
+  if (blockGroups.length === 0) return [];
+  const maxLength = Math.max(...blockGroups.map((blocks) => blocks.length));
+  const merged: TimelineBlock[] = [];
+
+  for (let index = 0; index < maxLength; index++) {
+    const blocks = blockGroups.map((group) => group[index]).filter((block): block is TimelineBlock => Boolean(block));
+    if (blocks.length === 0) continue;
+    const totalRequests = blocks.reduce((sum, block) => sum + (block.totalRequests || 0), 0);
+    const failedRequests = blocks.reduce((sum, block) => sum + (block.failedRequests || 0), 0);
+    const successRate = totalRequests > 0 ? ((totalRequests - failedRequests) / totalRequests) * 100 : 0;
+    merged.push({
+      timestamp: blocks[0].timestamp,
+      success: totalRequests > 0 && failedRequests === 0,
+      successRate,
+      totalRequests,
+      failedRequests,
+    });
+  }
+
   if (merged.length > limit) {
     return merged.slice(-limit);
   }
   return merged;
 };
 
-const buildBlockSlots = (blocks: { success: boolean; timestamp: string }[], limit: number) => {
+const mergeProviderBlocks = (models: ModelHealth[], limit: number) => {
+  return mergeTimelineBlocks(models.map((model) => model.requestBlocks), limit);
+};
+
+const mergeModelBlocks = (providers: ModelMonitorProviderItem[], limit: number) => {
+  return mergeTimelineBlocks(providers.map((model) => model.requestBlocks), limit);
+};
+
+const buildBlockSlots = (blocks: TimelineBlock[], limit: number) => {
   if (blocks.length >= limit) return blocks;
   const padding = Array.from({ length: limit - blocks.length }, () => null);
   return [...padding, ...blocks];
+};
+
+const pickTimelineBlockClass = (block: TimelineBlock | null): string => {
+  if (!block || block.totalRequests <= 0) return "bg-muted/70";
+  if (block.successRate >= 90) return "bg-emerald-400";
+  if (block.successRate >= 60) return "bg-amber-400";
+  return "bg-rose-400";
+};
+
+const formatTimelineBlockTitle = (block: TimelineBlock) => {
+  if (block.totalRequests <= 0) {
+    return `${formatShortTime(block.timestamp)} · 无请求`;
+  }
+  return `${formatShortTime(block.timestamp)} · 成功率 ${block.successRate.toFixed(0)}% · 请求 ${block.totalRequests}`;
+};
+
+const TimelineBlockCell = ({ block }: { block: TimelineBlock | null }) => {
+  if (!block) {
+    return <div className="h-5 rounded-[3px] bg-muted/70" />;
+  }
+
+  return (
+    <Tooltip delayDuration={0}>
+      <TooltipTrigger asChild>
+        <div className={cn("h-5 rounded-[3px]", pickTimelineBlockClass(block))} />
+      </TooltipTrigger>
+      <TooltipContent side="top" sideOffset={4}>
+        {formatTimelineBlockTitle(block)}
+      </TooltipContent>
+    </Tooltip>
+  );
+};
+
+const pickWorstStatus = (items: ModelMonitorProviderItem[]): ModelHealth["status"] => {
+  if (items.some((item) => item.status === "unhealthy")) return "unhealthy";
+  if (items.some((item) => item.status === "degraded")) return "degraded";
+  if (items.some((item) => item.status === "healthy")) return "healthy";
+  return "unknown";
+};
+
+const buildModelMonitorItems = (providerList: ProviderHealth[]): ModelMonitorItem[] => {
+  const grouped = new Map<string, ModelMonitorProviderItem[]>();
+  for (const provider of providerList) {
+    for (const model of provider.models) {
+      const name = model.modelName || model.providerModel || "未命名模型";
+      const item: ModelMonitorProviderItem = {
+        ...model,
+        providerId: provider.id,
+        providerName: provider.name,
+      };
+      grouped.set(name, [...(grouped.get(name) ?? []), item]);
+    }
+  }
+
+  return Array.from(grouped.entries())
+    .map(([name, items]) => {
+      const totalRequests = items.reduce((sum, item) => sum + item.totalRequests, 0);
+      const failedRequests = items.reduce((sum, item) => sum + item.failedRequests, 0);
+      const weightedLatency = items.reduce((sum, item) => sum + item.avgResponseTimeMs * Math.max(item.totalRequests, 1), 0);
+      const latencyWeight = items.reduce((sum, item) => sum + Math.max(item.totalRequests, 1), 0);
+      const latest = items.reduce((current, item) => {
+        const currentTime = new Date(current).getTime();
+        const nextTime = new Date(item.lastCheck).getTime();
+        if (Number.isNaN(currentTime)) return item.lastCheck;
+        if (Number.isNaN(nextTime)) return current;
+        return nextTime > currentTime ? item.lastCheck : current;
+      }, "");
+      const requestBlocks = mergeModelBlocks(items, TIMELINE_BUCKET_COUNT);
+
+      return {
+        name,
+        status: pickWorstStatus(items),
+        providerCount: new Set(items.map((item) => item.providerId)).size,
+        totalRequests,
+        failedRequests,
+        successRate: totalRequests > 0 ? ((totalRequests - failedRequests) / totalRequests) * 100 : 0,
+        avgResponseTimeMs: latencyWeight > 0 ? weightedLatency / latencyWeight : 0,
+        lastCheck: latest,
+        providers: items.sort((a, b) => a.providerName.localeCompare(b.providerName)),
+        requestBlocks,
+      } satisfies ModelMonitorItem;
+    })
+    .sort((a, b) => b.totalRequests - a.totalRequests || a.name.localeCompare(b.name));
 };
 
 const HealthProviderRow = ({
@@ -142,8 +273,8 @@ const HealthProviderRow = ({
   onToggle: () => void;
 }) => {
   const successRate = calcProviderSuccessRate(provider);
-  const blocks = mergeProviderBlocks(provider.models, 80);
-  const slots = buildBlockSlots(blocks, 80);
+  const blocks = mergeProviderBlocks(provider.models, TIMELINE_BUCKET_COUNT);
+  const slots = buildBlockSlots(blocks, TIMELINE_BUCKET_COUNT);
   const startTime = blocks.length > 0 ? formatShortTime(blocks[0].timestamp) : "-";
   const endTime = blocks.length > 0 ? formatShortTime(blocks[blocks.length - 1].timestamp) : "-";
   const rateClass = pickSuccessRateClass(successRate);
@@ -176,19 +307,10 @@ const HealthProviderRow = ({
           </div>
         </div>
         <div className="flex-1 min-w-0">
-          <div className="grid gap-[2px]" style={{ gridTemplateColumns: `repeat(80, minmax(0, 1fr))` }}>
-            {slots.map((block, idx) => {
-              if (!block) {
-                return <div key={idx} className="h-3.5 rounded-[3px] bg-muted/70" />;
-              }
-              return (
-                <div
-                  key={idx}
-                  className={cn("h-3.5 rounded-[3px]", block.success ? "bg-emerald-400" : "bg-rose-400")}
-                  title={`${formatShortTime(block.timestamp)} · ${block.success ? "成功" : "失败"}`}
-                />
-              );
-            })}
+          <div className="grid gap-[2px]" style={{ gridTemplateColumns: `repeat(${TIMELINE_BUCKET_COUNT}, minmax(0, 1fr))` }}>
+            {slots.map((block, idx) => (
+              <TimelineBlockCell key={idx} block={block} />
+            ))}
           </div>
           <div className="mt-2 flex items-center justify-between text-[10px] text-muted-foreground">
             <span>{startTime}</span>
@@ -250,18 +372,105 @@ const HealthProviderRow = ({
   );
 };
 
+const HealthModelRow = ({
+  model,
+  expanded,
+  onToggle,
+}: {
+  model: ModelMonitorItem;
+  expanded: boolean;
+  onToggle: () => void;
+}) => {
+  const slots = buildBlockSlots(model.requestBlocks, TIMELINE_BUCKET_COUNT);
+  const startTime = model.requestBlocks.length > 0 ? formatShortTime(model.requestBlocks[0].timestamp) : "-";
+  const endTime = model.requestBlocks.length > 0 ? formatShortTime(model.requestBlocks[model.requestBlocks.length - 1].timestamp) : "-";
+  const rateClass = pickSuccessRateClass(model.successRate);
+
+  return (
+    <div
+      className="cursor-pointer rounded-2xl border border-border/60 bg-card/70 px-4 py-2.5 transition-colors hover:bg-card"
+      role="button"
+      tabIndex={0}
+      aria-expanded={expanded}
+      onClick={onToggle}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onToggle();
+        }
+      }}
+    >
+      <div className="flex flex-col gap-2.5 lg:flex-row lg:items-start">
+        <div className="w-full lg:w-56 shrink-0">
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <div className="truncate text-sm font-semibold">{model.name}</div>
+            </div>
+            <span className={cn("w-12 shrink-0 rounded-full px-2.5 py-1 text-center text-xs font-semibold", rateClass)}>
+              {model.successRate.toFixed(0)}%
+            </span>
+          </div>
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="grid gap-[2px]" style={{ gridTemplateColumns: `repeat(${TIMELINE_BUCKET_COUNT}, minmax(0, 1fr))` }}>
+            {slots.map((block, idx) => (
+              <TimelineBlockCell key={idx} block={block} />
+            ))}
+          </div>
+          <div className="mt-2 flex items-center justify-between text-[10px] text-muted-foreground">
+            <span>{startTime}</span>
+            <span>{endTime}</span>
+          </div>
+        </div>
+      </div>
+      {expanded ? (
+        <div className="mt-3 grid gap-2 border-t border-border/50 pt-3 md:grid-cols-2 xl:grid-cols-3" onClick={(event) => event.stopPropagation()}>
+          {model.providers.map((item) => {
+            const itemRate = typeof item.successRate === "number" ? item.successRate : 0;
+            return (
+              <div
+                key={`${item.providerId}-${item.modelName}-${item.providerModel}`}
+                className="rounded-xl border border-border/60 bg-background/70 px-3 py-2"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="truncate text-xs font-semibold">{item.providerName}</div>
+                    <div className="truncate text-[11px] text-muted-foreground">{item.providerModel || "-"}</div>
+                  </div>
+                  <span className={cn("rounded-full px-2 py-1 text-[11px] font-semibold", pickSuccessRateClass(itemRate))}>
+                    {itemRate.toFixed(0)}%
+                  </span>
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+                  <span>请求 {item.totalRequests.toLocaleString()}</span>
+                  <span>均值 {formatResponseTime(item.avgResponseTimeMs)}</span>
+                  {item.autoDisabledUntil ? (
+                    <span className="font-semibold text-amber-700">{formatAutoDisabledUntil(item.autoDisabledUntil)}</span>
+                  ) : null}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
+};
+
 export default function HealthPage() {
   const [loading, setLoading] = useState(true);
   const [health, setHealth] = useState<SystemHealth | null>(null);
+  const [monitorView, setMonitorView] = useState<MonitorView>("providers");
   const [providerConsoleMap, setProviderConsoleMap] = useState<Record<number, string>>({});
   const [consoleLatencyMap, setConsoleLatencyMap] = useState<Record<number, ConsoleLatencyState>>({});
   const [expandedProviders, setExpandedProviders] = useState<Record<number, boolean>>({});
+  const [expandedModels, setExpandedModels] = useState<Record<string, boolean>>({});
   const consoleLatencyRef = useRef<Record<number, ConsoleLatencyState>>({});
   const inFlightControllersRef = useRef<AbortController[]>([]);
 
   const fetchHealth = useCallback(async (showErrorToast: boolean) => {
     try {
-      const data = await getSystemHealthDetail(HEALTH_WINDOW_MINUTES);
+      const data = await getSystemHealthDetail();
       setHealth(data);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -296,6 +505,10 @@ export default function HealthPage() {
 
   const toggleProviderExpanded = useCallback((providerId: number) => {
     setExpandedProviders((prev) => ({ ...prev, [providerId]: !prev[providerId] }));
+  }, []);
+
+  const toggleModelExpanded = useCallback((modelName: string) => {
+    setExpandedModels((prev) => ({ ...prev, [modelName]: !prev[modelName] }));
   }, []);
 
   useEffect(() => {
@@ -408,6 +621,11 @@ export default function HealthPage() {
     void checkConsoleLatencies(health.components.providers.details);
   }, [health, providerConsoleMap, checkConsoleLatencies]);
 
+  const modelMonitorItems = useMemo(
+    () => (health ? buildModelMonitorItems(health.components.providers.details) : []),
+    [health]
+  );
+
   if (loading || !health) {
     return (
       <div className="flex h-full items-center justify-center">
@@ -422,35 +640,75 @@ export default function HealthPage() {
   return (
     <div className="h-full min-h-0 flex flex-col gap-4 p-1">
       {/* 页面头部 */}
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-2xl font-bold tracking-tight flex items-center gap-2">
             <Activity className="size-6" />
             健康监控
           </h2>
         </div>
+        <div className="rounded-2xl border border-border/60 bg-card/80 p-1 shadow-sm">
+          <div className="grid grid-cols-2 gap-1">
+            <Button
+              type="button"
+              size="sm"
+              variant={monitorView === "providers" ? "default" : "ghost"}
+              className="h-8 px-3 text-xs"
+              onClick={() => setMonitorView("providers")}
+            >
+              提供商监控
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant={monitorView === "models" ? "default" : "ghost"}
+              className="h-8 px-3 text-xs"
+              onClick={() => setMonitorView("models")}
+            >
+              模型监控
+            </Button>
+          </div>
+        </div>
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto space-y-4">
-        {/* Provider 状态详情（平铺条形时间线） */}
-        <div className="space-y-3">
-          {providers.details.length > 0 ? (
-            <div className="space-y-3">
-              {providers.details.map((provider) => (
-                <HealthProviderRow
-                  key={provider.id}
-                  provider={provider}
-                  expanded={Boolean(expandedProviders[provider.id])}
-                  onToggle={() => toggleProviderExpanded(provider.id)}
+        {monitorView === "providers" ? (
+          <div className="space-y-3">
+            {providers.details.length > 0 ? (
+              <div className="space-y-3">
+                {providers.details.map((provider) => (
+                  <HealthProviderRow
+                    key={provider.id}
+                    provider={provider}
+                    expanded={Boolean(expandedProviders[provider.id])}
+                    onToggle={() => toggleProviderExpanded(provider.id)}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="rounded-2xl border border-border/60 bg-card/70 py-12 text-center text-muted-foreground">
+                暂无提供商数据
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {modelMonitorItems.length > 0 ? (
+              modelMonitorItems.map((model) => (
+                <HealthModelRow
+                  key={model.name}
+                  model={model}
+                  expanded={Boolean(expandedModels[model.name])}
+                  onToggle={() => toggleModelExpanded(model.name)}
                 />
-              ))}
-            </div>
-          ) : (
-            <div className="rounded-2xl border border-border/60 bg-card/70 py-12 text-center text-muted-foreground">
-              暂无提供商数据
-            </div>
-          )}
-        </div>
+              ))
+            ) : (
+              <div className="rounded-2xl border border-border/60 bg-card/70 py-12 text-center text-muted-foreground">
+                暂无模型健康数据
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

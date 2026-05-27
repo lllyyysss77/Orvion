@@ -3,7 +3,6 @@ package handler
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +18,7 @@ import (
 
 type AuthKeyRequest struct {
 	Name      string   `json:"name" binding:"required"`
+	Key       string   `json:"key"`
 	Status    *bool    `json:"status"`
 	AllowAll  *bool    `json:"allow_all"`
 	Models    []string `json:"models"`
@@ -132,9 +132,18 @@ func CreateAuthKey(c *gin.Context) {
 		return
 	}
 
-	key, err := pkg.GenerateRandomCharsKey(36)
+	ctx := c.Request.Context()
+
+	key, err := buildAuthKeyValue(req.Key)
 	if err != nil {
-		common.InternalServerError(c, "Failed to generate key: "+err.Error())
+		common.BadRequest(c, err.Error())
+		return
+	}
+	if count, err := gorm.G[models.AuthKey](models.DB).Where("key = ?", key).Count(ctx, "id"); err != nil {
+		common.InternalServerError(c, "Failed to check auth key: "+err.Error())
+		return
+	} else if count > 0 {
+		common.BadRequest(c, "API Key 已存在")
 		return
 	}
 	var expiresAt *time.Time
@@ -147,11 +156,9 @@ func CreateAuthKey(c *gin.Context) {
 		expiresAt = &parsedExpiresAt
 	}
 
-	ctx := c.Request.Context()
-
 	authKey := models.AuthKey{
 		Name:      req.Name,
-		Key:       fmt.Sprintf("%s%s", consts.KeyPrefix, key),
+		Key:       key,
 		Status:    boolPtrToInt(req.Status, 1),   // 默认启用
 		AllowAll:  boolPtrToInt(req.AllowAll, 0), // 默认不允许所有模型
 		Models:    sanitizeModelsToString(req.Models),
@@ -338,6 +345,29 @@ func validateAuthKeyRequest(req AuthKeyRequest) error {
 		return errors.New("RPM 限制必须大于等于 0")
 	}
 	return nil
+}
+
+func buildAuthKeyValue(customSuffix string) (string, error) {
+	suffix := strings.TrimSpace(customSuffix)
+	if suffix == "" {
+		randomKey, err := pkg.GenerateRandomCharsKey(36)
+		if err != nil {
+			return "", errors.New("Failed to generate key: " + err.Error())
+		}
+		return consts.KeyPrefix + randomKey, nil
+	}
+
+	suffix = strings.TrimPrefix(suffix, "sk-")
+	if strings.TrimSpace(suffix) == "" {
+		return "", errors.New("自定义令牌后缀不能为空")
+	}
+	if strings.ContainsAny(suffix, " \t\r\n") {
+		return "", errors.New("自定义令牌后缀不能包含空白字符")
+	}
+	if len(suffix) > 128 {
+		return "", errors.New("自定义令牌后缀不能超过 128 个字符")
+	}
+	return "sk-" + suffix, nil
 }
 
 func intPtrWithDefault(v *int, defaultValue int) int {

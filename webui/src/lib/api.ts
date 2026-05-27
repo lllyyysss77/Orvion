@@ -13,6 +13,9 @@ export interface Provider {
   Capabilities?: string[] | null;
   InterfaceConversionEnabled?: number | boolean | null;
   InterfaceConversionTarget?: "chat" | "responses" | "messages" | string | null;
+  ProviderEnabled?: boolean;
+  ProviderModelCount?: number;
+  EnabledProviderModelCount?: number;
 }
 
 export interface Model {
@@ -334,6 +337,13 @@ export async function updateProvider(id: number, provider: {
   return apiRequest<Provider>(`/providers/${id}`, {
     method: 'PUT',
     body: JSON.stringify(provider),
+  });
+}
+
+export async function updateProviderStatus(id: number, status: boolean): Promise<Provider> {
+  return apiRequest<Provider>(`/providers/${id}/status`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status }),
   });
 }
 
@@ -1152,6 +1162,9 @@ export interface ComponentStatus {
 // 请求块状态（每个块代表一次请求）
 export interface ModelHealthRequestBlock {
   success: boolean; // 请求是否成功
+  successRate: number; // 当前时间段成功率，0-100
+  totalRequests: number; // 当前时间段请求数
+  failedRequests: number; // 当前时间段失败数
   timestamp: string; // 请求时间（ISO 8601）
 }
 
