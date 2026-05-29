@@ -59,10 +59,7 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, requestP
 
 	// 设置请求超时
 	responseHeaderTimeout := time.Second * time.Duration(providersWithMeta.TimeOut)
-	// 流式超时时间缩短
-	if before.Stream {
-		responseHeaderTimeout = responseHeaderTimeout / 3
-	}
+	// 流式请求同样可能在上游排队或等待首个 token，不能缩短响应头等待时间。
 
 	authKeyID, _ := ctx.Value(consts.ContextKeyAuthKeyID).(uint)
 	authKeyRPMLimit, _ := ctx.Value(consts.ContextKeyAuthKeyRPMLimit).(int)

@@ -303,12 +303,12 @@ func SendModelProviderAutoDisableAlert(ctx context.Context, event ModelProviderA
 		lines = append(lines, fmt.Sprintf("提供商：%s", providerText))
 	}
 	lines = append(lines,
-		fmt.Sprintf("触发原因：%d 次连续错误", event.Threshold),
+		fmt.Sprintf("触发原因：检测窗口内错误达到 %d 次", event.Threshold),
 		fmt.Sprintf("检测窗口：%s", event.Window.String()),
 		fmt.Sprintf("恢复时间：%s", event.ResumeAt.Format("2006-01-02 15:04:05")),
 	)
 
-	return notifier.sendText(strings.Join(lines, "\n"))
+	return sendTelegramCaptionWithStatusImage(ctx, notifier, notifier.chatID, strings.Join(lines, "\n"))
 }
 
 func loadModelProviderAutoDisableAlertDetail(ctx context.Context, modelWithProviderID uint) modelProviderAutoDisableAlertDetail {
@@ -345,20 +345,6 @@ func (n *telegramNotifier) sendTextWithMarkupToChat(chatID string, content strin
 		return err
 	}
 	slog.Info("已发送 TG 文本消息", "chat_id", strings.TrimSpace(chatID), "text_bytes", len(content))
-	return nil
-}
-
-func (n *telegramNotifier) sendPhotoWithCaptionToChat(chatID string, photoURL string, caption string) error {
-	payload := telegramSendPhotoRequest{
-		ChatID:  strings.TrimSpace(chatID),
-		Photo:   strings.TrimSpace(photoURL),
-		Caption: strings.TrimSpace(caption),
-	}
-	if err := n.postTelegramMethod(context.Background(), "sendPhoto", payload); err != nil {
-		slog.Warn("发送 TG 图片消息失败", "chat_id", payload.ChatID, "photo_url", payload.Photo, "caption_bytes", len(payload.Caption), "error", err)
-		return err
-	}
-	slog.Info("已发送 TG 图片消息", "chat_id", payload.ChatID, "photo_url", payload.Photo, "caption_bytes", len(payload.Caption))
 	return nil
 }
 

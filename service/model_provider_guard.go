@@ -13,7 +13,7 @@ import (
 
 const (
 	modelProviderAutoDisableThreshold = 10
-	modelProviderAutoDisableWindow    = time.Minute
+	modelProviderAutoDisableWindow    = 30 * time.Second
 	modelProviderAutoRecoverAfter     = 5 * time.Minute
 	modelProviderAutoRecoverInterval  = 30 * time.Second
 	modelProviderAutoDisableWorkers   = 4
@@ -144,29 +144,22 @@ func TriggerModelProviderAutoDisableIfNeeded(ctx context.Context, modelWithProvi
 	if union.SQL == "" {
 		return nil
 	}
-	logs := make([]models.ChatLog, 0, modelProviderAutoDisableThreshold)
+	var errorCount int64
 	if err := models.DB.WithContext(ctx).Raw(
-		`SELECT *
+		`SELECT COUNT(1)
 		   FROM (`+union.SQL+`) AS logs
 		  WHERE model_with_provider_id = ?
 		    AND created_at >= ?
-		  ORDER BY created_at DESC
-		  LIMIT ?`,
+		    AND status = ?`,
 		modelWithProviderID,
 		windowStart,
-		modelProviderAutoDisableThreshold,
-	).Scan(&logs).Error; err != nil {
+		"error",
+	).Scan(&errorCount).Error; err != nil {
 		return err
 	}
 
-	if len(logs) < modelProviderAutoDisableThreshold {
+	if errorCount < modelProviderAutoDisableThreshold {
 		return nil
-	}
-
-	for _, log := range logs {
-		if log.Status != "error" {
-			return nil
-		}
 	}
 
 	resumeAt := now.Add(modelProviderAutoRecoverAfter)
@@ -183,10 +176,11 @@ func TriggerModelProviderAutoDisableIfNeeded(ctx context.Context, modelWithProvi
 	}
 
 	if result.RowsAffected > 0 {
-		slog.Warn("模型关联提供商因连续错误被自动关闭",
+		slog.Warn("模型关联提供商因短时间错误过多被自动关闭",
 			"model_with_provider_id", modelWithProviderID,
 			"resume_at", resumeAt.Format(time.RFC3339),
 			"threshold", modelProviderAutoDisableThreshold,
+			"error_count", errorCount,
 			"window_seconds", int(modelProviderAutoDisableWindow/time.Second),
 		)
 		pkg.GoSafe("service.model_provider_auto_disable_alert", func() {

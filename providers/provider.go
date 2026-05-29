@@ -116,7 +116,3 @@ func NewForStyle(preferredStyle, providerConfig string) (Provider, error) {
 func NewWithProxy(providerConfig, proxyURL string) (Provider, error) {
 	return NewForStyleWithProxy("", providerConfig, proxyURL)
 }
-
-func New(providerConfig string) (Provider, error) {
-	return NewForStyle("", providerConfig)
-}

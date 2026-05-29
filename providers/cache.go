@@ -32,15 +32,6 @@ var dialer = &net.Dialer{
 	KeepAlive: 30 * time.Second,
 }
 
-func GetClient(responseHeaderTimeout time.Duration) *http.Client {
-	client, err := GetClientWithProxy(responseHeaderTimeout, "")
-	if err != nil {
-		// 空代理地址理论上不会失败，这里保底回退到直连默认客户端。
-		return &http.Client{Timeout: 0}
-	}
-	return client
-}
-
 // GetClientWithProxy 返回按 timeout + proxyURL 缓存复用的客户端。
 // proxyURL 为空时直连（不走环境变量代理）。
 func GetClientWithProxy(responseHeaderTimeout time.Duration, proxyURL string) (*http.Client, error) {

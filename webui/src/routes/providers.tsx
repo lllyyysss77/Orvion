@@ -53,7 +53,7 @@ import {
 import type { Provider, ProviderTemplate, ProviderModel } from "@/lib/api";
 import { openExternalUrl } from "@/lib/utils";
 import { toast } from "sonner";
-import { Check, ExternalLink, Pencil, Trash2, Boxes, Plus, Copy } from "lucide-react";
+import { Shield, ExternalLink, Pencil, Trash2, Boxes, Plus, Copy } from "lucide-react";
 
 type ProviderCapability = "chat" | "openai" | "claude";
 
@@ -157,6 +157,7 @@ export default function ProvidersPage() {
   const getFetchModeBadgeLabel = (mode?: string) => (
     mode === "api_pricing" ? "newapi" : "通用"
   );
+  const formatProviderCardName = (name: string) => Array.from(name).slice(0, 10).join("");
   const selectedCapabilities = form.watch("capabilities");
   const conversionEnabled = form.watch("interface_conversion_enabled");
   const conversionTarget = form.watch("interface_conversion_target");
@@ -383,7 +384,7 @@ export default function ProvidersPage() {
   };
 
   const handleToggleProviderStatus = async (provider: Provider) => {
-    const nextStatus = !Boolean(provider.ProviderEnabled);
+    const nextStatus = !provider.ProviderEnabled;
     setProviderStatusLoadingId(provider.ID);
     setProviders((prev) =>
       prev.map((item) =>
@@ -512,7 +513,7 @@ export default function ProvidersPage() {
                     <div className="mb-3 flex items-start justify-between gap-3">
                       <div className="min-w-0">
                         <h3 className="truncate text-sm font-semibold text-foreground" title={provider.Name}>
-                          {provider.Name}
+                          {formatProviderCardName(provider.Name)}
                         </h3>
                       </div>
                       <div className="flex items-center gap-1">
@@ -528,7 +529,7 @@ export default function ProvidersPage() {
                               : "border-border/80 bg-background/85 text-muted-foreground/45 hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-600"
                           }`}
                         >
-                          <Check className="size-4 stroke-[2.5]" />
+                          <Shield className="size-4 stroke-[2.3]" />
                         </button>
                         <div className={`rounded-full border px-2 py-0.5 text-[11px] font-medium ${hasProxy ? "border-sky-200 bg-sky-50 text-sky-700" : "border-slate-200 bg-slate-100 text-slate-700"}`}>
                           {proxyStatusLabel}

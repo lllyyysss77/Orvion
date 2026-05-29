@@ -158,14 +158,6 @@ export interface SystemConfig {
   min_weight: number;
 }
 
-export interface SystemStatus {
-  total_providers: number;
-  total_models: number;
-  active_requests: number;
-  uptime: string;
-  version: string;
-}
-
 export interface DatabaseTableInfo {
   name: string;
   kind: string;
@@ -215,33 +207,6 @@ async function apiRequest<T>(endpoint: string, options: RequestInit = {}): Promi
       ...options.headers,
     },
     ...options,
-  });
-
-  if (response.status === 401) {
-    clearStoredAuthTokenAndRedirect();
-  }
-
-  if (!response.ok) {
-    throw new Error(`API request failed: ${response.status} ${response.statusText}`);
-  }
-
-  const data = await response.json();
-  if (data.code !== 200) {
-    throw new Error(`${data.message}`);
-  }
-  return data.data as T;
-}
-
-async function apiRequestFormData<T>(endpoint: string, formData: FormData): Promise<T> {
-  const url = `${API_BASE}${endpoint}`;
-  const token = getStoredAuthToken();
-
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
-    },
-    body: formData,
   });
 
   if (response.status === 401) {
@@ -468,13 +433,6 @@ export async function getAuthKeys(params: {
   };
 }
 
-export async function getAuthKeyById(id: number): Promise<AuthKey | null> {
-  if (!Number.isFinite(id) || id <= 0) return null;
-  const res = await getAuthKeys({ id, page: 1, page_size: 1 });
-  const exact = (res.data ?? []).find((item) => item.ID === id);
-  return exact ?? null;
-}
-
 export interface AuthKeyItem {
   id: number;
   name: string;
@@ -519,42 +477,6 @@ export async function getModelProviders(modelId: number): Promise<ModelWithProvi
   return (res ?? []).map(normalizeModelWithProvider);
 }
 
-export async function testModelChat(
-  modelProviderId: number,
-  prompt: string,
-  endpoint: string,
-  extra?: {
-    imageUrl?: string;
-    maskUrl?: string;
-    size?: string;
-  }
-): Promise<{ content: string }> {
-  const payload: Record<string, unknown> = { prompt, endpoint };
-  if (extra?.imageUrl) payload.image_url = extra.imageUrl;
-  if (extra?.maskUrl) payload.mask_url = extra.maskUrl;
-  if (extra?.size) payload.size = extra.size;
-  return apiRequest<{ content: string }>(`/test/chat/${modelProviderId}`, {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-}
-
-export async function testModelChatWithFiles(
-  modelProviderId: number,
-  formData: FormData
-): Promise<{ content: string }> {
-  return apiRequestFormData<{ content: string }>(`/test/chat/${modelProviderId}`, formData);
-}
-
-export async function getModelProviderStatus(providerId: number, modelName: string, providerModel: string): Promise<boolean[]> {
-  const params = new URLSearchParams({
-    provider_id: providerId.toString(),
-    model_name: modelName,
-    provider_model: providerModel
-  });
-  return apiRequest<boolean[]>(`/model-providers/status?${params.toString()}`);
-}
-
 export async function createModelProvider(association: {
   model_id: number;
   provider_name: string;
@@ -597,11 +519,6 @@ export async function deleteModelProvider(id: number): Promise<void> {
   await apiRequest<void>(`/model-providers/${id}`, {
     method: 'DELETE',
   });
-}
-
-// System API functions
-export async function getSystemStatus(): Promise<SystemStatus> {
-  return apiRequest<SystemStatus>('/status');
 }
 
 export async function getDatabaseTables(): Promise<DatabaseTableListResponse> {
@@ -652,12 +569,6 @@ export async function getImageCacheBlob(id: number): Promise<Blob> {
   return response.blob();
 }
 
-// Metrics API functions
-export interface MetricsData {
-  reqs: number;
-  tokens: number;
-}
-
 export interface MetricsSummary {
   totalReqs: number;
   successRate: number;
@@ -675,30 +586,8 @@ export interface MetricsSummary {
   totalFailureReqs: number;
 }
 
-export interface ModelCount {
-  model: string;
-  calls: number;
-}
-
-export interface ProjectCount {
-  project: string;
-  calls: number;
-}
-
-export async function getMetrics(days: number): Promise<MetricsData> {
-  return apiRequest<MetricsData>(`/metrics/use/${days}`);
-}
-
 export async function getMetricsSummary(): Promise<MetricsSummary> {
   return apiRequest<MetricsSummary>('/metrics/summary');
-}
-
-export async function getModelCounts(): Promise<ModelCount[]> {
-  return apiRequest<ModelCount[]>('/metrics/counts');
-}
-
-export async function getProjectCounts(): Promise<ProjectCount[]> {
-  return apiRequest<ProjectCount[]>('/metrics/projects');
 }
 
 // Test API functions
@@ -746,14 +635,6 @@ const providerModelsCache = new Map<number, { expiresAt: number; data: ProviderM
 const cloneProviderModels = (models: ProviderModel[]): ProviderModel[] => (
   models.map((item) => ({ ...item }))
 );
-
-export function clearProviderModelsCache(providerId?: number): void {
-  if (typeof providerId === "number") {
-    providerModelsCache.delete(providerId);
-    return;
-  }
-  providerModelsCache.clear();
-}
 
 export async function getProviderModels(
   providerId: number,
@@ -996,10 +877,6 @@ export interface DailyModelCostSummary {
   series: DailyModelCostSeries[];
 }
 
-export async function getUserAgents(): Promise<string[]> {
-  return apiRequest<string[]>('/user-agents');
-}
-
 export async function getLogs(
   page: number = 1,
   pageSize: number = 10,
@@ -1147,11 +1024,6 @@ export async function cleanLogs(params: {
   });
 }
 
-// Test API functions
-export async function testCountTokens(): Promise<void> {
-  return apiRequest<void>('/test/count_tokens');
-}
-
 // 健康检查 API（不需要认证，直接访问根路径）
 export interface ComponentStatus {
   status: "healthy" | "degraded" | "unhealthy";
@@ -1220,14 +1092,6 @@ export async function getSystemHealthDetail(timeWindowMinutes?: number): Promise
     throw new Error(`健康检查失败: ${response.status}`);
   }
   return response.json();
-}
-
-export async function getPrometheusMetrics(): Promise<string> {
-  const response = await fetch("/api/metrics");
-  if (!response.ok) {
-    throw new Error(`获取指标失败: ${response.status}`);
-  }
-  return response.text();
 }
 
 export interface VersionReleaseInfo {

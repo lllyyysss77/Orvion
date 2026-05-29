@@ -976,7 +976,3 @@ export function ModelProvidersPanel({ embedded = false, fixedModel = null }: Mod
     </div>
   );
 }
-
-export default function ModelProvidersPage() {
-  return <ModelProvidersPanel />;
-}
