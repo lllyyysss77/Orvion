@@ -150,7 +150,7 @@ const mergeTimelineBlocks = (blockGroups: TimelineBlock[][], limit: number): Tim
     if (blocks.length === 0) continue;
     const totalRequests = blocks.reduce((sum, block) => sum + (block.totalRequests || 0), 0);
     const failedRequests = blocks.reduce((sum, block) => sum + (block.failedRequests || 0), 0);
-    const successRate = totalRequests > 0 ? ((totalRequests - failedRequests) / totalRequests) * 100 : 0;
+    const successRate = totalRequests > 0 ? ((totalRequests - failedRequests) / totalRequests) * 100 : 100;
     merged.push({
       timestamp: blocks[0].timestamp,
       success: totalRequests > 0 && failedRequests === 0,
@@ -236,6 +236,7 @@ const buildModelMonitorItems = (providerList: ProviderHealth[]): ModelMonitorIte
     .map(([name, items]) => {
       const totalRequests = items.reduce((sum, item) => sum + item.totalRequests, 0);
       const failedRequests = items.reduce((sum, item) => sum + item.failedRequests, 0);
+      const visibleProviders = items.filter((item) => item.totalRequests > 0);
       const weightedLatency = items.reduce((sum, item) => sum + item.avgResponseTimeMs * Math.max(item.totalRequests, 1), 0);
       const latencyWeight = items.reduce((sum, item) => sum + Math.max(item.totalRequests, 1), 0);
       const latest = items.reduce((current, item) => {
@@ -250,13 +251,13 @@ const buildModelMonitorItems = (providerList: ProviderHealth[]): ModelMonitorIte
       return {
         name,
         status: pickWorstStatus(items),
-        providerCount: new Set(items.map((item) => item.providerId)).size,
+        providerCount: new Set(visibleProviders.map((item) => item.providerId)).size,
         totalRequests,
         failedRequests,
-        successRate: totalRequests > 0 ? ((totalRequests - failedRequests) / totalRequests) * 100 : 0,
+        successRate: totalRequests > 0 ? ((totalRequests - failedRequests) / totalRequests) * 100 : 100,
         avgResponseTimeMs: latencyWeight > 0 ? weightedLatency / latencyWeight : 0,
         lastCheck: latest,
-        providers: items.sort((a, b) => a.providerName.localeCompare(b.providerName)),
+        providers: visibleProviders.sort((a, b) => a.providerName.localeCompare(b.providerName)),
         requestBlocks,
       } satisfies ModelMonitorItem;
     })
@@ -425,32 +426,38 @@ const HealthModelRow = ({
       </div>
       {expanded ? (
         <div className="mt-3 grid gap-2 border-t border-border/50 pt-3 md:grid-cols-2 xl:grid-cols-3" onClick={(event) => event.stopPropagation()}>
-          {model.providers.map((item) => {
-            const itemRate = typeof item.successRate === "number" ? item.successRate : 0;
-            return (
-              <div
-                key={`${item.providerId}-${item.modelName}-${item.providerModel}`}
-                className="rounded-xl border border-border/60 bg-background/70 px-3 py-2"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="truncate text-xs font-semibold">{item.providerName}</div>
-                    <div className="truncate text-[11px] text-muted-foreground">{item.providerModel || "-"}</div>
+          {model.providers.length > 0 ? (
+            model.providers.map((item) => {
+              const itemRate = item.totalRequests > 0 && typeof item.successRate === "number" ? item.successRate : 100;
+              return (
+                <div
+                  key={`${item.providerId}-${item.modelName}-${item.providerModel}`}
+                  className="rounded-xl border border-border/60 bg-background/70 px-3 py-2"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="truncate text-xs font-semibold">{item.providerName}</div>
+                      <div className="truncate text-[11px] text-muted-foreground">{item.providerModel || "-"}</div>
+                    </div>
+                    <span className={cn("rounded-full px-2 py-1 text-[11px] font-semibold", pickSuccessRateClass(itemRate))}>
+                      {itemRate.toFixed(0)}%
+                    </span>
                   </div>
-                  <span className={cn("rounded-full px-2 py-1 text-[11px] font-semibold", pickSuccessRateClass(itemRate))}>
-                    {itemRate.toFixed(0)}%
-                  </span>
+                  <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+                    <span>请求 {item.totalRequests.toLocaleString()}</span>
+                    <span>均值 {formatResponseTime(item.avgResponseTimeMs)}</span>
+                    {item.autoDisabledUntil ? (
+                      <span className="font-semibold text-amber-700">{formatAutoDisabledUntil(item.autoDisabledUntil)}</span>
+                    ) : null}
+                  </div>
                 </div>
-                <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
-                  <span>请求 {item.totalRequests.toLocaleString()}</span>
-                  <span>均值 {formatResponseTime(item.avgResponseTimeMs)}</span>
-                  {item.autoDisabledUntil ? (
-                    <span className="font-semibold text-amber-700">{formatAutoDisabledUntil(item.autoDisabledUntil)}</span>
-                  ) : null}
-                </div>
-              </div>
-            );
-          })}
+              );
+            })
+          ) : (
+            <div className="rounded-xl border border-dashed border-border/60 bg-muted/20 px-3 py-4 text-center text-xs text-muted-foreground md:col-span-2 xl:col-span-3">
+              暂无有请求的提供商
+            </div>
+          )}
         </div>
       ) : null}
     </div>

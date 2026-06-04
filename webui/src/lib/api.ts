@@ -31,6 +31,7 @@ export interface Model {
   Breaker?: number | null;
   // 后端当前返回为 0/1（对应 models.status）
   Status?: number | null;
+  FallbackModelID?: number | null;
   Capabilities?: string[] | null;
   InputPrice?: number | null;
   OutputPrice?: number | null;
@@ -352,6 +353,7 @@ export async function createModel(model: {
   io_log: boolean;
   strategy: string;
   breaker: boolean;
+  fallback_model_id?: number | null;
   capabilities: string[];
   input_price?: number | null;
   output_price?: number | null;
@@ -372,6 +374,7 @@ export async function updateModel(id: number, model: {
   io_log?: boolean;
   strategy?: string;
   breaker?: boolean;
+  fallback_model_id?: number | null;
   capabilities?: string[];
   input_price?: number | null;
   output_price?: number | null;
@@ -682,6 +685,17 @@ export interface TelegramBreakerAlertConfig {
   api_base: string;
   proxy_url: string;
   status_image_url: string;
+}
+
+export interface TelegramAgentConfig {
+  enabled?: boolean;
+  model: string;
+  system_prompt: string;
+  max_history_messages: number;
+  max_tokens: number;
+  temperature?: number;
+  edit_interval_ms: number;
+  tool_confirmation_required?: boolean;
 }
 
 export interface ModelPriceSyncConfig {

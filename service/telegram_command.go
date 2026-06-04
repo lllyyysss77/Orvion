@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/racio/orvion/agent"
 	"github.com/racio/orvion/consts"
 	"github.com/racio/orvion/models"
 	"github.com/racio/orvion/pkg"
@@ -269,6 +270,13 @@ func telegramCommandLoop(ctx context.Context) {
 			}
 			if err := handleTelegramModelCommand(ctx, notifier, *update.Message, allowedChat); err != nil {
 				slog.Warn("处理 TG /model 命令失败", "error", err)
+			}
+			handledAgent, agentErr := handleTelegramAgentMessage(ctx, notifier, *update.Message, allowedChat)
+			if agentErr != nil {
+				slog.Warn("处理 TG Agent 消息失败", "error", agentErr)
+			}
+			if handledAgent {
+				continue
 			}
 			reply, shouldReply := buildTelegramCommandReply(ctx, *update.Message, allowedChat)
 			if !shouldReply || strings.TrimSpace(reply) == "" {
@@ -589,10 +597,24 @@ func buildTelegramCommandReply(ctx context.Context, message telegramMessage, all
 	case "/model", "/models":
 		return "", false
 	default:
-		if strings.Contains(normalized, "状态") {
+		if isTelegramSystemStatusText(normalized) {
 			return buildTelegramSystemStatusMessage(ctx), true
 		}
-		return buildTelegramHelpMessage(), true
+		if strings.HasPrefix(normalized, "/") {
+			return buildTelegramHelpMessage(), true
+		}
+		return "", false
+	}
+}
+
+func isTelegramSystemStatusText(raw string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(raw))
+	normalized = strings.Trim(normalized, " \t\r\n。！？!?,，；;：:")
+	switch normalized {
+	case "状态", "系统状态", "查看状态", "查看系统状态", "orvion状态", "orvion系统状态":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -631,6 +653,8 @@ func buildTelegramHelpMessage() string {
 		"【🤖 Orvion TG 命令帮助】\n",
 		"📊 /status - 查看系统状态摘要",
 		"🧩 /model - 查看模型与模型提供商",
+		"💬 /chat <内容> - 与 TG Agent 流式对话",
+		"🧹 /new - 开启新的 TG Agent 对话",
 		"📘 /help - 显示帮助",
 	}, "\n")
 }
@@ -766,6 +790,8 @@ func syncTelegramCommandList(notifier *telegramNotifier) error {
 	return notifier.setMyCommands([]telegramBotCommand{
 		{Command: "status", Description: "查看系统状态摘要"},
 		{Command: "model", Description: "查看模型与模型提供商状态"},
+		{Command: "chat", Description: "与 TG Agent 流式对话"},
+		{Command: "new", Description: "开启新的 TG Agent 对话"},
 		{Command: "help", Description: "显示帮助"},
 	})
 }
@@ -907,6 +933,45 @@ func handleTelegramStatusCommand(ctx context.Context, notifier *telegramNotifier
 	content := buildTelegramSystemStatusMessage(ctx)
 	chatID := strconv.FormatInt(message.Chat.ID, 10)
 	return true, sendTelegramCaptionWithStatusImage(ctx, notifier, chatID, content)
+}
+
+type telegramAgentClient struct {
+	notifier *telegramNotifier
+}
+
+func (c telegramAgentClient) SendMessage(ctx context.Context, chatID int64, text string) (int64, error) {
+	if c.notifier == nil {
+		return 0, errors.New("telegram notifier is nil")
+	}
+	return c.notifier.sendMarkdownTextToChatAndReturnMessageID(ctx, strconv.FormatInt(chatID, 10), text)
+}
+
+func (c telegramAgentClient) EditMessage(ctx context.Context, chatID int64, messageID int64, text string) error {
+	if c.notifier == nil {
+		return errors.New("telegram notifier is nil")
+	}
+	return c.notifier.editMarkdownMessageText(chatID, messageID, text)
+}
+
+func (c telegramAgentClient) SendTyping(ctx context.Context, chatID int64) error {
+	if c.notifier == nil {
+		return errors.New("telegram notifier is nil")
+	}
+	return c.notifier.sendChatAction(ctx, strconv.FormatInt(chatID, 10), "typing")
+}
+
+func handleTelegramAgentMessage(ctx context.Context, notifier *telegramNotifier, message telegramMessage, allowedChatID string) (bool, error) {
+	if notifier == nil {
+		return false, nil
+	}
+	if !isAllowedTelegramChat(message.Chat.ID, allowedChatID) {
+		return false, nil
+	}
+	return agent.HandleTelegramMessage(ctx, telegramAgentClient{notifier: notifier}, agent.TelegramMessage{
+		ChatID:    message.Chat.ID,
+		MessageID: message.MessageID,
+		Text:      message.Text,
+	})
 }
 
 func sendTelegramCaptionWithStatusImage(ctx context.Context, notifier *telegramNotifier, chatID string, content string) error {

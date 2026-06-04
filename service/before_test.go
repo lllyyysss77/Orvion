@@ -68,3 +68,32 @@ func TestBeforerOpenAI_KeepExistingToolCallID(t *testing.T) {
 		t.Fatalf("existing tool_call_id should be preserved, got=%q", toolCallID)
 	}
 }
+
+func TestBeforeWithModel(t *testing.T) {
+	input := []byte(`{
+		"model":"primary",
+		"stream":true,
+		"messages":[{"role":"user","content":"hi"}],
+		"tools":[{"type":"function","function":{"name":"noop","parameters":{"type":"object"}}}]
+	}`)
+
+	before, err := BeforerOpenAI(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	fallback, err := before.WithModel("fallback")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fallback.Model != "fallback" {
+		t.Fatalf("model mismatch, got=%q", fallback.Model)
+	}
+	if gjson.GetBytes(fallback.raw, "model").String() != "fallback" {
+		t.Fatalf("raw model should be replaced")
+	}
+	if !fallback.Stream || !fallback.toolCall {
+		t.Fatalf("request flags should be preserved")
+	}
+}

@@ -37,6 +37,7 @@ import {
 import Loading from "@/components/loading";
 import {
   getModels,
+  getModelOptions,
   createModel,
   updateModel,
   updateModelStatus,
@@ -297,6 +298,7 @@ const formSchema = z.object({
   io_log: z.boolean(),
   strategy: z.enum(["lottery", "rotor"]),
   breaker: z.boolean(),
+  fallback_model_id: z.string(),
   capabilities: z.array(z.enum(capabilityValues)).min(1, { message: "至少选择一个模型类型" }),
   input_price: z.string().refine(isValidNonNegativePrice, { message: "输入价格不能为负数" }),
   output_price: z.string().refine(isValidNonNegativePrice, { message: "输出价格不能为负数" }),
@@ -307,6 +309,9 @@ const formSchema = z.object({
 
 export default function ModelsPage() {
   const [models, setModels] = useState<Model[]>([]);
+  const [modelOptions, setModelOptions] = useState<Model[]>([]);
+  const [fallbackModelSearch, setFallbackModelSearch] = useState("");
+  const [fallbackModelSelectOpen, setFallbackModelSelectOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
   const [editingModel, setEditingModel] = useState<Model | null>(null);
@@ -323,6 +328,7 @@ export default function ModelsPage() {
   const [providerPanelModel, setProviderPanelModel] = useState<Model | null>(null);
   const [statusUpdatingIds, setStatusUpdatingIds] = useState<number[]>([]);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const fallbackModelSearchInputRef = useRef<HTMLInputElement | null>(null);
   const familyTabsRef = useRef<HTMLDivElement | null>(null);
   const familyButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const [familyIndicator, setFamilyIndicator] = useState<{ left: number; width: number; visible: boolean }>({
@@ -342,6 +348,7 @@ export default function ModelsPage() {
       io_log: false,
       strategy: "lottery",
       breaker: false,
+      fallback_model_id: "0",
       capabilities: ["chat"],
       input_price: "0",
       output_price: "0",
@@ -413,9 +420,23 @@ export default function ModelsPage() {
     }
   }, [capabilityFilter, searchTerm]);
 
+  const fetchModelOptions = useCallback(async () => {
+    try {
+      const options = await getModelOptions();
+      setModelOptions(sortModelsByName(options));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error(`获取回退模型列表失败: ${message}`);
+    }
+  }, []);
+
   useEffect(() => {
     void fetchModels();
   }, [fetchModels]);
+
+  useEffect(() => {
+    void fetchModelOptions();
+  }, [fetchModelOptions]);
 
   const modelsWithFamily = useMemo(() => (
     models.map((model) => ({
@@ -423,6 +444,24 @@ export default function ModelsPage() {
       family: resolveModelFamily(model.Name),
     }))
   ), [models]);
+
+  const fallbackModelOptions = useMemo(() => (
+    modelOptions.filter((model) => !editingModel || model.ID !== editingModel.ID)
+  ), [editingModel, modelOptions]);
+
+  const filteredFallbackModelOptions = useMemo(() => {
+    const keyword = fallbackModelSearch.trim().toLowerCase();
+    if (!keyword) return fallbackModelOptions;
+    return fallbackModelOptions.filter((model) => model.Name.toLowerCase().includes(keyword));
+  }, [fallbackModelOptions, fallbackModelSearch]);
+
+  useEffect(() => {
+    if (!fallbackModelSelectOpen) return;
+    const frame = window.requestAnimationFrame(() => {
+      fallbackModelSearchInputRef.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [fallbackModelSearch, fallbackModelSelectOpen, filteredFallbackModelOptions.length]);
 
   const familyOptions = useMemo<ModelFamily[]>(() => {
     const familyMap = new Map<string, ModelFamily>();
@@ -548,6 +587,7 @@ export default function ModelsPage() {
         io_log: values.io_log,
         strategy: values.strategy,
         breaker: values.breaker,
+        fallback_model_id: Number(values.fallback_model_id || "0"),
         capabilities: values.capabilities,
         input_price: Number(values.input_price),
         output_price: Number(values.output_price),
@@ -564,13 +604,16 @@ export default function ModelsPage() {
         io_log: false,
         strategy: "lottery",
         breaker: false,
+        fallback_model_id: "0",
         capabilities: ["chat"],
         input_price: "0",
         output_price: "0",
         cache_read_price: "0",
         cache_write_price: "0",
+        status: true,
       });
       await fetchModels();
+      await fetchModelOptions();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       toast.error(`创建模型失败: ${message}`);
@@ -588,6 +631,7 @@ export default function ModelsPage() {
         io_log: values.io_log,
         strategy: values.strategy,
         breaker: values.breaker,
+        fallback_model_id: Number(values.fallback_model_id || "0"),
         capabilities: values.capabilities,
         input_price: Number(values.input_price),
         output_price: Number(values.output_price),
@@ -609,6 +653,7 @@ export default function ModelsPage() {
         io_log: false,
         strategy: "lottery",
         breaker: false,
+        fallback_model_id: "0",
         capabilities: ["chat"],
         input_price: "0",
         output_price: "0",
@@ -617,6 +662,7 @@ export default function ModelsPage() {
         status: true,
       });
       await fetchModels();
+      await fetchModelOptions();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       toast.error(`更新模型失败: ${message}`);
@@ -631,6 +677,7 @@ export default function ModelsPage() {
       await deleteModel(deleteId);
       setDeleteId(null);
       await fetchModels();
+      await fetchModelOptions();
       toast.success(`模型: ${targetModel?.Name ?? deleteId} 删除成功`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -654,6 +701,7 @@ export default function ModelsPage() {
       io_log: Boolean(model.IOLog),
       strategy: model.Strategy === "rotor" ? "rotor" : "lottery",
       breaker: Boolean(model.Breaker),
+      fallback_model_id: String(model.FallbackModelID ?? 0),
       capabilities: normalizedCapabilities.length > 0 ? normalizedCapabilities : ["chat"],
       input_price: String(model.InputPrice ?? 0),
       output_price: String(model.OutputPrice ?? 0),
@@ -679,6 +727,7 @@ export default function ModelsPage() {
       io_log: false,
       strategy: "lottery",
       breaker: false,
+      fallback_model_id: "0",
       capabilities: ["chat"],
       input_price: "0",
       output_price: "0",
@@ -1424,27 +1473,79 @@ export default function ModelsPage() {
                 />
               </div>
 
-              <FormField
-                control={form.control}
-                name="strategy"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>负载均衡策略</FormLabel>
-                    <Select value={field.value} onValueChange={field.onChange}>
-                      <FormControl>
-                        <SelectTrigger className="w-full">
-                          <SelectValue placeholder="选择策略" />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        <SelectItem value="lottery">抽签（权重随机）</SelectItem>
-                        <SelectItem value="rotor">轮转（权重轮询）</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
+              <div className="grid gap-3 sm:grid-cols-2">
+                <FormField
+                  control={form.control}
+                  name="strategy"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>负载均衡策略</FormLabel>
+                      <Select value={field.value} onValueChange={field.onChange}>
+                        <FormControl>
+                          <SelectTrigger className="h-9 w-full">
+                            <SelectValue placeholder="选择策略" />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          <SelectItem value="lottery">抽签（权重随机）</SelectItem>
+                          <SelectItem value="rotor">轮转（权重轮询）</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name="fallback_model_id"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>回退模型</FormLabel>
+                      <Select
+                        value={field.value || "0"}
+                        onValueChange={(value) => {
+                          field.onChange(value);
+                          setFallbackModelSearch("");
+                        }}
+                        onOpenChange={(isOpen) => {
+                          setFallbackModelSelectOpen(isOpen);
+                          if (!isOpen) setFallbackModelSearch("");
+                        }}
+                      >
+                        <FormControl>
+                          <SelectTrigger className="h-9 w-full">
+                            <SelectValue placeholder="选择回退模型" />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent className="max-h-56">
+                          <div className="sticky top-0 z-10 bg-popover p-1">
+                            <Input
+                              ref={fallbackModelSearchInputRef}
+                              value={fallbackModelSearch}
+                              onChange={(event) => setFallbackModelSearch(event.target.value)}
+                              onKeyDown={(event) => event.stopPropagation()}
+                              onPointerDown={(event) => event.stopPropagation()}
+                              placeholder="搜索模型"
+                              className="h-8 text-xs"
+                            />
+                          </div>
+                          <SelectItem value="0">无回退</SelectItem>
+                          {filteredFallbackModelOptions.map((model) => (
+                            <SelectItem key={model.ID} value={String(model.ID)}>
+                              {model.Name}
+                            </SelectItem>
+                          ))}
+                          {filteredFallbackModelOptions.length === 0 ? (
+                            <div className="px-2 py-2 text-xs text-muted-foreground">无匹配模型</div>
+                          ) : null}
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
 
               <DialogFooter>
                 <Button type="button" variant="outline" onClick={() => setOpen(false)}>

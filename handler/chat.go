@@ -152,7 +152,7 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 
 	startReq := time.Now()
 	// 调用负载均衡后的 provider 并转发
-	res, log, err := service.BalanceChatWithLimiter(c, startReq, logStyle, requestPath, *before, providersWithMeta, models.ReqMeta{
+	res, log, effectiveBefore, effectiveProvidersWithMeta, err := service.BalanceChatWithLimiter(c, startReq, logStyle, requestPath, *before, providersWithMeta, models.ReqMeta{
 		Header:    c.Request.Header,
 		RemoteIP:  c.ClientIP(),
 		UserAgent: c.Request.UserAgent(),
@@ -175,7 +175,7 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 	pw := newAsyncMirrorWriter(pipeWriter, 256)
 	// 异步处理输出并记录 tokens
 	pkg.GoSafe("handler.record_log", func() {
-		service.RecordLog(context.Background(), startReq, log.FirstChunkTimeMs, pr, postProcessor, logRef, log.AuthKeyID, *before, providersWithMeta.IOLog, logStyle)
+		service.RecordLog(context.Background(), startReq, log.FirstChunkTimeMs, pr, postProcessor, logRef, log.AuthKeyID, effectiveBefore, effectiveProvidersWithMeta.IOLog, logStyle)
 	})
 
 	writeHeader(c, before.Stream, res.Header, logStyle)

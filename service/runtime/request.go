@@ -4,7 +4,7 @@ import "net/http"
 
 func BuildHeaders(source http.Header, withHeader bool, customHeaders map[string]string, stream bool) http.Header {
 	header := http.Header{}
-	if withHeader {
+	if withHeader && len(source) > 0 {
 		header = source.Clone()
 	}
 

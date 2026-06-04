@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/racio/orvion/agent"
 	"github.com/racio/orvion/models"
 	"github.com/racio/orvion/pkg"
 	"golang.org/x/sync/singleflight"
@@ -33,6 +34,10 @@ var (
 	authKeyGroup  singleflight.Group
 	authKeyCacheV atomic.Int64 // 版本号,每次 Invalidate 递增
 )
+
+func init() {
+	agent.SetAuthKeyInvalidator(InvalidateAuthKeys)
+}
 
 // GetAuthKey 读取指定 plaintext key 对应的 AuthKey。带 TTL 缓存 + singleflight。
 func GetAuthKey(ctx context.Context, key string) (*models.AuthKey, error) {

@@ -32,6 +32,8 @@ const (
 	KeyTelegramDailyUsageReportLastSentDate = "tg_daily_usage_report_last_sent_date"
 	// KeyProviderStatusSnapshotPrefix 提供商整体关闭前的启用关联快照前缀。
 	KeyProviderStatusSnapshotPrefix = "provider_status_snapshot:"
+	// KeyTelegramAgent TG 流式对话 Agent 配置。
+	KeyTelegramAgent = "telegram_agent"
 )
 
 type AnthropicCountTokens struct {
@@ -52,6 +54,17 @@ type TelegramBreakerAlertConfig struct {
 	APIBase        string `json:"api_base"`
 	ProxyURL       string `json:"proxy_url"`
 	StatusImageURL string `json:"status_image_url"`
+}
+
+type TelegramAgentConfig struct {
+	Enabled                  *bool    `json:"enabled,omitempty"`
+	Model                    string   `json:"model"`
+	SystemPrompt             string   `json:"system_prompt"`
+	MaxHistoryMessages       int      `json:"max_history_messages"`
+	MaxTokens                int      `json:"max_tokens"`
+	Temperature              *float64 `json:"temperature,omitempty"`
+	EditIntervalMs           int      `json:"edit_interval_ms"`
+	ToolConfirmationRequired *bool    `json:"tool_confirmation_required,omitempty"`
 }
 
 type ModelPriceSyncConfig struct {

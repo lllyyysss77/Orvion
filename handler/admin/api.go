@@ -57,18 +57,19 @@ const (
 
 // ModelRequest represents the request body for creating/updating a model
 type ModelRequest struct {
-	Name         string   `json:"name"`
-	Remark       string   `json:"remark"`
-	MaxRetry     int      `json:"max_retry"`
-	TimeOut      int      `json:"time_out"`
-	IOLog        bool     `json:"io_log"`
-	Strategy     string   `json:"strategy"`
-	Breaker      bool     `json:"breaker"`
-	Capabilities []string `json:"capabilities"`
-	InputPrice   *float64 `json:"input_price"`
-	OutputPrice  *float64 `json:"output_price"`
-	CacheRead    *float64 `json:"cache_read_price"`
-	CacheWrite   *float64 `json:"cache_write_price"`
+	Name            string   `json:"name"`
+	Remark          string   `json:"remark"`
+	MaxRetry        int      `json:"max_retry"`
+	TimeOut         int      `json:"time_out"`
+	IOLog           bool     `json:"io_log"`
+	Strategy        string   `json:"strategy"`
+	Breaker         bool     `json:"breaker"`
+	FallbackModelID uint     `json:"fallback_model_id"`
+	Capabilities    []string `json:"capabilities"`
+	InputPrice      *float64 `json:"input_price"`
+	OutputPrice     *float64 `json:"output_price"`
+	CacheRead       *float64 `json:"cache_read_price"`
+	CacheWrite      *float64 `json:"cache_write_price"`
 }
 
 type ModelWithPrice struct {
@@ -801,6 +802,22 @@ func GetModelList(c *gin.Context) {
 	common.Success(c, modelsList)
 }
 
+func validateFallbackModelID(ctx context.Context, currentModelID uint, fallbackModelID uint) error {
+	if fallbackModelID == 0 {
+		return nil
+	}
+	if currentModelID > 0 && fallbackModelID == currentModelID {
+		return errors.New("回退模型不能选择当前模型自身")
+	}
+	if _, err := gorm.G[models.Model](models.DB).Where("id = ?", fallbackModelID).First(ctx); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return errors.New("回退模型不存在")
+		}
+		return err
+	}
+	return nil
+}
+
 // CreateModel 创建模型
 func CreateModel(c *gin.Context) {
 	var req ModelRequest
@@ -817,6 +834,10 @@ func CreateModel(c *gin.Context) {
 	}
 	if count > 0 {
 		common.BadRequest(c, fmt.Sprintf("Model: %s already exists", req.Name))
+		return
+	}
+	if err := validateFallbackModelID(c.Request.Context(), 0, req.FallbackModelID); err != nil {
+		common.BadRequest(c, err.Error())
 		return
 	}
 	strategy := req.Strategy
@@ -838,15 +859,16 @@ func CreateModel(c *gin.Context) {
 	}
 
 	model := models.Model{
-		Name:         req.Name,
-		Remark:       req.Remark,
-		MaxRetry:     req.MaxRetry,
-		TimeOut:      req.TimeOut,
-		IOLog:        ioLog,
-		Strategy:     strategy,
-		Breaker:      breaker,
-		Status:       1,
-		Capabilities: models.ModelCapabilities(capabilities),
+		Name:            req.Name,
+		Remark:          req.Remark,
+		MaxRetry:        req.MaxRetry,
+		TimeOut:         req.TimeOut,
+		IOLog:           ioLog,
+		Strategy:        strategy,
+		Breaker:         breaker,
+		Status:          1,
+		FallbackModelID: req.FallbackModelID,
+		Capabilities:    models.ModelCapabilities(capabilities),
 	}
 
 	if err := gorm.G[models.Model](models.DB).Create(c.Request.Context(), &model); err != nil {
@@ -878,13 +900,17 @@ func UpdateModel(c *gin.Context) {
 	}
 
 	// Check if model exists
-	_, err = gorm.G[models.Model](models.DB).Where("id = ?", id).First(c.Request.Context())
+	currentModel, err := gorm.G[models.Model](models.DB).Where("id = ?", id).First(c.Request.Context())
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			common.NotFound(c, "Model not found")
 			return
 		}
 		common.InternalServerError(c, "Database error: "+err.Error())
+		return
+	}
+	if err := validateFallbackModelID(c.Request.Context(), currentModel.ID, req.FallbackModelID); err != nil {
+		common.BadRequest(c, err.Error())
 		return
 	}
 
@@ -907,26 +933,28 @@ func UpdateModel(c *gin.Context) {
 		capabilities = []string{"chat"}
 	}
 	updates := models.Model{
-		Name:         req.Name,
-		Remark:       req.Remark,
-		MaxRetry:     req.MaxRetry,
-		TimeOut:      req.TimeOut,
-		IOLog:        ioLog,
-		Strategy:     strategy,
-		Breaker:      breaker,
-		Capabilities: models.ModelCapabilities(capabilities),
+		Name:            req.Name,
+		Remark:          req.Remark,
+		MaxRetry:        req.MaxRetry,
+		TimeOut:         req.TimeOut,
+		IOLog:           ioLog,
+		Strategy:        strategy,
+		Breaker:         breaker,
+		FallbackModelID: req.FallbackModelID,
+		Capabilities:    models.ModelCapabilities(capabilities),
 	}
 
 	// 使用 map 更新，避免 GORM 忽略 0 值（例如 IOLog 关闭）
 	updateMap := map[string]any{
-		"name":         updates.Name,
-		"remark":       updates.Remark,
-		"max_retry":    updates.MaxRetry,
-		"time_out":     updates.TimeOut,
-		"io_log":       updates.IOLog,
-		"strategy":     updates.Strategy,
-		"breaker":      updates.Breaker,
-		"capabilities": updates.Capabilities,
+		"name":              updates.Name,
+		"remark":            updates.Remark,
+		"max_retry":         updates.MaxRetry,
+		"time_out":          updates.TimeOut,
+		"io_log":            updates.IOLog,
+		"strategy":          updates.Strategy,
+		"breaker":           updates.Breaker,
+		"fallback_model_id": updates.FallbackModelID,
+		"capabilities":      updates.Capabilities,
 	}
 	if err := models.DB.WithContext(c.Request.Context()).Model(&models.Model{}).Where("id = ?", id).Updates(updateMap).Error; err != nil {
 		common.InternalServerError(c, "Failed to update model: "+err.Error())

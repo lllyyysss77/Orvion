@@ -216,23 +216,16 @@ func UpdateAuthKey(c *gin.Context) {
 		expiresAt = &parsedExpiresAt
 	}
 
-	update := models.AuthKey{
-		Name:      req.Name,
-		Status:    boolPtrToInt(req.Status, 1),   // 默认启用
-		AllowAll:  boolPtrToInt(req.AllowAll, 0), // 默认不允许所有模型
-		Models:    sanitizeModelsToString(req.Models),
-		ExpiresAt: expiresAt,
-		RpmLimit:  intPtrWithDefault(req.RpmLimit, 0),
+	update := map[string]any{
+		"name":       req.Name,
+		"status":     boolPtrToInt(req.Status, 1),
+		"allow_all":  boolPtrToInt(req.AllowAll, 0),
+		"models":     sanitizeModelsToString(req.Models),
+		"expires_at": expiresAt,
+		"rpm_limit":  intPtrWithDefault(req.RpmLimit, 0),
 	}
 
-	if update.ExpiresAt == nil {
-		if _, err := gorm.G[models.AuthKey](models.DB).Where("id = ?", id).Update(ctx, "expires_at", nil); err != nil {
-			common.InternalServerError(c, "Failed to update expires_at: "+err.Error())
-			return
-		}
-	}
-
-	if _, err := gorm.G[models.AuthKey](models.DB).Where("id = ?", id).Updates(ctx, update); err != nil {
+	if err := models.DB.WithContext(ctx).Model(&models.AuthKey{}).Where("id = ?", id).Updates(update).Error; err != nil {
 		common.InternalServerError(c, "Failed to update auth key: "+err.Error())
 		return
 	}
@@ -293,11 +286,7 @@ func ToggleAuthKeyStatus(c *gin.Context) {
 	} else {
 		newStatus = 1
 	}
-	update := models.AuthKey{
-		Status: newStatus,
-	}
-
-	if _, err := gorm.G[models.AuthKey](models.DB).Where("id = ?", id).Updates(ctx, update); err != nil {
+	if _, err := gorm.G[models.AuthKey](models.DB).Where("id = ?", id).Update(ctx, "status", newStatus); err != nil {
 		common.InternalServerError(c, "Failed to update status: "+err.Error())
 		return
 	}

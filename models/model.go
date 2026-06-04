@@ -27,18 +27,19 @@ type AnthropicConfig struct {
 }
 
 type Model struct {
-	ID           uint `gorm:"primaryKey"`
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
-	Name         string
-	Remark       string
-	MaxRetry     int               // 重试次数限制
-	TimeOut      int               // 超时时间 单位秒
-	IOLog        int               // 是否记录IO (0/1)
-	Strategy     string            // 负载均衡策略 默认 lottery
-	Breaker      int               // 是否开启熔断 (0/1)
-	Status       int               // 是否启用 (0/1)
-	Capabilities ModelCapabilities // 模型能力类型（JSON 数组）
+	ID              uint `gorm:"primaryKey"`
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+	Name            string
+	Remark          string
+	MaxRetry        int               // 重试次数限制
+	TimeOut         int               // 超时时间 单位秒
+	IOLog           int               // 是否记录IO (0/1)
+	Strategy        string            // 负载均衡策略 默认 lottery
+	Breaker         int               // 是否开启熔断 (0/1)
+	Status          int               // 是否启用 (0/1)
+	FallbackModelID uint              `gorm:"column:fallback_model_id;index"` // 全部提供商失败后的回退模型ID，0表示不回退
+	Capabilities    ModelCapabilities // 模型能力类型（JSON 数组）
 }
 
 type ModelWithProvider struct {
@@ -124,6 +125,60 @@ type ChatIO struct {
 // TableName 指定表名
 func (ChatIO) TableName() string {
 	return "chat_io"
+}
+
+type TelegramAgentMessage struct {
+	ID           uint `gorm:"primaryKey"`
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+	ChatID       int64  `gorm:"column:chat_id;index:idx_tg_agent_chat_order"`
+	MessageOrder int    `gorm:"column:message_order;index:idx_tg_agent_chat_order"`
+	Role         string `gorm:"column:role;size:32"`
+	Content      string `gorm:"column:content"`
+}
+
+func (TelegramAgentMessage) TableName() string {
+	return "telegram_agent_messages"
+}
+
+type TelegramAgentPendingAction struct {
+	ID         uint `gorm:"primaryKey"`
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+	ChatID     int64     `gorm:"column:chat_id;uniqueIndex"`
+	ActionJSON string    `gorm:"column:action_json"`
+	Summary    string    `gorm:"column:summary"`
+	ExpiresAt  time.Time `gorm:"column:expires_at;index"`
+}
+
+func (TelegramAgentPendingAction) TableName() string {
+	return "telegram_agent_pending_actions"
+}
+
+type TelegramAgentToolCallLog struct {
+	ID                   uint `gorm:"primaryKey"`
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+	ChatID               int64      `gorm:"column:chat_id;index"`
+	Source               string     `gorm:"column:source;size:32;index"`
+	ToolCallID           string     `gorm:"column:tool_call_id;size:128;index"`
+	ToolName             string     `gorm:"column:tool_name;size:128;index"`
+	Arguments            string     `gorm:"column:arguments"`
+	Result               string     `gorm:"column:result"`
+	Status               string     `gorm:"column:status;size:64;index"`
+	OK                   int        `gorm:"column:ok"`
+	Final                int        `gorm:"column:final"`
+	RequiresConfirmation int        `gorm:"column:requires_confirmation"`
+	ActionKind           string     `gorm:"column:action_kind;size:64"`
+	ActionSummary        string     `gorm:"column:action_summary"`
+	Error                string     `gorm:"column:error"`
+	ConfirmedAt          *time.Time `gorm:"column:confirmed_at"`
+	ExecutedAt           *time.Time `gorm:"column:executed_at"`
+	CancelledAt          *time.Time `gorm:"column:cancelled_at"`
+}
+
+func (TelegramAgentToolCallLog) TableName() string {
+	return "telegram_agent_tool_call_logs"
 }
 
 type OutputUnion struct {

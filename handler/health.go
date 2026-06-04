@@ -436,6 +436,7 @@ WHERE created_at >= ?
 			ModelName:     modelName,
 			ProviderModel: mp.ProviderModel,
 			Status:        "unknown",
+			SuccessRate:   100,
 			LastCheck:     now.UTC().Format(time.RFC3339),
 			RequestBlocks: []ModelHealthRequestBlock{},
 		}
@@ -573,7 +574,7 @@ func buildModelHealthRequestBlocks(rows []healthLogRow, windowStart, windowEnd t
 		bucketStart := windowStart.Add(time.Duration(i) * bucketDuration)
 		blocks[i] = ModelHealthRequestBlock{
 			Success:     false,
-			SuccessRate: 0,
+			SuccessRate: 100,
 			Timestamp:   bucketStart.UTC().Format(time.RFC3339),
 		}
 	}

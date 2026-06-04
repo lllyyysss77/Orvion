@@ -157,7 +157,7 @@ export default function ProvidersPage() {
   const getFetchModeBadgeLabel = (mode?: string) => (
     mode === "api_pricing" ? "newapi" : "通用"
   );
-  const formatProviderCardName = (name: string) => Array.from(name).slice(0, 10).join("");
+  const formatProviderCardName = (name: string) => Array.from(name).slice(0, 12).join("");
   const selectedCapabilities = form.watch("capabilities");
   const conversionEnabled = form.watch("interface_conversion_enabled");
   const conversionTarget = form.watch("interface_conversion_target");

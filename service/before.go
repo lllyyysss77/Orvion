@@ -22,6 +22,20 @@ type Before struct {
 
 type Beforer func(data []byte) (*Before, error)
 
+func (b Before) WithModel(model string) (Before, error) {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return Before{}, errors.New("model is empty")
+	}
+	raw, err := sjson.SetBytes(b.raw, "model", model)
+	if err != nil {
+		return Before{}, err
+	}
+	b.Model = model
+	b.raw = raw
+	return b, nil
+}
+
 // BeforerOpenAIMedia 仅用于图像/视频类接口，要求 model 字段存在。
 // 这些接口不使用 stream、tools 等字段，直接透传原始请求体。
 func BeforerOpenAIMedia(data []byte) (*Before, error) {

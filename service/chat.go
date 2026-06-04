@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -22,9 +23,85 @@ import (
 	"gorm.io/gorm"
 )
 
+var errMaximumRetryAttemptsReached = errors.New("maximum retry attempts reached")
+
 // BalanceChatWithLimiter 带限流功能的聊天负载均衡
-func BalanceChatWithLimiter(c *gin.Context, start time.Time, style string, requestPath string, before Before, providersWithMeta *ProvidersWithMeta, reqMeta models.ReqMeta) (*http.Response, *models.ChatLog, error) {
-	return balanceChatInternal(c, start, style, requestPath, before, providersWithMeta, reqMeta, true)
+func BalanceChatWithLimiter(c *gin.Context, start time.Time, style string, requestPath string, before Before, providersWithMeta *ProvidersWithMeta, reqMeta models.ReqMeta) (*http.Response, *models.ChatLog, Before, *ProvidersWithMeta, error) {
+	return balanceChatWithFallback(c, start, style, requestPath, before, providersWithMeta, reqMeta, true, make(map[uint]struct{}))
+}
+
+func balanceChatWithFallback(c *gin.Context, start time.Time, style string, requestPath string, before Before, providersWithMeta *ProvidersWithMeta, reqMeta models.ReqMeta, enableLimiter bool, visited map[uint]struct{}) (*http.Response, *models.ChatLog, Before, *ProvidersWithMeta, error) {
+	if providersWithMeta == nil {
+		return nil, nil, before, providersWithMeta, errors.New("providers metadata is nil")
+	}
+	if providersWithMeta.ModelID > 0 {
+		visited[providersWithMeta.ModelID] = struct{}{}
+	}
+
+	res, log, err := balanceChatInternal(c, start, style, requestPath, before, providersWithMeta, reqMeta, enableLimiter)
+	if err == nil {
+		return res, log, before, providersWithMeta, nil
+	}
+	if !errors.Is(err, errMaximumRetryAttemptsReached) || providersWithMeta.FallbackModelID == 0 {
+		return nil, nil, before, providersWithMeta, err
+	}
+	if _, ok := visited[providersWithMeta.FallbackModelID]; ok {
+		return nil, nil, before, providersWithMeta, fmt.Errorf("%w; 回退模型存在循环配置", err)
+	}
+
+	ctx := context.Background()
+	if c != nil {
+		ctx = c.Request.Context()
+	}
+	fallbackModel, fallbackErr := gorm.G[models.Model](models.DB).Where("id = ?", providersWithMeta.FallbackModelID).First(ctx)
+	if fallbackErr != nil {
+		if errors.Is(fallbackErr, gorm.ErrRecordNotFound) {
+			return nil, nil, before, providersWithMeta, fmt.Errorf("%w; 回退模型不存在", err)
+		}
+		return nil, nil, before, providersWithMeta, fmt.Errorf("%w; 查询回退模型失败: %v", err, fallbackErr)
+	}
+	if fallbackModel.Status == 0 {
+		return nil, nil, before, providersWithMeta, fmt.Errorf("%w; 回退模型已停用", err)
+	}
+	if !authContextAllowsModel(ctx, fallbackModel.Name) {
+		return nil, nil, before, providersWithMeta, fmt.Errorf("%w; auth key has no permission to use fallback model %s", err, fallbackModel.Name)
+	}
+	if providersWithMeta.Endpoint != "" {
+		if capabilityErr := ValidateModelCapability(ctx, fallbackModel.Name, providersWithMeta.Endpoint); capabilityErr != nil {
+			return nil, nil, before, providersWithMeta, fmt.Errorf("%w; 回退模型不支持当前接口: %v", err, capabilityErr)
+		}
+	}
+
+	fallbackBefore, fallbackErr := before.WithModel(fallbackModel.Name)
+	if fallbackErr != nil {
+		return nil, nil, before, providersWithMeta, fmt.Errorf("%w; 构建回退模型请求失败: %v", err, fallbackErr)
+	}
+	fallbackMeta, fallbackErr := providersWithMetaByModel(ctx, providersWithMeta.Endpoint, fallbackModel)
+	if fallbackErr != nil {
+		return nil, nil, before, providersWithMeta, fmt.Errorf("%w; 回退模型不可用: %v", err, fallbackErr)
+	}
+
+	slog.Warn("模型全部提供商失败，尝试回退模型",
+		"model", before.Model,
+		"fallback_model", fallbackModel.Name,
+		"fallback_model_id", fallbackModel.ID,
+	)
+	return balanceChatWithFallback(c, start, style, requestPath, fallbackBefore, fallbackMeta, reqMeta, false, visited)
+}
+
+func authContextAllowsModel(ctx context.Context, modelName string) bool {
+	allowAll, ok := ctx.Value(consts.ContextKeyAllowAllModel).(bool)
+	if !ok {
+		return true
+	}
+	if allowAll {
+		return true
+	}
+	allowedModels, ok := ctx.Value(consts.ContextKeyAllowModels).([]string)
+	if !ok {
+		return true
+	}
+	return slices.Contains(allowedModels, modelName)
 }
 
 // balanceChatInternal 内部聊天负载均衡实现
@@ -268,7 +345,7 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, requestP
 		}
 	}
 
-	return nil, nil, errors.New("maximum retry attempts reached")
+	return nil, nil, errMaximumRetryAttemptsReached
 }
 
 func RecordRetryLog(ctx context.Context, retryLog chan models.ChatLog) {
@@ -415,6 +492,10 @@ type ProvidersWithMeta struct {
 	WeightItems          map[uint]int
 	ProviderMap          map[uint]models.Provider
 	BridgePlans          map[uint]ifacebridge.Plan
+	ModelID              uint
+	ModelName            string
+	FallbackModelID      uint
+	Endpoint             string
 	MaxRetry             int
 	TimeOut              int
 	IOLog                bool
@@ -456,6 +537,10 @@ func ProvidersWithMetaBymodelsName(ctx context.Context, logStyle string, endpoin
 		return nil, errors.New("model disabled " + before.Model)
 	}
 
+	return providersWithMetaByModel(ctx, endpoint, model)
+}
+
+func providersWithMetaByModel(ctx context.Context, endpoint string, model models.Model) (*ProvidersWithMeta, error) {
 	// model_with_providers.status 在数据库中是 0/1（int）
 	modelWithProviderChain := gorm.G[models.ModelWithProvider](models.DB).Where("model_id = ?", model.ID).Where("status = ?", 1)
 
@@ -465,7 +550,7 @@ func ProvidersWithMetaBymodelsName(ctx context.Context, logStyle string, endpoin
 	}
 
 	if len(modelWithProviders) == 0 {
-		return nil, errors.New("not provider for model " + before.Model)
+		return nil, errors.New("not provider for model " + model.Name)
 	}
 
 	modelWithProviderMap := lo.KeyBy(modelWithProviders, func(mp models.ModelWithProvider) uint { return mp.ID })
@@ -500,7 +585,7 @@ func ProvidersWithMetaBymodelsName(ctx context.Context, logStyle string, endpoin
 	}
 
 	if len(weightItems) == 0 {
-		return nil, errors.New("not provider for model " + before.Model)
+		return nil, errors.New("not provider for model " + model.Name)
 	}
 
 	// IOLog 和 Breaker 现在是 int 类型(0/1)
@@ -512,6 +597,10 @@ func ProvidersWithMetaBymodelsName(ctx context.Context, logStyle string, endpoin
 		WeightItems:          weightItems,
 		ProviderMap:          providerMap,
 		BridgePlans:          bridgePlans,
+		ModelID:              model.ID,
+		ModelName:            model.Name,
+		FallbackModelID:      model.FallbackModelID,
+		Endpoint:             endpoint,
 		MaxRetry:             model.MaxRetry,
 		TimeOut:              model.TimeOut,
 		IOLog:                ioLog,
