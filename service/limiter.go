@@ -13,15 +13,7 @@ var globalLimiterManager *limiter.Manager
 // SetLimiterManager 设置全局限流管理器
 func SetLimiterManager(manager *limiter.Manager) {
 	globalLimiterManager = manager
-	slog.Info("Limiter manager initialized", "enabled", manager.IsEnabled())
-}
-
-// CheckAuthKeyLimits 检查 API Key 限制
-func CheckAuthKeyLimits(ctx context.Context, authKeyID uint, rpmLimit int) (bool, string, error) {
-	if globalLimiterManager == nil {
-		return true, "", nil
-	}
-	return globalLimiterManager.CheckAuthKeyLimits(ctx, authKeyID, rpmLimit)
+	slog.Info("Limiter manager initialized", "enabled", true)
 }
 
 // TryAcquireAuthKey 原子检查并记账 RPM,消除 Check/Record 两步的竞态。
@@ -30,22 +22,6 @@ func TryAcquireAuthKey(ctx context.Context, authKeyID uint, rpmLimit int) (bool,
 		return true, "", nil
 	}
 	return globalLimiterManager.TryAcquireAuthKey(ctx, authKeyID, rpmLimit)
-}
-
-// RecordAuthKeyAccess 记录 API Key 访问
-func RecordAuthKeyAccess(ctx context.Context, authKeyID uint, rpmLimit int) error {
-	if globalLimiterManager == nil {
-		return nil
-	}
-	return globalLimiterManager.RecordAuthKeyAccess(ctx, authKeyID, rpmLimit)
-}
-
-// GetCurrentRPMCount 获取当前 RPM 计数
-func GetCurrentRPMCount(ctx context.Context, authKeyID uint) (int, error) {
-	if globalLimiterManager == nil {
-		return 0, nil
-	}
-	return globalLimiterManager.GetCurrentRPMCount(ctx, authKeyID)
 }
 
 // GetRPMStats 获取RPM统计信息

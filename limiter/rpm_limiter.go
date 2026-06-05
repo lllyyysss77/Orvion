@@ -65,62 +65,6 @@ func (r *RPMLimiter) TryAcquire(_ context.Context, authKeyID uint, rpmLimit int)
 	return true, nil
 }
 
-// CheckRPMLimit 只读判断当前是否还有配额。保留用于向后兼容。
-// 注意:与 RecordRequest 组合使用存在竞态,新代码请用 TryAcquire。
-func (r *RPMLimiter) CheckRPMLimit(_ context.Context, authKeyID uint, rpmLimit int) (bool, error) {
-	if rpmLimit <= 0 {
-		return true, nil
-	}
-	now := time.Now().Unix()
-	windowStart := now - 60
-
-	b := r.bucket(authKeyID)
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	b.trim(windowStart)
-	return len(b.timestamps) < rpmLimit, nil
-}
-
-// RecordRequest 记录一次请求。保留用于向后兼容。
-func (r *RPMLimiter) RecordRequest(_ context.Context, authKeyID uint) error {
-	now := time.Now().Unix()
-	windowStart := now - 120 // 保留 2 分钟数据,避免切片无界增长
-
-	b := r.bucket(authKeyID)
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	b.trim(windowStart)
-	b.timestamps = append(b.timestamps, now)
-	return nil
-}
-
-// GetCurrentRPMCount 获取当前窗口内计数
-func (r *RPMLimiter) GetCurrentRPMCount(_ context.Context, authKeyID uint) (int, error) {
-	now := time.Now().Unix()
-	windowStart := now - 60
-
-	v, ok := r.buckets.Load(authKeyID)
-	if !ok {
-		return 0, nil
-	}
-	b := v.(*rpmBucket)
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	b.trim(windowStart)
-	return len(b.timestamps), nil
-}
-
-// ClearMemoryData 清理内存数据(测试用)
-func (r *RPMLimiter) ClearMemoryData() {
-	r.buckets.Range(func(key, _ any) bool {
-		r.buckets.Delete(key)
-		return true
-	})
-}
-
 // GetStats 获取限流器统计信息
 func (r *RPMLimiter) GetStats(_ context.Context) map[string]interface{} {
 	authKeyStats := make(map[string]int)

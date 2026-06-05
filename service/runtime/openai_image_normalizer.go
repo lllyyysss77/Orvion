@@ -3,6 +3,7 @@ package runtime
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"sort"
@@ -12,11 +13,23 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-// NormalizeOpenAIChatCompletionPayload 将 OpenAI Chat Completions 响应中的图片输出统一补齐为
-// 非流式 choices[].message.images 与流式 choices[].delta.images 结构。
+// NormalizeOpenAIChatCompletionPayload 统一 OpenAI Chat Completions 响应结构。
+// - 非流式请求若收到 SSE chunk，会合并为标准 chat.completion JSON。
+// - 图片输出统一补齐为非流式 choices[].message.images 与流式 choices[].delta.images 结构。
 func NormalizeOpenAIChatCompletionPayload(payload []byte, stream bool) []byte {
-	if len(payload) == 0 || !gjson.ValidBytes(payload) {
+	if len(payload) == 0 {
 		return payload
+	}
+	if !gjson.ValidBytes(payload) {
+		if !stream {
+			if normalized, ok := normalizeOpenAIStreamToChatCompletion(payload); ok {
+				payload = normalized
+			} else {
+				return payload
+			}
+		} else {
+			return payload
+		}
 	}
 
 	choices := gjson.GetBytes(payload, "choices")
@@ -72,6 +85,179 @@ func NormalizeOpenAIChatCompletionPayload(payload []byte, stream bool) []byte {
 		return payload
 	}
 	return result
+}
+
+type openAIStreamChoiceAggregate struct {
+	Index        int
+	Role         string
+	Content      strings.Builder
+	FinishReason string
+}
+
+func normalizeOpenAIStreamToChatCompletion(payload []byte) ([]byte, bool) {
+	chunks := extractOpenAIStreamJSONChunks(payload)
+	if len(chunks) == 0 {
+		return nil, false
+	}
+
+	choices := map[int]*openAIStreamChoiceAggregate{}
+	id := ""
+	model := ""
+	systemFingerprint := ""
+	created := int64(0)
+	usageRaw := ""
+	seenChoices := false
+
+	for _, chunk := range chunks {
+		node := gjson.ParseBytes(chunk)
+		if id == "" {
+			id = strings.TrimSpace(node.Get("id").String())
+		}
+		if model == "" {
+			model = strings.TrimSpace(node.Get("model").String())
+		}
+		if created == 0 {
+			created = node.Get("created").Int()
+		}
+		if systemFingerprint == "" {
+			systemFingerprint = strings.TrimSpace(node.Get("system_fingerprint").String())
+		}
+		if usage := node.Get("usage"); usage.Exists() && usage.Raw != "" && usage.Raw != "null" {
+			usageRaw = usage.Raw
+		}
+
+		rawChoices := node.Get("choices")
+		if !rawChoices.Exists() || !rawChoices.IsArray() {
+			continue
+		}
+		seenChoices = true
+		choiceOrdinal := 0
+		rawChoices.ForEach(func(_, choice gjson.Result) bool {
+			index := int(choice.Get("index").Int())
+			if !choice.Get("index").Exists() {
+				index = choiceOrdinal
+			}
+			choiceOrdinal++
+			agg := choices[index]
+			if agg == nil {
+				agg = &openAIStreamChoiceAggregate{Index: index, Role: "assistant"}
+				choices[index] = agg
+			}
+
+			if role := strings.TrimSpace(choice.Get("delta.role").String()); role != "" {
+				agg.Role = role
+			} else if role := strings.TrimSpace(choice.Get("message.role").String()); role != "" {
+				agg.Role = role
+			}
+			appendOpenAITextFromAny(&agg.Content, choice.Get("delta.content"))
+			appendOpenAITextFromAny(&agg.Content, choice.Get("message.content"))
+			appendOpenAITextFromAny(&agg.Content, choice.Get("text"))
+			if finishReason := strings.TrimSpace(choice.Get("finish_reason").String()); finishReason != "" {
+				agg.FinishReason = finishReason
+			}
+			return true
+		})
+	}
+
+	if !seenChoices || len(choices) == 0 {
+		return nil, false
+	}
+
+	indexes := make([]int, 0, len(choices))
+	for index := range choices {
+		indexes = append(indexes, index)
+	}
+	sort.Ints(indexes)
+
+	outChoices := make([]map[string]any, 0, len(indexes))
+	for _, index := range indexes {
+		choice := choices[index]
+		item := map[string]any{
+			"index": choice.Index,
+			"message": map[string]any{
+				"role":    choice.Role,
+				"content": choice.Content.String(),
+			},
+			"logprobs": nil,
+		}
+		if choice.FinishReason != "" {
+			item["finish_reason"] = choice.FinishReason
+		} else {
+			item["finish_reason"] = nil
+		}
+		outChoices = append(outChoices, item)
+	}
+
+	out := map[string]any{
+		"object":  "chat.completion",
+		"choices": outChoices,
+	}
+	if id != "" {
+		out["id"] = id
+	}
+	if model != "" {
+		out["model"] = model
+	}
+	if created > 0 {
+		out["created"] = created
+	}
+	if systemFingerprint != "" {
+		out["system_fingerprint"] = systemFingerprint
+	}
+	if usageRaw != "" {
+		var usage any
+		if err := json.Unmarshal([]byte(usageRaw), &usage); err == nil {
+			out["usage"] = usage
+		}
+	}
+
+	normalized, err := json.Marshal(out)
+	if err != nil {
+		return nil, false
+	}
+	return normalized, true
+}
+
+func extractOpenAIStreamJSONChunks(payload []byte) [][]byte {
+	scanner := bufio.NewScanner(bytes.NewReader(payload))
+	scanner.Buffer(make([]byte, 0, 8*1024), 64*1024*1024)
+
+	chunks := make([][]byte, 0)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "" || data == "[DONE]" || !gjson.Valid(data) {
+			continue
+		}
+		chunks = append(chunks, []byte(data))
+	}
+	return chunks
+}
+
+func appendOpenAITextFromAny(out *strings.Builder, value gjson.Result) {
+	if !value.Exists() {
+		return
+	}
+	if value.Type == gjson.String {
+		out.WriteString(value.String())
+		return
+	}
+	if value.IsArray() {
+		value.ForEach(func(_, item gjson.Result) bool {
+			appendOpenAITextFromAny(out, item)
+			return true
+		})
+		return
+	}
+	if value.Type != gjson.JSON {
+		return
+	}
+	for _, path := range []string{"text", "output_text", "content"} {
+		appendOpenAITextFromAny(out, value.Get(path))
+	}
 }
 
 // NormalizeOpenAIStreamLine 处理单行 SSE 数据，若为 data: JSON 则尝试补齐 delta.images。

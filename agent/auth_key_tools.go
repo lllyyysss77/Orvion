@@ -27,6 +27,8 @@ type telegramAuthKeyPatch struct {
 	RPMLimit         *int       `json:"rpm_limit,omitempty"`
 }
 
+const telegramAgentAuthKeyListMaxLimit = 50
+
 func buildTelegramCreateAuthKeyAction(ctx context.Context, chatID int64, args telegramAgentToolCallArgs) (telegramToolAction, error) {
 	name := strings.TrimSpace(valueFromStringPtr(args.Name))
 	if name == "" {
@@ -207,6 +209,72 @@ func createTelegramAgentAuthKey(ctx context.Context, patch telegramAuthKeyPatch)
 		"有效期：" + formatTelegramAuthKeyExpiresAt(authKey.ExpiresAt),
 		"完整 Key 请到 API Key 管理页面查看或复制。",
 	}, "\n"), nil
+}
+
+func listTelegramAgentAuthKeys(ctx context.Context, args telegramAgentToolCallArgs) (string, error) {
+	limit := args.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > telegramAgentAuthKeyListMaxLimit {
+		limit = telegramAgentAuthKeyListMaxLimit
+	}
+
+	query := models.DB.WithContext(ctx).Model(&models.AuthKey{})
+	keyword := strings.TrimSpace(args.Query)
+	if keyword != "" {
+		query = query.Where("LOWER(name) LIKE ?", "%"+strings.ToLower(keyword)+"%")
+	}
+
+	switch strings.ToLower(strings.TrimSpace(args.Status)) {
+	case "", "all":
+	case "enabled":
+		query = query.Where("status = ?", 1)
+	case "disabled":
+		query = query.Where("status = ?", 0)
+	default:
+		return "", errors.New("状态筛选只支持 all、enabled、disabled")
+	}
+
+	var total int64
+	if err := query.Session(&gorm.Session{}).Count(&total).Error; err != nil {
+		return "", err
+	}
+	if total == 0 {
+		return "暂无匹配 API Key", nil
+	}
+
+	authKeys := make([]models.AuthKey, 0, limit)
+	if err := query.Session(&gorm.Session{}).
+		Order("LOWER(name) ASC").
+		Order("id ASC").
+		Limit(limit).
+		Find(&authKeys).Error; err != nil {
+		return "", err
+	}
+
+	lines := []string{fmt.Sprintf("API Key 列表（显示 %d/%d 个）", len(authKeys), total)}
+	for index, authKey := range authKeys {
+		name := strings.TrimSpace(authKey.Name)
+		if name == "" {
+			name = "未命名"
+		}
+		lines = append(lines,
+			fmt.Sprintf("%d. 项目：%s", index+1, name),
+			"   Key："+maskTelegramAuthKeyValue(authKey.Key),
+			"   状态："+telegramAuthKeyEnabledLabel(authKey.Status == 1),
+			"   权限："+formatTelegramAuthKeyScope(authKey.AllowAll == 1, parseTelegramAuthKeyModels(authKey.Models)),
+			"   RPM："+formatTelegramAuthKeyRPMLimit(authKey.RpmLimit),
+			fmt.Sprintf("   使用次数：%d", authKey.UsageCount),
+			fmt.Sprintf("   已消耗金额：%s", formatTelegramAuthKeyCost(authKey.TotalCost)),
+			"   最后使用："+formatTelegramAuthKeyLastUsedAt(authKey.LastUsedAt),
+			"   有效期："+formatTelegramAuthKeyExpiresAt(authKey.ExpiresAt),
+		)
+	}
+	if total > int64(len(authKeys)) {
+		lines = append(lines, fmt.Sprintf("还有 %d 个未显示，可用 query 或 limit 缩小范围。", total-int64(len(authKeys))))
+	}
+	return strings.Join(lines, "\n"), nil
 }
 
 func updateTelegramAgentAuthKey(ctx context.Context, authKeyID uint, patch telegramAuthKeyPatch) (string, error) {
@@ -537,6 +605,17 @@ func formatTelegramAuthKeyRPMLimit(value int) string {
 		return "无限制"
 	}
 	return fmt.Sprintf("%d", value)
+}
+
+func formatTelegramAuthKeyCost(value float64) string {
+	return fmt.Sprintf("$%.4f", value)
+}
+
+func formatTelegramAuthKeyLastUsedAt(value *time.Time) string {
+	if value == nil || value.IsZero() {
+		return "从未使用"
+	}
+	return value.Local().Format("2006-01-02 15:04:05")
 }
 
 func telegramAuthKeyEnabledLabel(enabled bool) string {

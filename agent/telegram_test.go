@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -172,7 +174,7 @@ func TestReadTelegramAgentOpenAIStreamWithToolsCollectsToolCalls(t *testing.T) {
 	}
 }
 
-func TestTelegramSessionMessagesPersistedAndCleared(t *testing.T) {
+func TestTelegramSessionMessagesPersistedAndNewConversationIsolated(t *testing.T) {
 	previousDB := models.DB
 	defer func() {
 		models.DB = previousDB
@@ -183,12 +185,17 @@ func TestTelegramSessionMessagesPersistedAndCleared(t *testing.T) {
 		t.Fatalf("初始化测试数据库失败: %v", err)
 	}
 	models.DB = db
-	if err := db.AutoMigrate(&models.TelegramAgentMessage{}); err != nil {
+	if err := db.AutoMigrate(&models.TelegramAgentMessage{}, &models.TelegramAgentSession{}, &models.TelegramAgentPendingAction{}); err != nil {
 		t.Fatalf("迁移测试表失败: %v", err)
 	}
 
 	ctx := context.Background()
 	chatID := int64(6801293687)
+	telegramSessions.Delete(chatID)
+	t.Cleanup(func() {
+		telegramSessions.Delete(chatID)
+		telegramPendingToolActions.Delete(chatID)
+	})
 	cfg := models.TelegramAgentConfig{MaxHistoryMessages: 3}
 	allMessages := []chatMessage{
 		{Role: "user", Content: "第一轮"},
@@ -214,15 +221,29 @@ func TestTelegramSessionMessagesPersistedAndCleared(t *testing.T) {
 		t.Fatalf("上下文顺序不正确: %+v", loaded)
 	}
 
-	if err := clearTelegramSession(ctx, chatID); err != nil {
-		t.Fatalf("清理 TG 上下文失败: %v", err)
+	oldConversationID := getTelegramSession(chatID).conversationID
+	newConversationID, err := startNewTelegramConversation(ctx, chatID)
+	if err != nil {
+		t.Fatalf("开启新 TG 会话失败: %v", err)
 	}
+	if strings.TrimSpace(newConversationID) == "" || newConversationID == oldConversationID {
+		t.Fatalf("新会话 ID 不正确，旧=%q 新=%q", oldConversationID, newConversationID)
+	}
+
 	var count int64
 	if err := db.Model(&models.TelegramAgentMessage{}).Where("chat_id = ?", chatID).Count(&count).Error; err != nil {
 		t.Fatalf("统计 TG 上下文失败: %v", err)
 	}
-	if count != 0 {
-		t.Fatalf("期望上下文被清空，仍剩余 %d 条", count)
+	if count != 3 {
+		t.Fatalf("开启新会话不应删除旧上下文，实际剩余 %d 条", count)
+	}
+
+	loaded, err = loadTelegramSessionMessages(ctx, chatID, cfg)
+	if err != nil {
+		t.Fatalf("加载新 TG 会话上下文失败: %v", err)
+	}
+	if len(loaded) != 0 {
+		t.Fatalf("新会话应为空上下文，实际为 %+v", loaded)
 	}
 }
 
@@ -950,6 +971,75 @@ func TestTelegramAgentFunctionToolUpdatesAuthKeyWithoutConfirm(t *testing.T) {
 	}
 }
 
+func TestTelegramAgentFunctionToolListsAuthKeysMasked(t *testing.T) {
+	db := setupTelegramAgentToolTestDB(t, "tg_agent_tool_auth_key_list")
+	ctx := context.Background()
+	lastUsedAt := time.Date(2026, 6, 4, 12, 30, 0, 0, time.Local)
+	expiresAt := lastUsedAt.Add(24 * time.Hour)
+
+	authKeys := []models.AuthKey{
+		{
+			Name:       "Alpha Key",
+			Key:        "sk-alpha-secret-value",
+			Status:     1,
+			AllowAll:   1,
+			Models:     "[]",
+			RpmLimit:   60,
+			UsageCount: 12,
+			TotalCost:  1.25,
+			LastUsedAt: &lastUsedAt,
+			ExpiresAt:  &expiresAt,
+		},
+		{
+			Name:      "Beta Key",
+			Key:       "sk-beta-secret-value",
+			Status:    0,
+			AllowAll:  0,
+			Models:    `["gpt-list-auth-key"]`,
+			RpmLimit:  0,
+			TotalCost: 0.5,
+		},
+	}
+	if err := db.Create(&authKeys).Error; err != nil {
+		t.Fatalf("创建 AuthKey 失败: %v", err)
+	}
+
+	toolResult := executeTelegramAgentFunctionToolCall(ctx, 6801293712, models.TelegramAgentConfig{}, telegramAgentOpenAIToolCall{
+		ID:   "call_list_auth_keys",
+		Type: "function",
+		Function: telegramAgentOpenAIFunctionCall{
+			Name:      telegramAgentToolListAuthKeys,
+			Arguments: `{"status":"all","limit":10}`,
+		},
+	})
+	payload := parseTelegramAgentToolResultPayload(toolResult)
+	if !payload.OK {
+		t.Fatalf("期望查看 API Key 成功，实际为: %s", toolResult)
+	}
+	if !strings.Contains(payload.Text, "Alpha Key") || !strings.Contains(payload.Text, "Beta Key") {
+		t.Fatalf("列表缺少预期项目：%s", payload.Text)
+	}
+	if strings.Contains(payload.Text, "sk-alpha-secret-value") || strings.Contains(payload.Text, "sk-beta-secret-value") {
+		t.Fatalf("列表不应返回完整 Key：%s", payload.Text)
+	}
+	if strings.Contains(payload.Text, "ID") {
+		t.Fatalf("列表不应返回数据库 ID：%s", payload.Text)
+	}
+
+	enabledOnly := executeTelegramAgentFunctionToolCall(ctx, 6801293712, models.TelegramAgentConfig{}, telegramAgentOpenAIToolCall{
+		ID:   "call_list_enabled_auth_keys",
+		Type: "function",
+		Function: telegramAgentOpenAIFunctionCall{
+			Name:      telegramAgentToolListAuthKeys,
+			Arguments: `{"status":"enabled","limit":10}`,
+		},
+	})
+	enabledPayload := parseTelegramAgentToolResultPayload(enabledOnly)
+	if !enabledPayload.OK || !strings.Contains(enabledPayload.Text, "Alpha Key") || strings.Contains(enabledPayload.Text, "Beta Key") {
+		t.Fatalf("启用筛选结果不正确：%s", enabledOnly)
+	}
+}
+
 func TestTelegramAgentFunctionToolDirectExecutionContinuesToolLoop(t *testing.T) {
 	db := setupTelegramAgentToolTestDB(t, "tg_agent_tool_direct_continue_loop")
 	ctx := context.Background()
@@ -982,6 +1072,19 @@ func TestTelegramAgentFunctionToolDirectExecutionContinuesToolLoop(t *testing.T)
 		t.Fatalf("关闭确认后的直接执行不应提前结束工具循环，实际为: %s", directFinalText)
 	}
 	assertTelegramModelStatus(t, db, model.ID, 0)
+}
+
+func TestTelegramAgentToolCallsNeedResultSummary(t *testing.T) {
+	if !telegramAgentToolCallsNeedResultSummary([]telegramAgentOpenAIToolCall{{
+		Function: telegramAgentOpenAIFunctionCall{Name: telegramAgentToolRunTerminalCommand},
+	}}) {
+		t.Fatalf("run_terminal_command 执行完成后应进入结果整理状态")
+	}
+	if telegramAgentToolCallsNeedResultSummary([]telegramAgentOpenAIToolCall{{
+		Function: telegramAgentOpenAIFunctionCall{Name: telegramAgentToolListModels},
+	}}) {
+		t.Fatalf("普通查询工具不应触发脚本结果整理状态")
+	}
 }
 
 func TestTelegramAgentFunctionToolPendingActionStopsToolLoop(t *testing.T) {
@@ -1114,6 +1217,46 @@ func TestTelegramAgentToolCallLogMasksSensitiveArguments(t *testing.T) {
 	}
 }
 
+func TestTelegramAgentToolActionExecutingLogIsUpdated(t *testing.T) {
+	db := setupTelegramAgentToolTestDB(t, "tg_agent_tool_action_executing_update")
+	ctx := context.Background()
+	action := telegramToolAction{
+		ChatID:         6801293704,
+		ConversationID: "tg-6801293704-test",
+		Kind:           telegramToolActionRunTerminalCommand,
+		Summary:        "执行测试命令",
+	}
+
+	logID := recordTelegramAgentToolActionExecutingLog(ctx, action, telegramAgentToolLogSourceToolAction, false)
+	if logID == 0 {
+		t.Fatalf("期望创建执行中日志")
+	}
+
+	var callLog models.TelegramAgentToolCallLog
+	if err := db.First(&callLog, logID).Error; err != nil {
+		t.Fatalf("读取执行中日志失败: %v", err)
+	}
+	if callLog.Status != telegramAgentToolLogStatusExecuting {
+		t.Fatalf("期望状态为执行中，实际为 %s", callLog.Status)
+	}
+
+	finishTelegramAgentPreparedActionLog(ctx, logID, action, "执行完成", false)
+	if err := db.First(&callLog, logID).Error; err != nil {
+		t.Fatalf("读取完成日志失败: %v", err)
+	}
+	if callLog.Status != telegramAgentToolLogStatusExecuted || callLog.Result != "执行完成" || callLog.ExecutedAt == nil {
+		t.Fatalf("执行中日志未被正确更新: %+v", callLog)
+	}
+
+	var count int64
+	if err := db.Model(&models.TelegramAgentToolCallLog{}).Where("chat_id = ?", action.ChatID).Count(&count).Error; err != nil {
+		t.Fatalf("统计工具日志失败: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("期望更新同一条日志，实际记录数为 %d", count)
+	}
+}
+
 func TestTelegramAgentFunctionToolReadsSystemLogs(t *testing.T) {
 	logPath := t.TempDir() + "/orvion-test.log"
 	t.Setenv("LOG_FILE", logPath)
@@ -1204,6 +1347,444 @@ func TestTelegramAgentFunctionToolReadsRequestLogs(t *testing.T) {
 	assertTelegramToolTextHasNoVisibleID(t, payload.Text)
 }
 
+func TestTelegramAgentSkillToolsListReadAndRun(t *testing.T) {
+	db := setupTelegramAgentToolTestDB(t, "tg_agent_skill_tools_run")
+	ctx := context.Background()
+	chatID := int64(6801293713)
+	telegramPendingToolActions.Delete(chatID)
+
+	root := t.TempDir()
+	demoDir := filepath.Join(root, "demo")
+	scriptDir := filepath.Join(demoDir, "scripts")
+	if err := os.MkdirAll(scriptDir, 0o755); err != nil {
+		t.Fatalf("创建 Skill 脚本目录失败: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(demoDir, "skills.md"), []byte(strings.Join([]string{
+		"---",
+		"name: demo",
+		"description: Demo skill",
+		"enabled: true",
+		"triggers: [demo, echo]",
+		"scripts:",
+		"  - name: echo",
+		"    path: scripts/echo.sh",
+		"    description: Echo args",
+		"    confirm: false",
+		"    timeout_ms: 5000",
+		"---",
+		"Demo instructions.",
+	}, "\n")), 0o644); err != nil {
+		t.Fatalf("写入 Skill 文件失败: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(scriptDir, "echo.sh"), []byte(strings.Join([]string{
+		"#!/bin/sh",
+		"cat >/dev/null",
+		"printf '{\"ok\":true,\"text\":\"skill-ok\"}'",
+	}, "\n")), 0o755); err != nil {
+		t.Fatalf("写入 Skill 脚本失败: %v", err)
+	}
+
+	disabledDir := filepath.Join(root, "disabled")
+	if err := os.MkdirAll(disabledDir, 0o755); err != nil {
+		t.Fatalf("创建禁用 Skill 目录失败: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(disabledDir, "SKILL.md"), []byte(strings.Join([]string{
+		"---",
+		"name: disabled",
+		"description: Disabled skill",
+		"enabled: false",
+		"---",
+		"Disabled instructions.",
+	}, "\n")), 0o644); err != nil {
+		t.Fatalf("写入禁用 Skill 文件失败: %v", err)
+	}
+
+	requireConfirm := false
+	skillsEnabled := true
+	cfg := models.TelegramAgentConfig{
+		ToolConfirmationRequired: &requireConfirm,
+		SkillsEnabled:            &skillsEnabled,
+		SkillsDir:                root,
+	}
+
+	listResult := executeTelegramAgentFunctionToolCall(ctx, chatID, cfg, telegramAgentOpenAIToolCall{
+		ID:   "call_list_skills",
+		Type: "function",
+		Function: telegramAgentOpenAIFunctionCall{
+			Name:      telegramAgentToolListSkills,
+			Arguments: `{"limit":10}`,
+		},
+	})
+	listPayload := parseTelegramAgentToolResultPayload(listResult)
+	if !listPayload.OK {
+		t.Fatalf("查看 Skills 失败: %s", listPayload.Text)
+	}
+	if !strings.Contains(listPayload.Text, "demo") || !strings.Contains(listPayload.Text, "disabled") || !strings.Contains(listPayload.Text, "禁用") {
+		t.Fatalf("Skills 列表应包含启用和禁用状态，实际为: %s", listPayload.Text)
+	}
+
+	readResult := executeTelegramAgentFunctionToolCall(ctx, chatID, cfg, telegramAgentOpenAIToolCall{
+		ID:   "call_read_skill",
+		Type: "function",
+		Function: telegramAgentOpenAIFunctionCall{
+			Name:      telegramAgentToolReadSkill,
+			Arguments: `{"skill":"demo"}`,
+		},
+	})
+	readPayload := parseTelegramAgentToolResultPayload(readResult)
+	if !readPayload.OK {
+		t.Fatalf("读取 Skill 失败: %s", readPayload.Text)
+	}
+	if !strings.Contains(readPayload.Text, "Demo instructions.") || !strings.Contains(readPayload.Text, "echo") {
+		t.Fatalf("Skill 详情应包含说明和脚本，实际为: %s", readPayload.Text)
+	}
+
+	commandArgs, err := json.Marshal(map[string]any{
+		"command":      "bash",
+		"command_args": []string{filepath.Join(scriptDir, "echo.sh")},
+		"working_dir":  demoDir,
+		"stdin":        `{"args":{"message":"hello"}}`,
+	})
+	if err != nil {
+		t.Fatalf("构造命令参数失败: %v", err)
+	}
+	runResult := executeTelegramAgentFunctionToolCall(ctx, chatID, cfg, telegramAgentOpenAIToolCall{
+		ID:   "call_run_skill",
+		Type: "function",
+		Function: telegramAgentOpenAIFunctionCall{
+			Name:      telegramAgentToolRunTerminalCommand,
+			Arguments: string(commandArgs),
+		},
+	})
+	runPayload := parseTelegramAgentToolResultPayload(runResult)
+	if !runPayload.OK || !runPayload.Final {
+		t.Fatalf("执行 Skill 命令失败: %+v", runPayload)
+	}
+	if !strings.Contains(runPayload.Text, "skill-ok") || !strings.Contains(runPayload.Text, "已执行命令") || !strings.Contains(runPayload.Text, "Skill：demo") {
+		t.Fatalf("Skill 命令输出不正确: %s", runPayload.Text)
+	}
+
+	var actionLog models.TelegramAgentToolCallLog
+	if err := db.Where("chat_id = ? AND source = ? AND tool_name = ?", chatID, telegramAgentToolLogSourceToolAction, telegramAgentToolRunTerminalCommand).
+		Order("id DESC").
+		First(&actionLog).Error; err != nil {
+		t.Fatalf("读取 Skill 命令审计日志失败: %v", err)
+	}
+	if actionLog.Status != telegramAgentToolLogStatusExecuted || actionLog.RequiresConfirmation != 0 {
+		t.Fatalf("Skill 命令审计日志状态不正确: %+v", actionLog)
+	}
+}
+
+func TestTelegramAgentSkillScriptRequiresConfirmation(t *testing.T) {
+	db := setupTelegramAgentToolTestDB(t, "tg_agent_skill_tools_confirm")
+	ctx := context.Background()
+	chatID := int64(6801293714)
+	telegramPendingToolActions.Delete(chatID)
+
+	root := t.TempDir()
+	confirmDir := filepath.Join(root, "confirm")
+	scriptDir := filepath.Join(confirmDir, "scripts")
+	if err := os.MkdirAll(scriptDir, 0o755); err != nil {
+		t.Fatalf("创建 Skill 脚本目录失败: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(confirmDir, "SKILL.md"), []byte(strings.Join([]string{
+		"---",
+		"name: confirm",
+		"description: Confirm skill",
+		"enabled: true",
+		"scripts:",
+		"  - name: dangerous",
+		"    path: scripts/dangerous.sh",
+		"    description: Requires confirmation",
+		"    confirm: true",
+		"---",
+		"Confirm instructions.",
+	}, "\n")), 0o644); err != nil {
+		t.Fatalf("写入 Skill 文件失败: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(scriptDir, "dangerous.sh"), []byte(strings.Join([]string{
+		"#!/bin/sh",
+		"printf '{\"ok\":true,\"text\":\"confirmed-run\"}'",
+	}, "\n")), 0o755); err != nil {
+		t.Fatalf("写入 Skill 脚本失败: %v", err)
+	}
+
+	requireConfirm := true
+	skillsEnabled := true
+	cfg := models.TelegramAgentConfig{
+		ToolConfirmationRequired: &requireConfirm,
+		SkillsEnabled:            &skillsEnabled,
+		SkillsDir:                root,
+	}
+	commandArgs, err := json.Marshal(map[string]any{
+		"command":      "bash",
+		"command_args": []string{filepath.Join(scriptDir, "dangerous.sh")},
+		"working_dir":  confirmDir,
+	})
+	if err != nil {
+		t.Fatalf("构造命令参数失败: %v", err)
+	}
+	result := executeTelegramAgentFunctionToolCall(ctx, chatID, cfg, telegramAgentOpenAIToolCall{
+		ID:   "call_run_skill_confirm",
+		Type: "function",
+		Function: telegramAgentOpenAIFunctionCall{
+			Name:      telegramAgentToolRunTerminalCommand,
+			Arguments: string(commandArgs),
+		},
+	})
+	payload := parseTelegramAgentToolResultPayload(result)
+	if !payload.OK || !payload.Final || !strings.Contains(payload.Text, "待确认操作") {
+		t.Fatalf("期望 Skill 脚本进入待确认，实际为: %+v", payload)
+	}
+
+	var pendingCount int64
+	if err := db.Model(&models.TelegramAgentPendingAction{}).Where("chat_id = ?", chatID).Count(&pendingCount).Error; err != nil {
+		t.Fatalf("统计待确认操作失败: %v", err)
+	}
+	if pendingCount != 1 {
+		t.Fatalf("期望待确认操作落库 1 条，实际为 %d", pendingCount)
+	}
+
+	client := &telegramToolTestClient{}
+	handled, err := HandleTelegramMessage(ctx, client, TelegramMessage{ChatID: chatID, Text: "确认"})
+	if err != nil || !handled {
+		t.Fatalf("确认 Skill 脚本失败，handled=%v err=%v", handled, err)
+	}
+	if !strings.Contains(client.lastSent(), "confirmed-run") {
+		t.Fatalf("确认后应执行 Skill 脚本，实际为: %s", client.lastSent())
+	}
+}
+
+func TestTelegramAgentSkillScriptSkipsConfirmationWhenGlobalDisabled(t *testing.T) {
+	db := setupTelegramAgentToolTestDB(t, "tg_agent_skill_tools_global_confirm_disabled")
+	ctx := context.Background()
+	chatID := int64(6801293715)
+	telegramPendingToolActions.Delete(chatID)
+
+	root := t.TempDir()
+	confirmDir := filepath.Join(root, "confirm-disabled")
+	scriptDir := filepath.Join(confirmDir, "scripts")
+	if err := os.MkdirAll(scriptDir, 0o755); err != nil {
+		t.Fatalf("创建 Skill 脚本目录失败: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(confirmDir, "SKILL.md"), []byte(strings.Join([]string{
+		"---",
+		"name: confirm-disabled",
+		"description: Confirm disabled skill",
+		"enabled: true",
+		"scripts:",
+		"  - name: search",
+		"    path: scripts/search.sh",
+		"    description: Should run directly when global confirmation is disabled",
+		"    confirm: true",
+		"---",
+		"Confirm disabled instructions.",
+	}, "\n")), 0o644); err != nil {
+		t.Fatalf("写入 Skill 文件失败: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(scriptDir, "search.sh"), []byte(strings.Join([]string{
+		"#!/bin/sh",
+		"printf '{\"ok\":true,\"text\":\"direct-run\"}'",
+	}, "\n")), 0o755); err != nil {
+		t.Fatalf("写入 Skill 脚本失败: %v", err)
+	}
+
+	requireConfirm := false
+	skillsEnabled := true
+	cfg := models.TelegramAgentConfig{
+		ToolConfirmationRequired: &requireConfirm,
+		SkillsEnabled:            &skillsEnabled,
+		SkillsDir:                root,
+	}
+	commandArgs, err := json.Marshal(map[string]any{
+		"command":      "bash",
+		"command_args": []string{filepath.Join(scriptDir, "search.sh")},
+		"working_dir":  confirmDir,
+	})
+	if err != nil {
+		t.Fatalf("构造命令参数失败: %v", err)
+	}
+	result := executeTelegramAgentFunctionToolCall(ctx, chatID, cfg, telegramAgentOpenAIToolCall{
+		ID:   "call_run_skill_global_confirm_disabled",
+		Type: "function",
+		Function: telegramAgentOpenAIFunctionCall{
+			Name:      telegramAgentToolRunTerminalCommand,
+			Arguments: string(commandArgs),
+		},
+	})
+	payload := parseTelegramAgentToolResultPayload(result)
+	if !payload.OK || !payload.Final || !strings.Contains(payload.Text, "direct-run") {
+		t.Fatalf("全局关闭确认时应直接执行 Skill 脚本，实际为: %+v", payload)
+	}
+	if strings.Contains(payload.Text, "待确认操作") {
+		t.Fatalf("全局关闭确认时不应创建待确认操作，实际为: %s", payload.Text)
+	}
+
+	var pendingCount int64
+	if err := db.Model(&models.TelegramAgentPendingAction{}).Where("chat_id = ?", chatID).Count(&pendingCount).Error; err != nil {
+		t.Fatalf("统计待确认操作失败: %v", err)
+	}
+	if pendingCount != 0 {
+		t.Fatalf("全局关闭确认时不应落库待确认操作，实际为 %d", pendingCount)
+	}
+
+	var actionLog models.TelegramAgentToolCallLog
+	if err := db.Where("chat_id = ? AND source = ? AND tool_name = ?", chatID, telegramAgentToolLogSourceToolAction, telegramAgentToolRunTerminalCommand).
+		Order("id DESC").
+		First(&actionLog).Error; err != nil {
+		t.Fatalf("读取 Skill 命令审计日志失败: %v", err)
+	}
+	if actionLog.Status != telegramAgentToolLogStatusExecuted || actionLog.RequiresConfirmation != 0 {
+		t.Fatalf("全局关闭确认时审计日志应记录直接执行，实际为: %+v", actionLog)
+	}
+}
+
+func TestTelegramAgentSkillManagementListToggleMarketAndImport(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	marketRoot := t.TempDir()
+	t.Setenv("ORVION_SKILL_MARKET_DIR", marketRoot)
+
+	writeTelegramAgentTestSkill(t, root, "deploy", "skills.md", true, "Deploy project pipeline", "run")
+	marketSkillDir := writeTelegramAgentTestSkill(t, marketRoot, "docs", "SKILL.md", true, "Generate project docs", "build")
+
+	skillsEnabled := true
+	cfg := models.TelegramAgentConfig{
+		SkillsEnabled: &skillsEnabled,
+		SkillsDir:     root,
+	}
+
+	listResult, err := ListTelegramAgentSkillsForManagement(ctx, cfg, "部署 pipeline", TelegramAgentSkillSearchEmbedding)
+	if err != nil {
+		t.Fatalf("embedding 检索 Skill 失败: %v", err)
+	}
+	if len(listResult.Skills) != 1 || listResult.Skills[0].Name != "deploy" {
+		t.Fatalf("期望检索到 deploy Skill，实际为: %+v", listResult.Skills)
+	}
+
+	updated, err := SetTelegramAgentSkillEnabled(ctx, cfg, "deploy", false)
+	if err != nil {
+		t.Fatalf("禁用 Skill 失败: %v", err)
+	}
+	if updated.Enabled {
+		t.Fatalf("期望 Skill 已禁用: %+v", updated)
+	}
+	raw, err := os.ReadFile(filepath.Join(root, "deploy", "skills.md"))
+	if err != nil {
+		t.Fatalf("读取 Skill 文件失败: %v", err)
+	}
+	if !strings.Contains(string(raw), "enabled: false") {
+		t.Fatalf("Skill 文件未写入禁用状态: %s", raw)
+	}
+
+	market, err := ListTelegramAgentSkillMarket(ctx, cfg, "")
+	if err != nil {
+		t.Fatalf("读取本地 Skill 市场失败: %v", err)
+	}
+	if len(market.Skills) != 1 || market.Skills[0].Name != "docs" || market.Skills[0].Installed {
+		t.Fatalf("市场列表不正确: %+v", market.Skills)
+	}
+
+	imported, err := ImportTelegramAgentSkill(ctx, cfg, TelegramAgentSkillImportRequest{
+		SourcePath: marketSkillDir,
+	})
+	if err != nil {
+		t.Fatalf("导入 Skill 失败: %v", err)
+	}
+	if imported.Name != "docs" {
+		t.Fatalf("导入后的 Skill 名称不正确: %+v", imported)
+	}
+	if _, err := os.Stat(filepath.Join(root, "docs", "SKILL.md")); err != nil {
+		t.Fatalf("导入后的 Skill 文件不存在: %v", err)
+	}
+
+	mismatchDir := writeTelegramAgentTestSkillWithMetaName(t, marketRoot, "UltimateSearchSkill-main", "ultimate-search", "SKILL.md", true, "Search skill", "search")
+	importedMismatch, err := ImportTelegramAgentSkill(ctx, cfg, TelegramAgentSkillImportRequest{
+		SourcePath: mismatchDir,
+	})
+	if err != nil {
+		t.Fatalf("导入目录名和 Skill 名不同的 Skill 失败: %v", err)
+	}
+	if importedMismatch.Name != "ultimate-search" {
+		t.Fatalf("应返回 SKILL.md 中的真实名称，实际为: %+v", importedMismatch)
+	}
+	if _, err := os.Stat(filepath.Join(root, "UltimateSearchSkill-main", "SKILL.md")); err != nil {
+		t.Fatalf("目录名不同的 Skill 文件未复制成功: %v", err)
+	}
+
+	importedExisting, err := ImportTelegramAgentSkill(ctx, cfg, TelegramAgentSkillImportRequest{
+		SourcePath: mismatchDir,
+	})
+	if err != nil {
+		t.Fatalf("重复导入已存在且有效的 Skill 应返回已有记录: %v", err)
+	}
+	if importedExisting.Name != "ultimate-search" {
+		t.Fatalf("重复导入应返回已有 Skill 的真实名称，实际为: %+v", importedExisting)
+	}
+}
+
+func TestTelegramAgentSkillFunctionDefinitionsAreDynamic(t *testing.T) {
+	root := t.TempDir()
+	writeTelegramAgentTestSkill(t, root, "writer", "SKILL.md", true, "Write release notes", "compose")
+
+	skillsEnabled := true
+	disabled := false
+	withoutSkills := telegramAgentFunctionToolDefinitions(models.TelegramAgentConfig{
+		SkillsEnabled: &disabled,
+		SkillsDir:     root,
+	})
+	if _, ok := findTelegramAgentFunctionDefinitionForTest(withoutSkills, telegramAgentToolListSkills); ok {
+		t.Fatalf("Skills 未启用时不应暴露 Skills 工具")
+	}
+
+	withSkills := telegramAgentFunctionToolDefinitions(models.TelegramAgentConfig{
+		SkillsEnabled: &skillsEnabled,
+		SkillsDir:     root,
+	})
+	if _, ok := findTelegramAgentFunctionDefinitionForTest(withSkills, telegramAgentToolListSkills); !ok {
+		t.Fatalf("Skills 启用时应暴露 list_skills")
+	}
+	readDef, ok := findTelegramAgentFunctionDefinitionForTest(withSkills, telegramAgentToolReadSkill)
+	if !ok {
+		t.Fatalf("Skills 启用且存在启用项时应暴露 read_skill")
+	}
+	if _, ok := findTelegramAgentFunctionDefinitionForTest(withSkills, telegramAgentToolRunTerminalCommand); !ok {
+		t.Fatalf("Skills 启用且存在启用项时应暴露 run_terminal_command")
+	}
+	skillProp, ok := readDef.Properties["skill"].(map[string]any)
+	if !ok {
+		t.Fatalf("read_skill 缺少 skill 属性: %+v", readDef.Properties)
+	}
+	enumValues, ok := skillProp["enum"].([]string)
+	if !ok || len(enumValues) != 1 || enumValues[0] != "writer" {
+		t.Fatalf("Skill enum 未按本地扫描动态生成: %+v", skillProp["enum"])
+	}
+}
+
+func TestTelegramAgentFunctionToolRequiredIsArray(t *testing.T) {
+	tool := telegramAgentFunctionTool(
+		telegramAgentToolListModels,
+		"查看模型",
+		map[string]any{"query": map[string]any{"type": "string"}},
+		nil,
+	)
+	function, ok := tool["function"].(map[string]any)
+	if !ok {
+		t.Fatalf("工具声明缺少 function: %+v", tool)
+	}
+	parameters, ok := function["parameters"].(map[string]any)
+	if !ok {
+		t.Fatalf("工具声明缺少 parameters: %+v", function)
+	}
+	required, ok := parameters["required"].([]string)
+	if !ok {
+		t.Fatalf("required 必须是数组，实际为 %T: %+v", parameters["required"], parameters["required"])
+	}
+	if len(required) != 0 {
+		t.Fatalf("无必填参数时 required 应为空数组，实际为 %+v", required)
+	}
+}
+
 func TestMergeTelegramAgentConfigPreservesToolConfirmationDisabled(t *testing.T) {
 	baseRequireConfirm := true
 	overrideRequireConfirm := false
@@ -1214,6 +1795,59 @@ func TestMergeTelegramAgentConfigPreservesToolConfirmationDisabled(t *testing.T)
 	if telegramAgentRequiresToolConfirmation(merged) {
 		t.Fatalf("期望配置覆盖后关闭工具确认")
 	}
+}
+
+func TestMergeTelegramAgentConfigIgnoresStoredSkillsDir(t *testing.T) {
+	merged := mergeTelegramAgentConfig(
+		models.TelegramAgentConfig{SkillsDir: "env-skills"},
+		models.TelegramAgentConfig{SkillsDir: "db-skills"},
+	)
+	if merged.SkillsDir != "env-skills" {
+		t.Fatalf("skills_dir 应只由环境变量或默认值控制，实际为: %s", merged.SkillsDir)
+	}
+}
+
+func writeTelegramAgentTestSkill(t *testing.T, root string, name string, fileName string, enabled bool, description string, scriptName string) string {
+	return writeTelegramAgentTestSkillWithMetaName(t, root, name, name, fileName, enabled, description, scriptName)
+}
+
+func writeTelegramAgentTestSkillWithMetaName(t *testing.T, root string, dirName string, metaName string, fileName string, enabled bool, description string, scriptName string) string {
+	t.Helper()
+	dir := filepath.Join(root, dirName)
+	scriptDir := filepath.Join(dir, "scripts")
+	if err := os.MkdirAll(scriptDir, 0o755); err != nil {
+		t.Fatalf("创建测试 Skill 目录失败: %v", err)
+	}
+	lines := []string{
+		"---",
+		"name: " + metaName,
+		"description: " + description,
+		fmt.Sprintf("enabled: %t", enabled),
+		"triggers: [" + metaName + "]",
+		"scripts:",
+		"  - name: " + scriptName,
+		"    path: scripts/" + scriptName + ".sh",
+		"    description: " + description,
+		"    confirm: false",
+		"---",
+		description,
+	}
+	if err := os.WriteFile(filepath.Join(dir, fileName), []byte(strings.Join(lines, "\n")), 0o644); err != nil {
+		t.Fatalf("写入测试 Skill 文件失败: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(scriptDir, scriptName+".sh"), []byte("#!/bin/sh\nprintf '{\"ok\":true,\"text\":\"ok\"}'\n"), 0o755); err != nil {
+		t.Fatalf("写入测试 Skill 脚本失败: %v", err)
+	}
+	return dir
+}
+
+func findTelegramAgentFunctionDefinitionForTest(definitions []telegramAgentFunctionToolDefinition, name string) (telegramAgentFunctionToolDefinition, bool) {
+	for _, definition := range definitions {
+		if definition.Name == name {
+			return definition, true
+		}
+	}
+	return telegramAgentFunctionToolDefinition{}, false
 }
 
 func setupTelegramAgentToolTestDB(t *testing.T, name string) *gorm.DB {
@@ -1234,6 +1868,7 @@ func setupTelegramAgentToolTestDB(t *testing.T, name string) *gorm.DB {
 		&models.Provider{},
 		&models.ModelWithProvider{},
 		&models.AuthKey{},
+		&models.TelegramAgentSession{},
 		&models.TelegramAgentPendingAction{},
 		&models.TelegramAgentToolCallLog{},
 	); err != nil {

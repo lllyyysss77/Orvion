@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"strconv"
 	"strings"
 
 	"github.com/racio/orvion/models"
@@ -23,7 +24,7 @@ func telegramAgentFunctionToolDefinitions(cfg models.TelegramAgentConfig) []tele
 		mutationDescriptionSuffix = "该工具会直接执行修改，不需要用户再次确认。"
 	}
 
-	return []telegramAgentFunctionToolDefinition{
+	definitions := []telegramAgentFunctionToolDefinition{
 		{
 			Name:        telegramAgentToolListModels,
 			Description: "查看 Orvion 模型列表，可按关键词筛选。",
@@ -72,6 +73,20 @@ func telegramAgentFunctionToolDefinitions(cfg models.TelegramAgentConfig) []tele
 				"limit":          map[string]any{"type": "integer", "description": "最多返回条数，默认 10，最大 50。"},
 			},
 			Handler: telegramAgentFunctionReadRequestLogs,
+		},
+		{
+			Name:        telegramAgentToolListAuthKeys,
+			Description: "查看 Orvion API Key 列表，只返回项目名称、掩码 Key、状态、权限、RPM、用量和最后使用时间，不返回完整 Key。",
+			Properties: map[string]any{
+				"query": map[string]any{"type": "string", "description": "API Key 项目名称筛选关键词，可为空。"},
+				"status": map[string]any{
+					"type":        "string",
+					"description": "状态筛选。all 表示不过滤状态。",
+					"enum":        []string{"all", "enabled", "disabled"},
+				},
+				"limit": map[string]any{"type": "integer", "description": "最多返回条数，默认 20，最大 50。"},
+			},
+			Handler: telegramAgentFunctionListAuthKeys,
 		},
 		{
 			Name:        telegramAgentToolCreateAuthKey,
@@ -207,6 +222,111 @@ func telegramAgentFunctionToolDefinitions(cfg models.TelegramAgentConfig) []tele
 			Handler:  telegramAgentFunctionUpdateProviderConfig,
 		},
 	}
+
+	return append(definitions, telegramAgentSkillFunctionToolDefinitions(cfg)...)
+}
+
+func telegramAgentSkillFunctionToolDefinitions(cfg models.TelegramAgentConfig) []telegramAgentFunctionToolDefinition {
+	if !telegramAgentSkillsEnabled(cfg) {
+		return nil
+	}
+
+	skills, err := scanTelegramAgentSkills(cfg)
+	catalogText := "当前 Skill 目录尚未扫描到可用 Skill。"
+	skillNames := []string{}
+	if err == nil {
+		catalogText = summarizeTelegramAgentSkillToolCatalog(skills)
+		for _, skill := range skills {
+			if skill.Enabled {
+				skillNames = append(skillNames, skill.Name)
+			}
+		}
+	} else {
+		catalogText = "当前 Skill 目录扫描失败：" + err.Error()
+	}
+
+	listProperties := map[string]any{
+		"query": map[string]any{"type": "string", "description": "Skill 名称、描述、触发词或自然语言需求，可为空。"},
+		"search_mode": map[string]any{
+			"type":        "string",
+			"description": "检索方式。keyword 表示关键词匹配；embedding 表示向量相似度检索，配置了远端向量模型时会使用远端向量模型。",
+			"enum":        []string{TelegramAgentSkillSearchKeyword, TelegramAgentSkillSearchEmbedding},
+		},
+		"limit": map[string]any{"type": "integer", "description": "最多返回条数，默认 20，最大 50。"},
+	}
+	definitions := []telegramAgentFunctionToolDefinition{
+		{
+			Name:        telegramAgentToolListSkills,
+			Description: "查看本地 Agent Skills 列表。Skills 来自本地目录中的 skills.md 或 SKILL.md；支持 keyword 与 embedding 检索。" + catalogText,
+			Properties:  listProperties,
+			Handler:     telegramAgentFunctionListSkills,
+		},
+	}
+	if len(skillNames) == 0 {
+		return definitions
+	}
+
+	skillProperty := map[string]any{"type": "string", "description": "Skill 名称。"}
+	if len(skillNames) > 0 {
+		skillProperty["enum"] = skillNames
+	}
+	definitions = append(definitions,
+		telegramAgentFunctionToolDefinition{
+			Name:        telegramAgentToolReadSkill,
+			Description: "读取指定 Skill 的说明、Skill 目录、脚本相对路径和绝对路径。需要执行脚本时，先读取 Skill，再使用 run_terminal_command 按绝对路径执行。" + catalogText,
+			Properties: map[string]any{
+				"skill": skillProperty,
+			},
+			Required: []string{"skill"},
+			Handler:  telegramAgentFunctionReadSkill,
+		},
+		telegramAgentFunctionToolDefinition{
+			Name:        telegramAgentToolRunTerminalCommand,
+			Description: "执行本地命令行工具，用于按 Skill 说明运行脚本。请先 read_skill 获取脚本绝对路径，再用 command + command_args + working_dir 结构化执行；不要使用 bash -c/sh -c/zsh -c。执行会进入确认机制和审计日志。" + catalogText,
+			Properties: map[string]any{
+				"command":      map[string]any{"type": "string", "description": "可执行命令或绝对路径，例如 bash、python3、node 或 /path/to/script。必须是单个命令，参数放 command_args。"},
+				"command_args": map[string]any{"type": "array", "description": "命令参数列表，例如 [\"/abs/skill/scripts/search.sh\", \"--query\", \"广州天气\"]。", "items": map[string]any{"type": "string"}},
+				"working_dir":  map[string]any{"type": "string", "description": "工作目录。执行 Skill 脚本时通常传 read_skill 返回的 Skill 目录。"},
+				"stdin":        map[string]any{"type": "string", "description": "可选 stdin 文本。脚本要求 JSON stdin 时再传。"},
+				"timeout_ms":   map[string]any{"type": "integer", "description": "超时时间，默认 30000，最大 120000。"},
+			},
+			Required: []string{"command"},
+			Handler:  telegramAgentFunctionRunTerminalCommand,
+		},
+	)
+	return definitions
+}
+
+func summarizeTelegramAgentSkillToolCatalog(skills []telegramAgentSkill) string {
+	enabled := make([]telegramAgentSkill, 0, len(skills))
+	for _, skill := range skills {
+		if skill.Enabled {
+			enabled = append(enabled, skill)
+		}
+	}
+	if len(enabled) == 0 {
+		return "当前没有启用的 Skill。"
+	}
+	limit := len(enabled)
+	if limit > 8 {
+		limit = 8
+	}
+	parts := make([]string, 0, limit)
+	for _, skill := range enabled[:limit] {
+		scriptNames := make([]string, 0, len(skill.Scripts))
+		for _, script := range skill.Scripts {
+			scriptNames = append(scriptNames, script.Name)
+		}
+		if len(scriptNames) == 0 {
+			parts = append(parts, skill.Name+"（无脚本）")
+			continue
+		}
+		parts = append(parts, skill.Name+"（脚本："+strings.Join(scriptNames, "、")+"）")
+	}
+	if len(enabled) > limit {
+		parts = append(parts, "还有 "+strconv.Itoa(len(enabled)-limit)+" 个")
+	}
+	return "当前启用 Skill：" + strings.Join(parts, "；") + "。"
 }
 
 func findTelegramAgentFunctionToolDefinition(cfg models.TelegramAgentConfig, name string) (telegramAgentFunctionToolDefinition, bool) {
@@ -249,6 +369,42 @@ func telegramAgentFunctionReadRequestLogs(ctx context.Context, _ int64, _ models
 		return telegramAgentToolResult(false, "读取请求日志失败："+err.Error())
 	}
 	return telegramAgentToolResult(true, text)
+}
+
+func telegramAgentFunctionListAuthKeys(ctx context.Context, _ int64, _ models.TelegramAgentConfig, args telegramAgentToolCallArgs) string {
+	text, err := listTelegramAgentAuthKeys(ctx, args)
+	if err != nil {
+		return telegramAgentToolResult(false, "查看 API Key 失败："+err.Error())
+	}
+	return telegramAgentToolResult(true, text)
+}
+
+func telegramAgentFunctionListSkills(ctx context.Context, _ int64, cfg models.TelegramAgentConfig, args telegramAgentToolCallArgs) string {
+	text, err := listTelegramAgentSkills(ctx, cfg, args)
+	if err != nil {
+		return telegramAgentToolResult(false, "查看 Skills 失败："+err.Error())
+	}
+	return telegramAgentToolResult(true, text)
+}
+
+func telegramAgentFunctionReadSkill(ctx context.Context, _ int64, cfg models.TelegramAgentConfig, args telegramAgentToolCallArgs) string {
+	text, err := readTelegramAgentSkill(ctx, cfg, args)
+	if err != nil {
+		return telegramAgentToolResult(false, "读取 Skill 失败："+err.Error())
+	}
+	return telegramAgentToolResult(true, text)
+}
+
+func telegramAgentFunctionRunTerminalCommand(ctx context.Context, chatID int64, cfg models.TelegramAgentConfig, args telegramAgentToolCallArgs) string {
+	action, requireConfirmation, err := buildTelegramRunCommandAction(ctx, chatID, cfg, args)
+	if err != nil {
+		return telegramAgentToolResult(false, "准备执行命令失败："+err.Error())
+	}
+	text, err := prepareOrExecuteTelegramToolAction(ctx, action, requireConfirmation)
+	if err != nil {
+		return telegramAgentToolFinalResult(false, "执行命令失败："+err.Error())
+	}
+	return telegramAgentToolFinalResult(true, text)
 }
 
 func telegramAgentFunctionCreateAuthKey(ctx context.Context, chatID int64, cfg models.TelegramAgentConfig, args telegramAgentToolCallArgs) string {

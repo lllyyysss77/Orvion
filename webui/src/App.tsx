@@ -18,6 +18,8 @@ const SystemLogsPage = lazy(() => import('./routes/system-logs'));
 const LoginPage = lazy(() => import('./routes/login'));
 const ConfigPage = lazy(() => import('./routes/config'));
 const AuthKeysPage = lazy(() => import('./routes/auth-keys'));
+const SkillsPage = lazy(() => import('./routes/skills'));
+const TelegramAgentPage = lazy(() => import('./routes/tg-agent'));
 
 // 简单的加载组件
 const PageLoader = () => (
@@ -48,6 +50,8 @@ function App() {
                   <Route path="system-logs" element={<SystemLogsPage />} />
                   <Route path="config" element={<ConfigPage />} />
                   <Route path="auth-keys" element={<AuthKeysPage />} />
+                  <Route path="skills" element={<SkillsPage />} />
+                  <Route path="tg-agent" element={<TelegramAgentPage />} />
                 </Route>
               </Routes>
             </Suspense>

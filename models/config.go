@@ -65,6 +65,9 @@ type TelegramAgentConfig struct {
 	Temperature              *float64 `json:"temperature,omitempty"`
 	EditIntervalMs           int      `json:"edit_interval_ms"`
 	ToolConfirmationRequired *bool    `json:"tool_confirmation_required,omitempty"`
+	SkillsEnabled            *bool    `json:"skills_enabled,omitempty"`
+	SkillsDir                string   `json:"-"`
+	SkillsEmbeddingModel     string   `json:"skills_embedding_model,omitempty"`
 }
 
 type ModelPriceSyncConfig struct {

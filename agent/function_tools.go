@@ -29,8 +29,12 @@ const (
 	telegramAgentToolUpdateProviderConfig = "update_provider_config"
 	telegramAgentToolReadSystemLogs       = "read_system_logs"
 	telegramAgentToolReadRequestLogs      = "read_request_logs"
+	telegramAgentToolListAuthKeys         = "list_auth_keys"
 	telegramAgentToolCreateAuthKey        = "create_auth_key"
 	telegramAgentToolUpdateAuthKey        = "update_auth_key"
+	telegramAgentToolListSkills           = "list_skills"
+	telegramAgentToolReadSkill            = "read_skill"
+	telegramAgentToolRunTerminalCommand   = "run_terminal_command"
 )
 
 type telegramAgentOpenAIMessage struct {
@@ -53,6 +57,7 @@ type telegramAgentOpenAIFunctionCall struct {
 
 type telegramAgentToolCallArgs struct {
 	Query                      string                              `json:"query"`
+	SearchMode                 string                              `json:"search_mode"`
 	Limit                      int                                 `json:"limit"`
 	Level                      string                              `json:"level"`
 	Status                     string                              `json:"status"`
@@ -82,6 +87,12 @@ type telegramAgentToolCallArgs struct {
 	Capabilities               *[]string                           `json:"capabilities"`
 	InterfaceConversionEnabled *bool                               `json:"interface_conversion_enabled"`
 	InterfaceConversionTarget  *string                             `json:"interface_conversion_target"`
+	Skill                      string                              `json:"skill"`
+	Command                    string                              `json:"command"`
+	CommandArgs                []string                            `json:"command_args"`
+	WorkingDir                 string                              `json:"working_dir"`
+	Stdin                      *string                             `json:"stdin"`
+	TimeoutMs                  int                                 `json:"timeout_ms"`
 }
 
 type telegramAgentModelStatusBatchItem struct {
@@ -104,7 +115,7 @@ type telegramAgentToolResultPayload struct {
 	Final bool   `json:"final,omitempty"`
 }
 
-func streamTelegramAgentReplyWithFunctionTools(ctx context.Context, cfg models.TelegramAgentConfig, selected selectedModelProvider, history []chatMessage, prompt string, chatID int64, onDelta streamDeltaHandler) (telegramAgentReplyResult, error) {
+func streamTelegramAgentReplyWithFunctionTools(ctx context.Context, cfg models.TelegramAgentConfig, selected selectedModelProvider, history []chatMessage, prompt string, chatID int64, onDelta streamDeltaHandler, onStatus streamStatusHandler) (telegramAgentReplyResult, error) {
 	result := telegramAgentReplyResult{
 		Selected:  selected,
 		StartedAt: time.Now(),
@@ -170,9 +181,62 @@ func streamTelegramAgentReplyWithFunctionTools(ctx context.Context, cfg models.T
 			normalizeTelegramAgentUsage(&result.Usage)
 			return result, nil
 		}
+		if telegramAgentToolCallsNeedResultSummary(streamResult.ToolCalls) && onStatus != nil {
+			if err := onStatus("脚本已执行完成，正在整理结果..."); err != nil {
+				return result, err
+			}
+		}
 	}
 
 	return result, errors.New("工具调用轮次过多，请拆成更明确的指令")
+}
+
+func streamTelegramAgentPlainReplyWithSelected(ctx context.Context, cfg models.TelegramAgentConfig, selected selectedModelProvider, history []chatMessage, prompt string, onDelta streamDeltaHandler) (telegramAgentReplyResult, error) {
+	result := telegramAgentReplyResult{
+		Selected:  selected,
+		StartedAt: time.Now(),
+	}
+	cfg = withTelegramAgentSystemPromptSuffix(cfg, telegramAgentToolResultFollowupSystemPrompt())
+
+	var body []byte
+	var endpointCtx context.Context
+	var err error
+	if selected.ProviderStyle == consts.StyleOpenAI {
+		messages := toTelegramAgentOpenAIMessages(strings.TrimSpace(cfg.SystemPrompt), history, prompt)
+		body, err = buildTelegramAgentOpenAIChatBody(cfg, messages, true, false)
+		endpointCtx = context.WithValue(ctx, consts.ContextKeyOpenAIEndpoint, "chat/completions")
+	} else {
+		body, endpointCtx, err = buildTelegramAgentRequestBody(ctx, cfg, selected, history, prompt)
+	}
+	if err != nil {
+		return result, err
+	}
+	result.RequestBody = append([]byte(nil), body...)
+
+	res, proxyMs, err := performTelegramAgentProviderRequestWithContext(endpointCtx, selected, body, true, result.StartedAt)
+	if err != nil {
+		return result, err
+	}
+	if result.ProxyTimeMs == 0 {
+		result.ProxyTimeMs = proxyMs
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
+		result.Size += len(body)
+		return result, fmt.Errorf("%s/%s 返回状态 %d: %s", selected.ProviderName, selected.ProviderModel, res.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	streamResult, err := readTelegramAgentStream(ctx, selected.ProviderStyle, res.Body, result.StartedAt, onDelta)
+	mergeTelegramAgentUsageAdd(&result.Usage, streamResult.Usage)
+	if result.FirstChunkTimeMs == 0 {
+		result.FirstChunkTimeMs = streamResult.FirstChunkTimeMs
+	}
+	result.ChunkTimeMs += streamResult.ChunkTimeMs
+	result.Size += streamResult.Size
+	normalizeTelegramAgentUsage(&result.Usage)
+	return result, err
 }
 
 func appendTelegramAgentToolResults(ctx context.Context, chatID int64, cfg models.TelegramAgentConfig, toolCalls []telegramAgentOpenAIToolCall, messages []telegramAgentOpenAIMessage) ([]telegramAgentOpenAIMessage, string) {
@@ -191,15 +255,28 @@ func appendTelegramAgentToolResults(ctx context.Context, chatID int64, cfg model
 	return messages, directFinalText
 }
 
+func telegramAgentToolCallsNeedResultSummary(toolCalls []telegramAgentOpenAIToolCall) bool {
+	for _, toolCall := range toolCalls {
+		if strings.TrimSpace(toolCall.Function.Name) == telegramAgentToolRunTerminalCommand {
+			return true
+		}
+	}
+	return false
+}
+
 func performTelegramAgentProviderRequest(ctx context.Context, selected selectedModelProvider, body []byte, stream bool, startedAt time.Time) (*http.Response, int, error) {
+	endpointCtx := context.WithValue(ctx, consts.ContextKeyOpenAIEndpoint, "chat/completions")
+	return performTelegramAgentProviderRequestWithContext(endpointCtx, selected, body, stream, startedAt)
+}
+
+func performTelegramAgentProviderRequestWithContext(ctx context.Context, selected selectedModelProvider, body []byte, stream bool, startedAt time.Time) (*http.Response, int, error) {
 	provider, err := providers.NewForStyleWithProxy(selected.ProviderStyle, selected.ProviderConfig, selected.ProviderProxy)
 	if err != nil {
 		return nil, 0, err
 	}
 
 	header := runtimesvc.BuildHeaders(nil, selected.WithHeader, selected.CustomerHeaders, stream)
-	endpointCtx := context.WithValue(ctx, consts.ContextKeyOpenAIEndpoint, "chat/completions")
-	req, err := provider.BuildReq(endpointCtx, header, selected.ProviderModel, body)
+	req, err := provider.BuildReq(ctx, header, selected.ProviderModel, body)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -338,10 +415,11 @@ func executeTelegramAgentFunctionToolCall(ctx context.Context, chatID int64, cfg
 	name := strings.TrimSpace(toolCall.Function.Name)
 	args := telegramAgentToolCallArgs{}
 	rawArgs := strings.TrimSpace(toolCall.Function.Arguments)
+	logID := recordTelegramAgentFunctionToolCallExecutingLog(ctx, chatID, cfg, toolCall, rawArgs)
 	if rawArgs != "" {
 		if err := json.Unmarshal([]byte(rawArgs), &args); err != nil {
 			result := telegramAgentToolResult(false, "工具参数不是合法 JSON："+err.Error())
-			recordTelegramAgentFunctionToolCallLog(ctx, chatID, cfg, toolCall, rawArgs, result)
+			finishTelegramAgentFunctionToolCallLog(ctx, logID, chatID, cfg, toolCall, rawArgs, result)
 			return result
 		}
 	}
@@ -349,11 +427,11 @@ func executeTelegramAgentFunctionToolCall(ctx context.Context, chatID int64, cfg
 	definition, ok := findTelegramAgentFunctionToolDefinition(cfg, name)
 	if !ok {
 		result := telegramAgentToolResult(false, "未知工具："+name)
-		recordTelegramAgentFunctionToolCallLog(ctx, chatID, cfg, toolCall, rawArgs, result)
+		finishTelegramAgentFunctionToolCallLog(ctx, logID, chatID, cfg, toolCall, rawArgs, result)
 		return result
 	}
 	result := definition.Handler(ctx, chatID, cfg, args)
-	recordTelegramAgentFunctionToolCallLog(ctx, chatID, cfg, toolCall, rawArgs, result)
+	finishTelegramAgentFunctionToolCallLog(ctx, logID, chatID, cfg, toolCall, rawArgs, result)
 	return result
 }
 
@@ -395,6 +473,8 @@ func telegramAgentFunctionToolSystemPrompt(cfg models.TelegramAgentConfig) strin
 		"修改提供商配置时，provider 的 config 字段使用 config_updates 做局部修改，例如 base_url、api_key；删除配置字段使用 remove_config_keys。",
 		"新增或修改 API Key 时，allow_all=false 表示限制模型；如用户给的是模型关键词，请用 model_keywords 批量匹配模型，不要把“claude 的模型”当成单个模型名。",
 		"不要在普通回复中泄露 api_key、token、secret、password 等敏感配置值。",
+		"用户提到 skills、技能、脚本、自动化能力包、本地能力扩展时，如果 Skills 工具可用，优先调用 list_skills/read_skill；用户用自然语言描述能力需求时，list_skills 可使用 search_mode=embedding；需要执行本地脚本时，先 read_skill 获取 Skill 目录和脚本绝对路径，再调用 run_terminal_command 自己执行命令，不要编造脚本结果。",
+		"run_terminal_command 使用结构化参数 command + command_args + working_dir；不要把整段 shell 文本塞进 command，也不要使用 bash -c/sh -c/zsh -c。",
 		"用户说“claude 的相关模型”“所有 claude 模型”“claude 那批模型”这类表达时，target 应为 claude，bulk 应为 true。",
 		"用户一句话里包含多个模型启停动作时，例如“禁用 claude 并开启 deepseek”，必须调用 set_models_status_batch，并把每个动作分别放进 items；不要只处理其中一个动作。",
 		"如果用户在同一句话中要求修改后继续检查某些模型或提供商状态，修改工具执行后还要继续调用查看工具，不要只总结修改结果。",
@@ -423,6 +503,9 @@ func telegramAgentFunctionTools(cfg models.TelegramAgentConfig) []map[string]any
 }
 
 func telegramAgentFunctionTool(name string, description string, properties map[string]any, required []string) map[string]any {
+	if required == nil {
+		required = []string{}
+	}
 	return map[string]any{
 		"type": "function",
 		"function": map[string]any{

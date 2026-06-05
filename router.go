@@ -143,6 +143,8 @@ func registerAdminAPIRoutes(router *gin.Engine, token string) {
 	registerModelRoutes(api)
 	registerModelProviderRoutes(api)
 	registerSystemRoutes(api)
+	registerTelegramAgentRoutes(api)
+	registerSkillRoutes(api)
 	registerAuthKeyRoutes(api)
 	registerConfigRoutes(api)
 	registerLimiterRoutes(api)
@@ -201,6 +203,26 @@ func registerSystemRoutes(api *gin.RouterGroup) {
 	api.GET("/system/tables/:name/rows", adminhandler.GetDatabaseTableRows)
 	api.GET("/user-agents", adminhandler.GetUserAgents)
 	api.POST("/logs/cleanup", adminhandler.CleanLogs)
+}
+
+func registerTelegramAgentRoutes(api *gin.RouterGroup) {
+	api.GET("/tg-agent/tool-call-logs", adminhandler.GetTelegramAgentToolCallLogs)
+	api.DELETE("/tg-agent/sessions", adminhandler.DeleteTelegramAgentSession)
+	api.DELETE("/tg-agent/sessions/:conversation_id", adminhandler.DeleteTelegramAgentSession)
+}
+
+func registerSkillRoutes(api *gin.RouterGroup) {
+	api.GET("/skills", adminhandler.GetSkills)
+	api.GET("/skills/market", adminhandler.GetSkillMarket)
+	api.GET("/skills/detail/:name/files", adminhandler.GetSkillFiles)
+	api.GET("/skills/detail/:name/file-content", adminhandler.GetSkillFileContent)
+	api.GET("/skills/detail/:name", adminhandler.GetSkill)
+	api.PUT("/skills/detail/:name/file-content", adminhandler.UpdateSkillFileContent)
+	api.DELETE("/skills/detail/:name", adminhandler.DeleteSkill)
+	api.POST("/skills/reload", adminhandler.ReloadSkills)
+	api.POST("/skills/import", adminhandler.ImportSkill)
+	api.POST("/skills/upload", adminhandler.UploadSkill)
+	api.PATCH("/skills/:name/status", adminhandler.UpdateSkillStatus)
 }
 
 func registerAuthKeyRoutes(api *gin.RouterGroup) {

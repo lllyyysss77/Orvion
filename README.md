@@ -70,6 +70,12 @@ docker run -d \
 
 如你 fork 后自建镜像，请改为 `ghcr.io/<你的仓库路径>:<tag>`。
 
+运行镜像已内置常用命令行工具，方便 TG Agent Skills 直接调用脚本，包括
+`bash`、`curl`、`jq`、`git`、`python3`、`pip`、`node`、`npm`、
+`sqlite`、`ripgrep`、`tar`、`zip/unzip`、`openssl` 等。
+Skills 内容不打包进镜像，运行后通过页面上传文件夹/压缩包，或挂载到
+`/orvion/data/skills` 使用。
+
 ## 配置说明
 
 应用启动时会自动加载项目根目录 `.env`（若存在），可参考 `.env.example`。
@@ -95,6 +101,7 @@ docker run -d \
 - `BREAKER_ALERT_TG_API_BASE`（默认 `https://api.telegram.org`）
 - `BREAKER_ALERT_TG_PROXY_URL`（可选；显式指定 TG 请求代理）
 - `BREAKER_ALERT_TG_STATUS_IMAGE_URL`（可选；`/status` 与日报配图拉取地址）
+- `TG_AGENT_SKILLS_DIR`（可选；TG Agent Skills 本地目录，默认 `data/skills`）
 
 ### Provider 接口转换配置（可选）
 

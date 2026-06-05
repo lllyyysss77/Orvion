@@ -128,17 +128,30 @@ func (ChatIO) TableName() string {
 }
 
 type TelegramAgentMessage struct {
-	ID           uint `gorm:"primaryKey"`
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
-	ChatID       int64  `gorm:"column:chat_id;index:idx_tg_agent_chat_order"`
-	MessageOrder int    `gorm:"column:message_order;index:idx_tg_agent_chat_order"`
-	Role         string `gorm:"column:role;size:32"`
-	Content      string `gorm:"column:content"`
+	ID             uint `gorm:"primaryKey"`
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	ChatID         int64  `gorm:"column:chat_id;index:idx_tg_agent_chat_order;index:idx_tg_agent_conversation_order"`
+	ConversationID string `gorm:"column:conversation_id;size:96;index:idx_tg_agent_conversation_order"`
+	MessageOrder   int    `gorm:"column:message_order;index:idx_tg_agent_conversation_order"`
+	Role           string `gorm:"column:role;size:32"`
+	Content        string `gorm:"column:content"`
 }
 
 func (TelegramAgentMessage) TableName() string {
 	return "telegram_agent_messages"
+}
+
+type TelegramAgentSession struct {
+	ID             uint `gorm:"primaryKey"`
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	ChatID         int64  `gorm:"column:chat_id;uniqueIndex"`
+	ConversationID string `gorm:"column:conversation_id;size:96;index"`
+}
+
+func (TelegramAgentSession) TableName() string {
+	return "telegram_agent_sessions"
 }
 
 type TelegramAgentPendingAction struct {
@@ -160,6 +173,7 @@ type TelegramAgentToolCallLog struct {
 	CreatedAt            time.Time
 	UpdatedAt            time.Time
 	ChatID               int64      `gorm:"column:chat_id;index"`
+	ConversationID       string     `gorm:"column:conversation_id;size:96;index"`
 	Source               string     `gorm:"column:source;size:32;index"`
 	ToolCallID           string     `gorm:"column:tool_call_id;size:128;index"`
 	ToolName             string     `gorm:"column:tool_name;size:128;index"`

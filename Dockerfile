@@ -46,7 +46,43 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 ############################
 FROM alpine:3.22.0
 
-RUN apk add --no-cache ca-certificates tzdata
+RUN apk add --no-cache \
+    bash \
+    bind-tools \
+    ca-certificates \
+    coreutils \
+    curl \
+    diffutils \
+    file \
+    findutils \
+    gawk \
+    git \
+    grep \
+    gzip \
+    iproute2 \
+    jq \
+    make \
+    netcat-openbsd \
+    nodejs \
+    npm \
+    openssh-client \
+    openssl \
+    patch \
+    procps \
+    py3-pip \
+    python3 \
+    ripgrep \
+    rsync \
+    sed \
+    sqlite \
+    tar \
+    tree \
+    tzdata \
+    unzip \
+    util-linux \
+    wget \
+    xz \
+    zip
 
 RUN mkdir -p /orvion
 

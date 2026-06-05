@@ -27,6 +27,7 @@ import (
 	"github.com/racio/orvion/models"
 	"github.com/racio/orvion/providers"
 	"github.com/racio/orvion/service"
+	runtimesvc "github.com/racio/orvion/service/runtime"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 	"gorm.io/gorm"
@@ -424,6 +425,9 @@ func ModelChatTestHandler(c *gin.Context) {
 		return
 	}
 	content = decodeHTTPResponseBody(res.Header, content)
+	if requestStyle == consts.StyleOpenAI && !streamRequested {
+		content = runtimesvc.NormalizeOpenAIChatCompletionPayload(content, false)
+	}
 
 	if res.StatusCode != http.StatusOK {
 		errMsg := fmt.Sprintf("code: %d body: %s", res.StatusCode, string(content))

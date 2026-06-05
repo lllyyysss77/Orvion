@@ -55,6 +55,7 @@ func Init(_ context.Context, dsn string) {
 		&ModelWithProvider{},
 		&ChatIO{},
 		&TelegramAgentMessage{},
+		&TelegramAgentSession{},
 		&TelegramAgentPendingAction{},
 		&TelegramAgentToolCallLog{},
 		&AuthKey{},

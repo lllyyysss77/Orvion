@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"sort"
 	"strconv"
@@ -29,6 +30,7 @@ const (
 	telegramToolActionUpdateProviderConfig telegramToolActionKind = "update_provider_config"
 	telegramToolActionCreateAuthKey        telegramToolActionKind = "create_auth_key"
 	telegramToolActionUpdateAuthKey        telegramToolActionKind = "update_auth_key"
+	telegramToolActionRunTerminalCommand   telegramToolActionKind = "run_terminal_command"
 	telegramToolActionBatch                telegramToolActionKind = "batch"
 )
 
@@ -50,17 +52,19 @@ type telegramToolIntent struct {
 }
 
 type telegramToolAction struct {
-	ChatID        int64
-	Kind          telegramToolActionKind
-	TargetID      uint
-	TargetIDs     []uint
-	TargetName    string
-	Enabled       bool
-	ProviderPatch telegramProviderConfigPatch
-	AuthKeyPatch  telegramAuthKeyPatch
-	Actions       []telegramToolAction
-	Summary       string
-	CreatedAt     time.Time
+	ChatID         int64
+	ConversationID string
+	Kind           telegramToolActionKind
+	TargetID       uint
+	TargetIDs      []uint
+	TargetName     string
+	Enabled        bool
+	ProviderPatch  telegramProviderConfigPatch
+	AuthKeyPatch   telegramAuthKeyPatch
+	CommandRun     telegramCommandRun
+	Actions        []telegramToolAction
+	Summary        string
+	CreatedAt      time.Time
 }
 
 type telegramProviderSummary struct {
@@ -91,7 +95,7 @@ var (
 func handleTelegramAgentToolMessage(ctx context.Context, client TelegramClient, chatID int64, raw string, cfg models.TelegramAgentConfig) (bool, error) {
 	hasPendingAction := hasPendingTelegramToolAction(chatID)
 	if isTelegramToolConfirm(raw) && (hasPendingAction || isStrictTelegramToolConfirm(raw)) {
-		return true, confirmTelegramToolAction(ctx, client, chatID)
+		return true, confirmTelegramToolAction(ctx, client, chatID, cfg)
 	}
 	if isTelegramToolCancel(raw) && (hasPendingAction || isStrictTelegramToolCancel(raw)) {
 		return true, cancelTelegramToolAction(ctx, client, chatID)
@@ -148,7 +152,7 @@ func handleTelegramAgentToolMessage(ctx context.Context, client TelegramClient, 
 	}
 }
 
-func confirmTelegramToolAction(ctx context.Context, client TelegramClient, chatID int64) error {
+func confirmTelegramToolAction(ctx context.Context, client TelegramClient, chatID int64, cfg models.TelegramAgentConfig) error {
 	action, ok, err := loadTelegramPendingToolAction(ctx, chatID)
 	if err != nil {
 		return sendTelegramToolText(ctx, client, chatID, "读取待确认操作失败："+err.Error())
@@ -167,12 +171,20 @@ func confirmTelegramToolAction(ctx context.Context, client TelegramClient, chatI
 	}
 
 	deleteTelegramPendingToolAction(ctx, chatID)
+	logID := recordTelegramAgentConfirmationExecutingLog(ctx, action)
 	result, err := executeTelegramToolAction(ctx, action)
 	if err != nil {
-		recordTelegramAgentConfirmationLog(ctx, action, telegramAgentToolLogStatusFailed, "", err)
+		finishTelegramAgentConfirmationLog(ctx, logID, action, telegramAgentToolLogStatusFailed, "", err)
 		return sendTelegramToolText(ctx, client, chatID, "执行失败："+err.Error())
 	}
-	recordTelegramAgentConfirmationLog(ctx, action, telegramAgentToolLogStatusExecuted, result, nil)
+	finishTelegramAgentConfirmationLog(ctx, logID, action, telegramAgentToolLogStatusExecuted, result, nil)
+	if shouldSummarizeTelegramToolActionResult(action) {
+		if err := runTelegramAgentToolResultFollowup(ctx, client, chatID, cfg, action, result); err == nil {
+			return nil
+		} else {
+			slog.Warn("TG Agent 工具结果整理失败，回退原始结果", "chat_id", chatID, "action", action.Kind, "error", err)
+		}
+	}
 	return sendTelegramToolText(ctx, client, chatID, result)
 }
 
@@ -246,6 +258,7 @@ func flattenTelegramToolActions(action telegramToolAction) []telegramToolAction 
 
 func buildTelegramToolActionBatch(chatID int64, createdAt time.Time, items []telegramToolAction) telegramToolAction {
 	normalized := make([]telegramToolAction, 0, len(items))
+	conversationID := ""
 	for _, item := range items {
 		if item.Kind == telegramToolActionBatch {
 			normalized = append(normalized, flattenTelegramToolActions(item)...)
@@ -254,10 +267,13 @@ func buildTelegramToolActionBatch(chatID int64, createdAt time.Time, items []tel
 		if item.CreatedAt.IsZero() {
 			item.CreatedAt = createdAt
 		}
+		if conversationID == "" {
+			conversationID = item.ConversationID
+		}
 		normalized = append(normalized, item)
 	}
 	if len(normalized) == 0 {
-		return telegramToolAction{ChatID: chatID, Kind: telegramToolActionBatch, CreatedAt: createdAt, Summary: "批次操作（0 项）"}
+		return telegramToolAction{ChatID: chatID, ConversationID: conversationID, Kind: telegramToolActionBatch, CreatedAt: createdAt, Summary: "批次操作（0 项）"}
 	}
 	if len(normalized) == 1 {
 		return normalized[0]
@@ -269,11 +285,12 @@ func buildTelegramToolActionBatch(chatID int64, createdAt time.Time, items []tel
 		summaryLines = append(summaryLines, "- "+strings.ReplaceAll(strings.TrimSpace(item.Summary), "\n", "\n  "))
 	}
 	return telegramToolAction{
-		ChatID:    chatID,
-		Kind:      telegramToolActionBatch,
-		Actions:   normalized,
-		Summary:   strings.Join(summaryLines, "\n"),
-		CreatedAt: createdAt,
+		ChatID:         chatID,
+		ConversationID: conversationID,
+		Kind:           telegramToolActionBatch,
+		Actions:        normalized,
+		Summary:        strings.Join(summaryLines, "\n"),
+		CreatedAt:      createdAt,
 	}
 }
 
@@ -287,11 +304,12 @@ func canMergeTelegramToolActions(left telegramToolAction, right telegramToolActi
 func mergeTelegramModelStatusActions(ctx context.Context, left telegramToolAction, right telegramToolAction) telegramToolAction {
 	ids := orderedUniqueTelegramModelIDs(append(telegramToolActionModelIDs(left), telegramToolActionModelIDs(right)...))
 	merged := telegramToolAction{
-		ChatID:    left.ChatID,
-		Kind:      telegramToolActionSetModelStatus,
-		TargetIDs: ids,
-		Enabled:   left.Enabled,
-		CreatedAt: left.CreatedAt,
+		ChatID:         left.ChatID,
+		ConversationID: left.ConversationID,
+		Kind:           telegramToolActionSetModelStatus,
+		TargetIDs:      ids,
+		Enabled:        left.Enabled,
+		CreatedAt:      left.CreatedAt,
 	}
 	if merged.CreatedAt.IsZero() {
 		merged.CreatedAt = time.Now()
@@ -385,19 +403,36 @@ func telegramToolConfirmationText(action telegramToolAction) string {
 }
 
 func prepareOrExecuteTelegramToolAction(ctx context.Context, action telegramToolAction, requireConfirmation bool) (string, error) {
+	action = attachTelegramToolActionConversationID(ctx, action)
 	if requireConfirmation {
 		action = storeTelegramPendingToolAction(ctx, action)
 		text := telegramToolConfirmationText(action)
 		recordTelegramAgentPreparedActionLog(ctx, action, text, true)
 		return text, nil
 	}
+	logID := recordTelegramAgentToolActionExecutingLog(ctx, action, telegramAgentToolLogSourceToolAction, false)
 	result, err := executeTelegramToolAction(ctx, action)
 	if err != nil {
-		recordTelegramAgentToolActionFailureLog(ctx, action, err, false)
+		finishTelegramAgentToolActionFailureLog(ctx, logID, action, err, false)
 		return "", err
 	}
-	recordTelegramAgentPreparedActionLog(ctx, action, result, false)
+	finishTelegramAgentPreparedActionLog(ctx, logID, action, result, false)
 	return result, nil
+}
+
+func attachTelegramToolActionConversationID(ctx context.Context, action telegramToolAction) telegramToolAction {
+	if strings.TrimSpace(action.ConversationID) == "" {
+		conversationID, err := resolveTelegramActiveConversationID(ctx, action.ChatID, getTelegramSession(action.ChatID))
+		if err == nil {
+			action.ConversationID = conversationID
+		}
+	}
+	for index := range action.Actions {
+		if strings.TrimSpace(action.Actions[index].ConversationID) == "" {
+			action.Actions[index].ConversationID = action.ConversationID
+		}
+	}
+	return action
 }
 
 func executeTelegramToolAction(ctx context.Context, action telegramToolAction) (string, error) {
@@ -417,8 +452,27 @@ func executeTelegramToolAction(ctx context.Context, action telegramToolAction) (
 		return createTelegramAgentAuthKey(ctx, action.AuthKeyPatch)
 	case telegramToolActionUpdateAuthKey:
 		return updateTelegramAgentAuthKey(ctx, action.TargetID, action.AuthKeyPatch)
+	case telegramToolActionRunTerminalCommand:
+		return executeTelegramCommandAction(ctx, action.CommandRun)
 	default:
 		return "", errors.New("未知的工具操作")
+	}
+}
+
+func shouldSummarizeTelegramToolActionResult(action telegramToolAction) bool {
+	switch action.Kind {
+	case telegramToolActionRunTerminalCommand:
+		return true
+	case telegramToolActionBatch:
+		items := flattenTelegramToolActions(action)
+		for _, item := range items {
+			if item.Kind != telegramToolActionRunTerminalCommand {
+				return false
+			}
+		}
+		return len(items) > 0
+	default:
+		return false
 	}
 }
 

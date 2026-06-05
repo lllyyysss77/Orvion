@@ -195,6 +195,87 @@ export interface ImageCacheSnapshot {
   bytes: number;
 }
 
+export interface TelegramAgentToolLogSummary {
+  total: number;
+  returned: number;
+  executing: number;
+  completed: number;
+  executed: number;
+  pending: number;
+  failed: number;
+  cancelled: number;
+  active_chats: number;
+  latest_at?: string;
+  latest_chat_id?: number;
+  latest_conversation_id?: string;
+  latest_tool_name?: string;
+  latest_status?: string;
+}
+
+export interface TelegramAgentSessionSummary {
+  chat_id: number;
+  conversation_id: string;
+  total_steps: number;
+  executing: number;
+  completed: number;
+  executed: number;
+  pending: number;
+  failed: number;
+  cancelled: number;
+  latest_at?: string;
+  latest_tool_name?: string;
+  latest_status?: string;
+}
+
+export interface TelegramAgentToolLogStep {
+  id: number;
+  created_at: string;
+  updated_at: string;
+  chat_id: number;
+  conversation_id: string;
+  source: string;
+  tool_call_id: string;
+  tool_name: string;
+  arguments: string;
+  result: string;
+  status: string;
+  ok: boolean;
+  final: boolean;
+  requires_confirmation: boolean;
+  action_kind: string;
+  action_summary: string;
+  error: string;
+  confirmed_at?: string;
+  executed_at?: string;
+  cancelled_at?: string;
+}
+
+export interface TelegramAgentToolLogResponse {
+  summary: TelegramAgentToolLogSummary;
+  sessions: TelegramAgentSessionSummary[];
+  steps: TelegramAgentToolLogStep[];
+}
+
+export interface TelegramAgentDeleteSessionResponse {
+  conversation_id: string;
+  chat_ids: number[];
+  message_rows: number;
+  log_rows: number;
+  session_rows: number;
+  pending_rows: number;
+}
+
+export interface TelegramAgentToolLogQuery {
+  chatId?: string;
+  conversationId?: string;
+  status?: string;
+  source?: string;
+  toolName?: string;
+  query?: string;
+  recentMinutes?: number;
+  limit?: number;
+}
+
 // Generic API request function
 async function apiRequest<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const url = `${API_BASE}${endpoint}`;
@@ -235,6 +316,32 @@ async function authKeyRequest<T>(endpoint: string, options: RequestInit = {}): P
       ...options.headers,
     },
     ...options,
+  });
+
+  if (response.status === 401) {
+    clearStoredAuthTokenAndRedirect();
+  }
+
+  if (!response.ok) {
+    throw new Error(`API request failed: ${response.status} ${response.statusText}`);
+  }
+
+  const data = await response.json();
+  if (data.code !== 200) {
+    throw new Error(`${data.message}`);
+  }
+  return data.data as T;
+}
+
+async function apiFormRequest<T>(endpoint: string, formData: FormData): Promise<T> {
+  const token = getStoredAuthToken();
+
+  const response = await fetch(`${API_BASE}${endpoint}`, {
+    method: "POST",
+    headers: {
+      ...(token ? { "Authorization": `Bearer ${token}` } : {}),
+    },
+    body: formData,
   });
 
   if (response.status === 401) {
@@ -572,6 +679,35 @@ export async function getImageCacheBlob(id: number): Promise<Blob> {
   return response.blob();
 }
 
+export async function getTelegramAgentToolCallLogs(options: TelegramAgentToolLogQuery = {}): Promise<TelegramAgentToolLogResponse> {
+  const params = new URLSearchParams();
+  if (options.chatId?.trim()) params.set("chat_id", options.chatId.trim());
+  if (options.conversationId?.trim() && options.conversationId !== "all") params.set("conversation_id", options.conversationId.trim());
+  if (options.status && options.status !== "all") params.set("status", options.status);
+  if (options.source && options.source !== "all") params.set("source", options.source);
+  if (options.toolName?.trim()) params.set("tool_name", options.toolName.trim());
+  if (options.query?.trim()) params.set("query", options.query.trim());
+  if (options.recentMinutes && options.recentMinutes > 0) params.set("recent_minutes", String(options.recentMinutes));
+  if (options.limit && options.limit > 0) params.set("limit", String(options.limit));
+  const query = params.toString();
+  return apiRequest<TelegramAgentToolLogResponse>(`/tg-agent/tool-call-logs${query ? `?${query}` : ""}`);
+}
+
+export async function deleteTelegramAgentSession(conversationId: string, chatId?: number): Promise<TelegramAgentDeleteSessionResponse> {
+  const trimmedConversationId = conversationId.trim();
+  if (!trimmedConversationId) {
+    const params = new URLSearchParams();
+    if (chatId) params.set("chat_id", String(chatId));
+    const query = params.toString();
+    return apiRequest<TelegramAgentDeleteSessionResponse>(`/tg-agent/sessions${query ? `?${query}` : ""}`, {
+      method: "DELETE",
+    });
+  }
+  return apiRequest<TelegramAgentDeleteSessionResponse>(`/tg-agent/sessions/${encodeURIComponent(conversationId)}`, {
+    method: "DELETE",
+  });
+}
+
 export interface MetricsSummary {
   totalReqs: number;
   successRate: number;
@@ -696,7 +832,139 @@ export interface TelegramAgentConfig {
   temperature?: number;
   edit_interval_ms: number;
   tool_confirmation_required?: boolean;
+  skills_enabled?: boolean;
+  skills_embedding_model?: string;
 }
+
+export interface SkillScript {
+  name: string;
+  path: string;
+  description: string;
+  confirm: boolean;
+  timeout_ms: number;
+}
+
+export interface SkillItem {
+  name: string;
+  description: string;
+  enabled: boolean;
+  dir: string;
+  file: string;
+  instructions: string;
+  triggers: string[];
+  scripts: SkillScript[];
+  score?: number;
+  installed?: boolean;
+}
+
+export interface SkillFileNode {
+  name: string;
+  path: string;
+  kind: "file" | "directory";
+  size: number;
+  modified_at: string;
+  children: SkillFileNode[];
+}
+
+export interface SkillFileTreeResponse {
+  skill: SkillItem;
+  root: string;
+  files: SkillFileNode[];
+}
+
+export interface SkillFileContent {
+  skill: string;
+  path: string;
+  content: string;
+  editable: boolean;
+  size: number;
+  modified_at: string;
+}
+
+export interface SkillDeleteResponse {
+  name: string;
+  dir: string;
+  message: string;
+}
+
+export interface SkillListResponse {
+  skills: SkillItem[];
+  total: number;
+  skills_enabled: boolean;
+  query: string;
+  search_mode: "keyword" | "embedding";
+  scanned_at: string;
+  message?: string;
+}
+
+export interface SkillMarketResponse {
+  skills: SkillItem[];
+  total: number;
+  market_dirs: string[];
+  scanned_at: string;
+}
+
+export interface SkillImportPayload {
+  source_path: string;
+  name?: string;
+  overwrite?: boolean;
+}
+
+const normalizeSkillScript = (raw: unknown): SkillScript => {
+  const record = asRecord(raw);
+  return {
+    name: typeof record.name === "string" ? record.name : "",
+    path: typeof record.path === "string" ? record.path : "",
+    description: typeof record.description === "string" ? record.description : "",
+    confirm: toBoolean(record.confirm),
+    timeout_ms: typeof record.timeout_ms === "number" ? record.timeout_ms : 0,
+  };
+};
+
+const normalizeSkillItem = (raw: unknown): SkillItem => {
+  const record = asRecord(raw);
+  return {
+    name: typeof record.name === "string" ? record.name : "",
+    description: typeof record.description === "string" ? record.description : "",
+    enabled: toBoolean(record.enabled),
+    dir: typeof record.dir === "string" ? record.dir : "",
+    file: typeof record.file === "string" ? record.file : "",
+    instructions: typeof record.instructions === "string" ? record.instructions : "",
+    triggers: Array.isArray(record.triggers) ? record.triggers.filter((item): item is string => typeof item === "string") : [],
+    scripts: Array.isArray(record.scripts) ? record.scripts.map(normalizeSkillScript) : [],
+    score: typeof record.score === "number" ? record.score : undefined,
+    installed: typeof record.installed === "boolean" ? record.installed : undefined,
+  };
+};
+
+const normalizeSkillFileNode = (raw: unknown): SkillFileNode => {
+  const record = asRecord(raw);
+  return {
+    name: typeof record.name === "string" ? record.name : "",
+    path: typeof record.path === "string" ? record.path : "",
+    kind: record.kind === "directory" ? "directory" : "file",
+    size: typeof record.size === "number" ? record.size : 0,
+    modified_at: typeof record.modified_at === "string" ? record.modified_at : "",
+    children: Array.isArray(record.children) ? record.children.map(normalizeSkillFileNode) : [],
+  };
+};
+
+const normalizeSkillFileTreeResponse = (raw: SkillFileTreeResponse): SkillFileTreeResponse => ({
+  ...raw,
+  skill: normalizeSkillItem(raw.skill),
+  files: (raw.files ?? []).map(normalizeSkillFileNode),
+});
+
+const normalizeSkillListResponse = (raw: SkillListResponse): SkillListResponse => ({
+  ...raw,
+  skills: (raw.skills ?? []).map(normalizeSkillItem),
+});
+
+const normalizeSkillMarketResponse = (raw: SkillMarketResponse): SkillMarketResponse => ({
+  ...raw,
+  skills: (raw.skills ?? []).map(normalizeSkillItem),
+  market_dirs: raw.market_dirs ?? [],
+});
 
 export interface ModelPriceSyncConfig {
   enabled: boolean;
@@ -736,6 +1004,79 @@ export const configAPI = {
     apiRequest<{ status: string }>(`/config/breaker-alert-tg/test`, {
       method: 'POST',
     }),
+};
+
+export const skillAPI = {
+  list: (params: { query?: string; search_mode?: "keyword" | "embedding" } = {}) => {
+    const searchParams = new URLSearchParams();
+    if (params.query) searchParams.append("query", params.query);
+    if (params.search_mode) searchParams.append("search_mode", params.search_mode);
+    const query = searchParams.toString();
+    return apiRequest<SkillListResponse>(query ? `/skills?${query}` : "/skills").then(normalizeSkillListResponse);
+  },
+
+  reload: (params: { query?: string; search_mode?: "keyword" | "embedding" } = {}) => {
+    const searchParams = new URLSearchParams();
+    if (params.query) searchParams.append("query", params.query);
+    if (params.search_mode) searchParams.append("search_mode", params.search_mode);
+    const query = searchParams.toString();
+    return apiRequest<SkillListResponse>(query ? `/skills/reload?${query}` : "/skills/reload", {
+      method: "POST",
+    }).then(normalizeSkillListResponse);
+  },
+
+  get: (name: string) =>
+    apiRequest<SkillItem>(`/skills/detail/${encodeURIComponent(name)}`).then(normalizeSkillItem),
+
+  files: (name: string) =>
+    apiRequest<SkillFileTreeResponse>(`/skills/detail/${encodeURIComponent(name)}/files`).then(normalizeSkillFileTreeResponse),
+
+  fileContent: (name: string, path: string) => {
+    const searchParams = new URLSearchParams({ path });
+    return apiRequest<SkillFileContent>(`/skills/detail/${encodeURIComponent(name)}/file-content?${searchParams}`);
+  },
+
+  saveFile: (name: string, payload: { path: string; content: string }) =>
+    apiRequest<SkillFileContent>(`/skills/detail/${encodeURIComponent(name)}/file-content`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
+
+  delete: (name: string) =>
+    apiRequest<SkillDeleteResponse>(`/skills/detail/${encodeURIComponent(name)}`, {
+      method: "DELETE",
+    }),
+
+  updateStatus: (name: string, enabled: boolean) =>
+    apiRequest<SkillItem>(`/skills/${encodeURIComponent(name)}/status`, {
+      method: "PATCH",
+      body: JSON.stringify({ enabled }),
+    }).then(normalizeSkillItem),
+
+  market: (query = "") => {
+    const searchParams = new URLSearchParams();
+    if (query) searchParams.append("query", query);
+    const suffix = searchParams.toString();
+    return apiRequest<SkillMarketResponse>(suffix ? `/skills/market?${suffix}` : "/skills/market").then(normalizeSkillMarketResponse);
+  },
+
+  import: (payload: SkillImportPayload) =>
+    apiRequest<SkillItem>("/skills/import", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }).then(normalizeSkillItem),
+
+  upload: (payload: { files: File[]; name?: string; overwrite?: boolean }) => {
+    const formData = new FormData();
+    if (payload.name) formData.append("name", payload.name);
+    formData.append("overwrite", payload.overwrite ? "true" : "false");
+    payload.files.forEach((file) => {
+      const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
+      formData.append("files", file, relativePath);
+      formData.append("paths", relativePath);
+    });
+    return apiFormRequest<SkillItem>("/skills/upload", formData).then(normalizeSkillItem);
+  },
 };
 
 // Logs API functions

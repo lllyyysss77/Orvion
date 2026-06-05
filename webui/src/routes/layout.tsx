@@ -7,6 +7,7 @@ import { cn, openExternalUrl } from "@/lib/utils";
 import iconSvg from "@/assets/icon.svg";
 import {
   Activity,
+  Bot,
   Boxes,
   ChevronsUpDown,
   Cloud,
@@ -18,6 +19,7 @@ import {
   PanelLeft,
   ScrollText,
   Settings2,
+  Sparkles,
   UserCircle2,
   X,
 } from "lucide-react";
@@ -53,6 +55,8 @@ const navSections = [
       { to: "/providers", label: "提供商", icon: Cloud },
       { to: "/models", label: "模型", icon: Boxes },
       { to: "/auth-keys", label: "API 密钥", icon: KeyRound },
+      { to: "/skills", label: "Skills", icon: Sparkles },
+      { to: "/tg-agent", label: "TG Agent", icon: Bot },
     ],
   },
   {

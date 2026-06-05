@@ -86,6 +86,8 @@ const telegramBreakerAlertSchema = z.object({
 const telegramAgentSchema = z.object({
   enabled: z.boolean(),
   tool_confirmation_required: z.boolean(),
+  skills_enabled: z.boolean(),
+  skills_embedding_model: z.string().trim(),
   model: z.string().trim(),
   system_prompt: z.string().trim(),
   max_history_messages: z.number().min(1, { message: '上下文消息数必须大于 0' }),
@@ -125,6 +127,8 @@ const TELEGRAM_AGENT_AUTO_MODEL_VALUE = "__auto_model__";
 const telegramAgentDefaultValues: TelegramAgentForm = {
   enabled: true,
   tool_confirmation_required: true,
+  skills_enabled: false,
+  skills_embedding_model: '',
   model: '',
   system_prompt: '你是 Orvion 的 Telegram 对话助手。请用简体中文回答，保持简洁、准确、友好。',
   max_history_messages: 20,
@@ -182,6 +186,10 @@ export default function ConfigPage() {
     if (!keyword) return modelOptions;
     return modelOptions.filter((model) => model.Name.toLowerCase().includes(keyword));
   }, [modelOptions, telegramAgentModelSearch]);
+  const embeddingModelOptions = useMemo(() => {
+    const filtered = modelOptions.filter((model) => (model.Capabilities ?? []).includes('embedding'));
+    return filtered.length > 0 ? filtered : modelOptions;
+  }, [modelOptions]);
   useEffect(() => {
     if (!telegramAgentModelSelectOpen) return;
     const frame = window.requestAnimationFrame(() => {
@@ -294,6 +302,8 @@ export default function ConfigPage() {
         const nextTelegramAgentConfig = {
           enabled: agentCfg.enabled !== false,
           tool_confirmation_required: agentCfg.tool_confirmation_required !== false,
+          skills_enabled: agentCfg.skills_enabled === true,
+          skills_embedding_model: agentCfg.skills_embedding_model || '',
           model: agentCfg.model || '',
           system_prompt: agentCfg.system_prompt || telegramAgentDefaultValues.system_prompt,
           max_history_messages: Number(agentCfg.max_history_messages || telegramAgentDefaultValues.max_history_messages),
@@ -416,6 +426,7 @@ export default function ConfigPage() {
   const onTelegramAgentSubmit = async (values: TelegramAgentForm) => {
     const payload: TelegramAgentConfig = {
       ...values,
+      skills_embedding_model: values.skills_embedding_model.trim(),
       model: values.model.trim(),
       system_prompt: values.system_prompt.trim(),
     };
@@ -835,6 +846,53 @@ export default function ConfigPage() {
                               onCheckedChange={(checked) => field.onChange(checked === true)}
                             />
                           </FormControl>
+                        </FormItem>
+                      )}
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(10rem,0.45fr)_minmax(0,1fr)]">
+                    <FormField
+                      control={telegramAgentForm.control}
+                      name="skills_enabled"
+                      render={({ field }) => (
+                        <FormItem className="flex h-9 items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/50 px-3">
+                          <FormLabel className="text-xs text-muted-foreground">启用 Skills</FormLabel>
+                          <FormControl>
+                            <Switch
+                              checked={field.value === true}
+                              onCheckedChange={(checked) => field.onChange(checked === true)}
+                            />
+                          </FormControl>
+                        </FormItem>
+                      )}
+                    />
+
+                    <FormField
+                      control={telegramAgentForm.control}
+                      name="skills_embedding_model"
+                      render={({ field }) => (
+                        <FormItem className="min-w-0 space-y-1">
+                          <FormLabel className="sr-only">Skills 向量模型</FormLabel>
+                          <FormControl>
+                            <Select
+                              value={field.value || TELEGRAM_AGENT_AUTO_MODEL_VALUE}
+                              onValueChange={(value) => field.onChange(value === TELEGRAM_AGENT_AUTO_MODEL_VALUE ? '' : value)}
+                            >
+                              <SelectTrigger className="h-9 w-full min-w-0 bg-background [&>span]:truncate">
+                                <SelectValue placeholder="选择向量模型" />
+                              </SelectTrigger>
+                              <SelectContent className="max-h-60">
+                                <SelectItem value={TELEGRAM_AGENT_AUTO_MODEL_VALUE}>本地向量检索</SelectItem>
+                                {embeddingModelOptions.map((model) => (
+                                  <SelectItem key={`skills-embedding-${model.ID}-${model.Name}`} value={model.Name}>
+                                    {model.Name}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </FormControl>
+                          <FormMessage />
                         </FormItem>
                       )}
                     />

@@ -178,11 +178,11 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 		service.RecordLog(context.Background(), startReq, log.FirstChunkTimeMs, pr, postProcessor, logRef, log.AuthKeyID, effectiveBefore, effectiveProvidersWithMeta.IOLog, logStyle)
 	})
 
-	writeHeader(c, before.Stream, res.Header, logStyle)
 	clientWriter := &countingWriter{writer: c.Writer}
 	mirror := io.MultiWriter(clientWriter, pw)
 	if logStyle == consts.StyleOpenAI {
 		if before.Stream {
+			writeHeader(c, true, res.Header, logStyle)
 			if err := runtimesvc.CopyStreamWithTransform(res.Body, mirror, runtimesvc.NormalizeOpenAIStreamLine); err != nil {
 				_ = pw.CloseWithError(err)
 				logStreamCopyError("stream copy", err)
@@ -206,6 +206,7 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 				return
 			}
 			normalized := runtimesvc.NormalizeOpenAIChatCompletionPayload(body, false)
+			writeHeader(c, false, openAINonStreamHeader(res.Header), logStyle)
 			if _, writeErr := mirror.Write(normalized); writeErr != nil {
 				_ = pw.CloseWithError(writeErr)
 				slog.Error("write response body", "err", writeErr)
@@ -227,6 +228,7 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 		return
 	}
 
+	writeHeader(c, before.Stream, res.Header, logStyle)
 	tee := io.TeeReader(res.Body, pw)
 	if _, err := io.Copy(clientWriter, tee); err != nil {
 		_ = pw.CloseWithError(err)
@@ -245,6 +247,13 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 	}
 
 	_ = pw.Close()
+}
+
+func openAINonStreamHeader(header http.Header) http.Header {
+	next := header.Clone()
+	next.Del("Content-Length")
+	next.Set("Content-Type", "application/json; charset=utf-8")
+	return next
 }
 
 func writeHeader(c *gin.Context, stream bool, header http.Header, logStyle string) {
