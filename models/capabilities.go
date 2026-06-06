@@ -175,7 +175,7 @@ func sanitizeProviderCapabilities(values []string) ProviderCapabilities {
 
 func ResolveRequiredProviderCapability(endpoint string) string {
 	switch strings.ToLower(strings.TrimSpace(endpoint)) {
-	case "chat", "embeddings", "rerank", "images", "videos":
+	case "chat", "chat/completions", "chat_completions", "embeddings", "rerank", "images", "videos":
 		return ProviderCapabilityChat
 	case "responses":
 		return ProviderCapabilityOpenAI

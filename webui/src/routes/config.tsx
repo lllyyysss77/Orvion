@@ -123,6 +123,7 @@ type LoadingUIForm = z.infer<typeof loadingUISchema>;
 
 const UI_FONT_STORAGE_KEY = "orvion_ui_font";
 const TELEGRAM_AGENT_AUTO_MODEL_VALUE = "__auto_model__";
+const TELEGRAM_AGENT_CONFIG_CHANGED_EVENT = "telegram-agent-config-changed";
 
 const telegramAgentDefaultValues: TelegramAgentForm = {
   enabled: true,
@@ -434,6 +435,9 @@ export default function ConfigPage() {
     try {
       setTelegramAgentSaving(true);
       await configAPI.updateConfig('telegram_agent', payload);
+      window.dispatchEvent(new CustomEvent(TELEGRAM_AGENT_CONFIG_CHANGED_EVENT, {
+        detail: { enabled: payload.enabled !== false },
+      }));
       toast.success('TG Agent 配置已保存');
     } catch (error) {
       console.error('Failed to save telegram agent config:', error);

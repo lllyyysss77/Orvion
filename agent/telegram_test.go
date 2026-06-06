@@ -174,6 +174,60 @@ func TestReadTelegramAgentOpenAIStreamWithToolsCollectsToolCalls(t *testing.T) {
 	}
 }
 
+func TestSelectTelegramAgentModelProviderUsesInterfaceBridge(t *testing.T) {
+	previousDB := models.DB
+	defer func() {
+		models.DB = previousDB
+	}()
+
+	db, err := gorm.Open(sqlite.Open("file:tg_agent_bridge_select_test?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("初始化测试数据库失败: %v", err)
+	}
+	models.DB = db
+	if err := db.AutoMigrate(&models.Model{}, &models.Provider{}, &models.ModelWithProvider{}); err != nil {
+		t.Fatalf("迁移测试表失败: %v", err)
+	}
+
+	model := models.Model{Name: "tg-agent-test", Status: 1, TimeOut: 60}
+	if err := db.Create(&model).Error; err != nil {
+		t.Fatalf("创建模型失败: %v", err)
+	}
+	provider := models.Provider{
+		Name:                       "responses-only",
+		Config:                     `{"base_url":"https://example.com/v1","api_key":"test"}`,
+		Capabilities:               models.ProviderCapabilities([]string{"openai"}),
+		InterfaceConversionEnabled: 1,
+		InterfaceConversionTarget:  "responses",
+	}
+	if err := db.Create(&provider).Error; err != nil {
+		t.Fatalf("创建提供商失败: %v", err)
+	}
+	if err := db.Create(&models.ModelWithProvider{
+		ModelID:       model.ID,
+		ProviderID:    provider.ID,
+		ProviderModel: "upstream-model",
+		Status:        1,
+		Weight:        1,
+	}).Error; err != nil {
+		t.Fatalf("创建模型提供商关联失败: %v", err)
+	}
+
+	selected, err := selectTelegramAgentModelProvider(context.Background(), models.TelegramAgentConfig{Model: model.Name})
+	if err != nil {
+		t.Fatalf("选择 TG Agent 提供商失败: %v", err)
+	}
+	if !selected.BridgePlan.Enabled {
+		t.Fatalf("期望启用接口转换计划: %+v", selected)
+	}
+	if selected.ProviderStyle != consts.StyleOpenAIRes || selected.responseStyle() != consts.StyleOpenAI {
+		t.Fatalf("接口转换风格不正确，provider=%s response=%s", selected.ProviderStyle, selected.responseStyle())
+	}
+	if !selected.supportsFunctionTools() {
+		t.Fatalf("桥接到 Chat 后应支持 TG Agent 工具调用")
+	}
+}
+
 func TestTelegramSessionMessagesPersistedAndNewConversationIsolated(t *testing.T) {
 	previousDB := models.DB
 	defer func() {
@@ -1639,14 +1693,13 @@ func TestTelegramAgentSkillScriptSkipsConfirmationWhenGlobalDisabled(t *testing.
 	}
 }
 
-func TestTelegramAgentSkillManagementListToggleMarketAndImport(t *testing.T) {
+func TestTelegramAgentSkillManagementListToggleAndImport(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
-	marketRoot := t.TempDir()
-	t.Setenv("ORVION_SKILL_MARKET_DIR", marketRoot)
+	sourceRoot := t.TempDir()
 
 	writeTelegramAgentTestSkill(t, root, "deploy", "skills.md", true, "Deploy project pipeline", "run")
-	marketSkillDir := writeTelegramAgentTestSkill(t, marketRoot, "docs", "SKILL.md", true, "Generate project docs", "build")
+	sourceSkillDir := writeTelegramAgentTestSkill(t, sourceRoot, "docs", "SKILL.md", true, "Generate project docs", "build")
 
 	skillsEnabled := true
 	cfg := models.TelegramAgentConfig{
@@ -1677,16 +1730,8 @@ func TestTelegramAgentSkillManagementListToggleMarketAndImport(t *testing.T) {
 		t.Fatalf("Skill 文件未写入禁用状态: %s", raw)
 	}
 
-	market, err := ListTelegramAgentSkillMarket(ctx, cfg, "")
-	if err != nil {
-		t.Fatalf("读取本地 Skill 市场失败: %v", err)
-	}
-	if len(market.Skills) != 1 || market.Skills[0].Name != "docs" || market.Skills[0].Installed {
-		t.Fatalf("市场列表不正确: %+v", market.Skills)
-	}
-
 	imported, err := ImportTelegramAgentSkill(ctx, cfg, TelegramAgentSkillImportRequest{
-		SourcePath: marketSkillDir,
+		SourcePath: sourceSkillDir,
 	})
 	if err != nil {
 		t.Fatalf("导入 Skill 失败: %v", err)
@@ -1698,7 +1743,7 @@ func TestTelegramAgentSkillManagementListToggleMarketAndImport(t *testing.T) {
 		t.Fatalf("导入后的 Skill 文件不存在: %v", err)
 	}
 
-	mismatchDir := writeTelegramAgentTestSkillWithMetaName(t, marketRoot, "UltimateSearchSkill-main", "ultimate-search", "SKILL.md", true, "Search skill", "search")
+	mismatchDir := writeTelegramAgentTestSkillWithMetaName(t, sourceRoot, "UltimateSearchSkill-main", "ultimate-search", "SKILL.md", true, "Search skill", "search")
 	importedMismatch, err := ImportTelegramAgentSkill(ctx, cfg, TelegramAgentSkillImportRequest{
 		SourcePath: mismatchDir,
 	})

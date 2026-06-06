@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronRight,
-  Download,
   FileCode2,
   FileText,
   Folder,
@@ -10,7 +9,6 @@ import {
   Save,
   Search,
   Sparkles,
-  Store,
   Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -48,7 +46,6 @@ import {
   type SkillFileContent,
   type SkillFileNode,
   type SkillItem,
-  type SkillMarketResponse,
   type TelegramAgentConfig,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -79,13 +76,9 @@ export default function SkillsPage() {
   const [modelOptions, setModelOptions] = useState<Model[]>([]);
   const [savingConfig, setSavingConfig] = useState(false);
   const [reloading, setReloading] = useState(false);
-  const [marketOpen, setMarketOpen] = useState(false);
-  const [marketMode, setMarketMode] = useState<"market" | "import">("market");
-  const [market, setMarket] = useState<SkillMarketResponse | null>(null);
-  const [marketLoading, setMarketLoading] = useState(false);
+  const [uploadOpen, setUploadOpen] = useState(false);
   const [importName, setImportName] = useState("");
   const [importOverwrite, setImportOverwrite] = useState(false);
-  const [importing, setImporting] = useState(false);
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
   const [uploading, setUploading] = useState(false);
   const [editorOpen, setEditorOpen] = useState(false);
@@ -99,7 +92,6 @@ export default function SkillsPage() {
   const [deleteTarget, setDeleteTarget] = useState<SkillItem | null>(null);
   const [deleting, setDeleting] = useState(false);
   const zipInputRef = useRef<HTMLInputElement | null>(null);
-  const folderInputRef = useRef<HTMLInputElement | null>(null);
 
   const embeddingModelOptions = useMemo(() => {
     const filtered = modelOptions.filter((model) => (model.Capabilities ?? []).includes("embedding"));
@@ -140,11 +132,6 @@ export default function SkillsPage() {
   useEffect(() => {
     void loadPage();
   }, [loadPage]);
-
-  useEffect(() => {
-    folderInputRef.current?.setAttribute("webkitdirectory", "");
-    folderInputRef.current?.setAttribute("directory", "");
-  }, []);
 
   const handleSearch = async () => {
     try {
@@ -287,51 +274,9 @@ export default function SkillsPage() {
     }
   };
 
-  const loadMarket = useCallback(async () => {
-    try {
-      setMarketLoading(true);
-      setMarket(await skillAPI.market(""));
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "加载本地 Skill 市场失败");
-    } finally {
-      setMarketLoading(false);
-    }
-  }, []);
-
-  const openMarket = (mode: "market" | "import") => {
-    setMarketMode(mode);
-    setMarketOpen(true);
-    if (mode === "market") {
-      void loadMarket();
-    }
-  };
-
-  const handleImport = async (sourcePath: string, name?: string) => {
-    if (!sourcePath.trim()) {
-      toast.error("请填写本地 Skill 路径");
-      return;
-    }
-    try {
-      setImporting(true);
-      const imported = await skillAPI.import({
-        source_path: sourcePath.trim(),
-        name: name?.trim() || undefined,
-        overwrite: importOverwrite,
-      });
-      toast.success(`已导入 ${imported.name}`);
-      setImportName("");
-      setMarketOpen(false);
-      await loadSkills(query, searchMode);
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "导入 Skill 失败");
-    } finally {
-      setImporting(false);
-    }
-  };
-
   const handleUploadSkill = async () => {
     if (uploadFiles.length === 0) {
-      toast.error("请先选择 ZIP 或 Skill 文件夹");
+      toast.error("请先选择 ZIP 压缩包");
       return;
     }
     try {
@@ -344,19 +289,18 @@ export default function SkillsPage() {
       toast.success(`已上传并导入 ${imported.name}`);
       setUploadFiles([]);
       setImportName("");
-      setMarketOpen(false);
+      setUploadOpen(false);
       await loadSkills(query, searchMode);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "上传 Skill 失败");
     } finally {
       setUploading(false);
       if (zipInputRef.current) zipInputRef.current.value = "";
-      if (folderInputRef.current) folderInputRef.current.value = "";
     }
   };
 
   if (loading) {
-    return <Loading message="加载 Skills" />;
+    return <Loading message="加载 Skills" className="min-h-[calc(100vh-12rem)]" />;
   }
 
   return (
@@ -374,11 +318,7 @@ export default function SkillsPage() {
             <RefreshCw className={cn("size-4", reloading && "animate-spin")} />
             热重载
           </Button>
-          <Button variant="outline" className="h-9 gap-2" onClick={() => openMarket("market")}>
-            <Store className="size-4" />
-            Skill 市场
-          </Button>
-          <Button className="h-9 gap-2" onClick={() => openMarket("import")}>
+          <Button className="h-9 gap-2" onClick={() => setUploadOpen(true)}>
             <FolderInput className="size-4" />
             导入
           </Button>
@@ -617,110 +557,56 @@ export default function SkillsPage() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={marketOpen} onOpenChange={setMarketOpen}>
+      <Dialog open={uploadOpen} onOpenChange={setUploadOpen}>
         <DialogContent className="max-w-3xl">
           <DialogHeader>
-            <DialogTitle>Skill 市场 / 上传</DialogTitle>
+            <DialogTitle>上传 Skill</DialogTitle>
           </DialogHeader>
-          <div className="flex rounded-lg border border-border/60 bg-muted/40 p-1">
-            <Button type="button" variant={marketMode === "market" ? "default" : "ghost"} className="h-8 flex-1" onClick={() => { setMarketMode("market"); void loadMarket(); }}>
-              本地市场
-            </Button>
-            <Button type="button" variant={marketMode === "import" ? "default" : "ghost"} className="h-8 flex-1" onClick={() => setMarketMode("import")}>
-              上传导入
-            </Button>
-          </div>
-
-          {marketMode === "market" ? (
-            <div className="max-h-[26rem] space-y-2 overflow-y-auto pr-1">
-              {marketLoading ? <Loading message="加载本地市场" /> : null}
-              {!marketLoading && (market?.skills.length ?? 0) === 0 ? (
-                <div className="rounded-lg border border-dashed border-border/70 p-5 text-sm text-muted-foreground">
-                  未扫描到本地市场 Skill。默认扫描 `data/skills-market`、`skills-market`、`skill-market`、`skills_market`，也可通过 ORVION_SKILL_MARKET_DIR 指定。
-                </div>
-              ) : null}
-              {market?.skills.map((skill) => (
-                <div key={`${skill.dir}-${skill.name}`} className="rounded-lg border border-border/60 p-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2 text-sm font-semibold">
-                        <Store className="size-4 text-emerald-600" />
-                        <span className="truncate">{skill.name}</span>
-                        {skill.installed ? <Badge variant="secondary" className="rounded-md">已安装</Badge> : null}
-                      </div>
-                      <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{skill.description || "暂无描述"}</p>
-                      <div className="mt-2 font-mono text-xs text-muted-foreground">{skill.dir}</div>
-                    </div>
-                    <Button
-                      className="h-8 shrink-0 gap-1.5"
-                      variant={skill.installed ? "outline" : "default"}
-                      disabled={skill.installed || importing}
-                      onClick={() => void handleImport(skill.dir, skill.name)}
-                    >
-                      <Download className="size-3.5" />
-                      导入
-                    </Button>
+          <div className="space-y-3">
+            <div className="rounded-lg border border-border/60 bg-muted/30 p-3">
+              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <div className="text-sm font-semibold">上传 Skill</div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    支持上传单个 ZIP 压缩包。
                   </div>
                 </div>
-              ))}
-            </div>
-          ) : (
-            <div className="space-y-3">
-              <div className="rounded-lg border border-border/60 bg-muted/30 p-3">
-                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                  <div>
-                    <div className="text-sm font-semibold">上传 Skill</div>
-                    <div className="mt-1 text-xs text-muted-foreground">
-                      支持单个 ZIP 压缩包，或直接选择一个 Skill 文件夹。
-                    </div>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    <Button type="button" variant="outline" className="h-8" onClick={() => zipInputRef.current?.click()}>
-                      选择 ZIP
-                    </Button>
-                    <Button type="button" variant="outline" className="h-8" onClick={() => folderInputRef.current?.click()}>
-                      选择文件夹
-                    </Button>
-                    <Button type="button" className="h-8" onClick={() => void handleUploadSkill()} disabled={uploading || uploadFiles.length === 0}>
-                      {uploading ? "上传中..." : "上传导入"}
-                    </Button>
-                  </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button type="button" variant="outline" className="h-8" onClick={() => zipInputRef.current?.click()}>
+                    选择 ZIP
+                  </Button>
+                  <Button type="button" className="h-8" onClick={() => void handleUploadSkill()} disabled={uploading || uploadFiles.length === 0}>
+                    {uploading ? "上传中..." : "上传导入"}
+                  </Button>
                 </div>
-                <input
-                  ref={zipInputRef}
-                  type="file"
-                  accept=".zip,application/zip,application/x-zip-compressed"
-                  className="hidden"
-                  onChange={(event) => setUploadFiles(Array.from(event.target.files ?? []))}
-                />
-                <input
-                  ref={folderInputRef}
-                  type="file"
-                  multiple
-                  className="hidden"
-                  onChange={(event) => setUploadFiles(Array.from(event.target.files ?? []))}
-                />
-                <div className="mt-3 rounded-md bg-background/70 px-3 py-2 text-xs text-muted-foreground">
-                  {uploadFiles.length > 0
-                    ? `已选择 ${uploadFiles.length} 个文件：${uploadFiles[0]?.name ?? ""}${uploadFiles.length > 1 ? " ..." : ""}`
-                    : "尚未选择上传文件"}
+              </div>
+              <input
+                ref={zipInputRef}
+                type="file"
+                accept=".zip,application/zip,application/x-zip-compressed"
+                className="hidden"
+                onChange={(event) => setUploadFiles(Array.from(event.target.files ?? []).slice(0, 1))}
+              />
+              <div className="mt-3 rounded-md bg-background/70 px-3 py-2 text-xs text-muted-foreground">
+                {uploadFiles.length > 0
+                  ? `已选择 ${uploadFiles.length} 个文件：${uploadFiles[0]?.name ?? ""}${uploadFiles.length > 1 ? " ..." : ""}`
+                  : "尚未选择上传文件"}
+              </div>
+              <div className="mt-3 grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">导入名称</Label>
+                  <Input value={importName} onChange={(event) => setImportName(event.target.value)} placeholder="留空则使用压缩包内 Skill 名称" />
                 </div>
-                <div className="mt-3 grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
-                  <div className="space-y-1">
-                    <Label className="text-xs text-muted-foreground">导入名称</Label>
-                    <Input value={importName} onChange={(event) => setImportName(event.target.value)} placeholder="留空则使用文件夹或压缩包名称" />
-                  </div>
-                  <div className="flex h-9 items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/50 px-3">
-                    <Label className="text-xs text-muted-foreground">覆盖同名 Skill</Label>
-                    <Switch checked={importOverwrite} onCheckedChange={setImportOverwrite} />
-                  </div>
+                <div className="flex h-9 items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/50 px-3">
+                  <Label className="text-xs text-muted-foreground">覆盖同名 Skill</Label>
+                  <Switch checked={importOverwrite} onCheckedChange={setImportOverwrite} />
                 </div>
               </div>
             </div>
-          )}
+          </div>
 
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setMarketOpen(false)}>关闭</Button>
+            <Button type="button" variant="outline" onClick={() => setUploadOpen(false)}>关闭</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

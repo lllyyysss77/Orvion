@@ -854,7 +854,6 @@ export interface SkillItem {
   triggers: string[];
   scripts: SkillScript[];
   score?: number;
-  installed?: boolean;
 }
 
 export interface SkillFileNode {
@@ -897,19 +896,6 @@ export interface SkillListResponse {
   message?: string;
 }
 
-export interface SkillMarketResponse {
-  skills: SkillItem[];
-  total: number;
-  market_dirs: string[];
-  scanned_at: string;
-}
-
-export interface SkillImportPayload {
-  source_path: string;
-  name?: string;
-  overwrite?: boolean;
-}
-
 const normalizeSkillScript = (raw: unknown): SkillScript => {
   const record = asRecord(raw);
   return {
@@ -933,7 +919,6 @@ const normalizeSkillItem = (raw: unknown): SkillItem => {
     triggers: Array.isArray(record.triggers) ? record.triggers.filter((item): item is string => typeof item === "string") : [],
     scripts: Array.isArray(record.scripts) ? record.scripts.map(normalizeSkillScript) : [],
     score: typeof record.score === "number" ? record.score : undefined,
-    installed: typeof record.installed === "boolean" ? record.installed : undefined,
   };
 };
 
@@ -958,12 +943,6 @@ const normalizeSkillFileTreeResponse = (raw: SkillFileTreeResponse): SkillFileTr
 const normalizeSkillListResponse = (raw: SkillListResponse): SkillListResponse => ({
   ...raw,
   skills: (raw.skills ?? []).map(normalizeSkillItem),
-});
-
-const normalizeSkillMarketResponse = (raw: SkillMarketResponse): SkillMarketResponse => ({
-  ...raw,
-  skills: (raw.skills ?? []).map(normalizeSkillItem),
-  market_dirs: raw.market_dirs ?? [],
 });
 
 export interface ModelPriceSyncConfig {
@@ -1053,19 +1032,6 @@ export const skillAPI = {
       body: JSON.stringify({ enabled }),
     }).then(normalizeSkillItem),
 
-  market: (query = "") => {
-    const searchParams = new URLSearchParams();
-    if (query) searchParams.append("query", query);
-    const suffix = searchParams.toString();
-    return apiRequest<SkillMarketResponse>(suffix ? `/skills/market?${suffix}` : "/skills/market").then(normalizeSkillMarketResponse);
-  },
-
-  import: (payload: SkillImportPayload) =>
-    apiRequest<SkillItem>("/skills/import", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    }).then(normalizeSkillItem),
-
   upload: (payload: { files: File[]; name?: string; overwrite?: boolean }) => {
     const formData = new FormData();
     if (payload.name) formData.append("name", payload.name);
@@ -1073,7 +1039,6 @@ export const skillAPI = {
     payload.files.forEach((file) => {
       const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
       formData.append("files", file, relativePath);
-      formData.append("paths", relativePath);
     });
     return apiFormRequest<SkillItem>("/skills/upload", formData).then(normalizeSkillItem);
   },

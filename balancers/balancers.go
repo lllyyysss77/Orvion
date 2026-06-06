@@ -1,12 +1,11 @@
 package balancers
 
 import (
-	"container/list"
 	"fmt"
 	"math/rand/v2"
 	"slices"
-
-	"github.com/samber/lo"
+	"strings"
+	"sync"
 )
 
 type Balancer interface {
@@ -67,58 +66,126 @@ func (w *Lottery) Success(key uint) {
 	w.success = key
 }
 
-// 按顺序循环轮转，每次降低权重后移到队尾
+// 按权重展开后顺序轮转。
+// 例如 A=2、B=1 时，跨请求序列为 A、A、B、A、A、B。
 type Rotor struct {
-	*list.List
-	success uint
-	fails   map[uint]struct{}
-	reduces map[uint]struct{}
+	schedule []uint
+	active   map[uint]struct{}
+	stateKey string
+	success  uint
+	fails    map[uint]struct{}
+	reduces  map[uint]struct{}
 }
 
+var (
+	rotorMu      sync.Mutex
+	rotorCursors = map[string]int{}
+)
+
 func NewRotor(items map[uint]int) *Rotor {
-	l := list.New()
-	entries := lo.Entries(items)
-	slices.SortFunc(entries, func(a lo.Entry[uint, int], b lo.Entry[uint, int]) int {
-		return b.Value - a.Value
+	entries := make([]struct {
+		key    uint
+		weight int
+	}, 0, len(items))
+	for key, weight := range items {
+		if weight <= 0 {
+			continue
+		}
+		entries = append(entries, struct {
+			key    uint
+			weight int
+		}{key: key, weight: weight})
+	}
+	slices.SortFunc(entries, func(a, b struct {
+		key    uint
+		weight int
+	}) int {
+		if a.weight != b.weight {
+			return b.weight - a.weight
+		}
+		if a.key < b.key {
+			return -1
+		}
+		if a.key > b.key {
+			return 1
+		}
+		return 0
 	})
+
+	schedule := make([]uint, 0)
+	active := make(map[uint]struct{}, len(entries))
 	for _, entry := range entries {
-		l.PushBack(entry.Key)
+		active[entry.key] = struct{}{}
+		for i := 0; i < entry.weight; i++ {
+			schedule = append(schedule, entry.key)
+		}
 	}
 	return &Rotor{
-		List:    l,
-		fails:   map[uint]struct{}{},
-		reduces: map[uint]struct{}{},
+		schedule: schedule,
+		active:   active,
+		stateKey: rotorStateKey(entries),
+		fails:    map[uint]struct{}{},
+		reduces:  map[uint]struct{}{},
 	}
 }
 
 func (w *Rotor) Pop() (uint, error) {
-	if w.Len() == 0 {
+	if len(w.active) == 0 || len(w.schedule) == 0 {
 		return 0, fmt.Errorf("no provide items")
 	}
-	e := w.Front()
-	return e.Value.(uint), nil
+
+	allowReduced := !w.hasUnreducedActive()
+	rotorMu.Lock()
+	defer rotorMu.Unlock()
+	cursor := rotorCursors[w.stateKey] % len(w.schedule)
+	for checked := 0; checked < len(w.schedule); checked++ {
+		key := w.schedule[cursor]
+		cursor = (cursor + 1) % len(w.schedule)
+		rotorCursors[w.stateKey] = cursor
+		if _, ok := w.active[key]; !ok {
+			continue
+		}
+		if _, reduced := w.reduces[key]; reduced && !allowReduced {
+			continue
+		}
+		return key, nil
+	}
+	return 0, fmt.Errorf("no provide items")
 }
 
 func (w *Rotor) Delete(key uint) {
 	w.fails[key] = struct{}{}
-	for e := w.Front(); e != nil; e = e.Next() {
-		if e.Value.(uint) == key {
-			w.Remove(e)
-			return
-		}
-	}
+	delete(w.active, key)
+	delete(w.reduces, key)
 }
 
 func (w *Rotor) Reduce(key uint) {
 	w.reduces[key] = struct{}{}
-	for e := w.Front(); e != nil; e = e.Next() {
-		if e.Value.(uint) == key {
-			w.MoveToBack(e)
-			return
-		}
-	}
 }
 
 func (w *Rotor) Success(key uint) {
 	w.success = key
+}
+
+func (w *Rotor) hasUnreducedActive() bool {
+	for key := range w.active {
+		if _, reduced := w.reduces[key]; !reduced {
+			return true
+		}
+	}
+	return false
+}
+
+func rotorStateKey(entries []struct {
+	key    uint
+	weight int
+}) string {
+	if len(entries) == 0 {
+		return "empty"
+	}
+	parts := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		parts = append(parts, fmt.Sprintf("%d:%d", entry.key, entry.weight))
+	}
+	return strings.Join(parts, ",")
 }

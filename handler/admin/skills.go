@@ -190,42 +190,7 @@ func UpdateSkillStatus(c *gin.Context) {
 	common.Success(c, result)
 }
 
-// GetSkillMarket 扫描本地 Skill 市场目录。
-func GetSkillMarket(c *gin.Context) {
-	cfg, err := agent.LoadTelegramAgentConfig(c.Request.Context())
-	if err != nil {
-		common.InternalServerError(c, err.Error())
-		return
-	}
-	result, err := agent.ListTelegramAgentSkillMarket(c.Request.Context(), cfg, c.Query("query"))
-	if err != nil {
-		common.InternalServerError(c, err.Error())
-		return
-	}
-	common.Success(c, result)
-}
-
-// ImportSkill 从本地路径导入 Skill，不做远程拉取。
-func ImportSkill(c *gin.Context) {
-	var req agent.TelegramAgentSkillImportRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		common.BadRequest(c, "请求参数错误: "+err.Error())
-		return
-	}
-	cfg, err := agent.LoadTelegramAgentConfig(c.Request.Context())
-	if err != nil {
-		common.InternalServerError(c, err.Error())
-		return
-	}
-	result, err := agent.ImportTelegramAgentSkill(c.Request.Context(), cfg, req)
-	if err != nil {
-		common.BadRequest(c, err.Error())
-		return
-	}
-	common.Success(c, result)
-}
-
-// UploadSkill 支持上传单个 Skill 文件夹或 ZIP 压缩包。
+// UploadSkill 支持上传单个 Skill ZIP 压缩包。
 func UploadSkill(c *gin.Context) {
 	cfg, err := agent.LoadTelegramAgentConfig(c.Request.Context())
 	if err != nil {
@@ -238,7 +203,11 @@ func UploadSkill(c *gin.Context) {
 	}
 	form := c.Request.MultipartForm
 	if form == nil || len(form.File["files"]) == 0 {
-		common.BadRequest(c, "请上传 Skill 文件夹或 ZIP 压缩包")
+		common.BadRequest(c, "请上传 Skill ZIP 压缩包")
+		return
+	}
+	if len(form.File["files"]) != 1 || !strings.EqualFold(filepath.Ext(form.File["files"][0].Filename), ".zip") {
+		common.BadRequest(c, "仅支持上传单个 ZIP 压缩包")
 		return
 	}
 
@@ -250,28 +219,18 @@ func UploadSkill(c *gin.Context) {
 	defer os.RemoveAll(tempDir)
 
 	files := form.File["files"]
-	paths := form.Value["paths"]
 	var sourcePath string
-	if len(files) == 1 && strings.EqualFold(filepath.Ext(files[0].Filename), ".zip") {
-		archivePath := filepath.Join(tempDir, "upload.zip")
-		if err := saveUploadedSkillFile(files[0], archivePath); err != nil {
-			common.BadRequest(c, "保存 ZIP 失败: "+err.Error())
-			return
-		}
-		extractDir := filepath.Join(tempDir, "extract")
-		if err := extractUploadedSkillZip(archivePath, extractDir); err != nil {
-			common.BadRequest(c, "解压 ZIP 失败: "+err.Error())
-			return
-		}
-		sourcePath, err = locateUploadedSkillSource(extractDir)
-	} else {
-		folderDir := filepath.Join(tempDir, "folder")
-		if err := saveUploadedSkillFiles(files, paths, folderDir); err != nil {
-			common.BadRequest(c, "保存上传文件夹失败: "+err.Error())
-			return
-		}
-		sourcePath, err = locateUploadedSkillSource(folderDir)
+	archivePath := filepath.Join(tempDir, "upload.zip")
+	if err := saveUploadedSkillFile(files[0], archivePath); err != nil {
+		common.BadRequest(c, "保存 ZIP 失败: "+err.Error())
+		return
 	}
+	extractDir := filepath.Join(tempDir, "extract")
+	if err := extractUploadedSkillZip(archivePath, extractDir); err != nil {
+		common.BadRequest(c, "解压 ZIP 失败: "+err.Error())
+		return
+	}
+	sourcePath, err = locateUploadedSkillSource(extractDir)
 	if err != nil {
 		common.BadRequest(c, err.Error())
 		return
@@ -287,23 +246,6 @@ func UploadSkill(c *gin.Context) {
 		return
 	}
 	common.Success(c, result)
-}
-
-func saveUploadedSkillFiles(files []*multipart.FileHeader, paths []string, targetRoot string) error {
-	for index, file := range files {
-		rel := file.Filename
-		if index < len(paths) && strings.TrimSpace(paths[index]) != "" {
-			rel = paths[index]
-		}
-		target, err := safeUploadedSkillPath(targetRoot, rel)
-		if err != nil {
-			return err
-		}
-		if err := saveUploadedSkillFile(file, target); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func saveUploadedSkillFile(file *multipart.FileHeader, target string) error {

@@ -23,11 +23,12 @@ import {
   UserCircle2,
   X,
 } from "lucide-react";
-import { checkVersionUpdate, configAPI, getVersion, type VersionUpdateCheck } from "@/lib/api";
+import { checkVersionUpdate, configAPI, getVersion, type TelegramAgentConfig, type VersionUpdateCheck } from "@/lib/api";
 import { clearStoredAuthToken, getStoredAuthTokenMode } from "@/lib/auth";
 
 const SIDEBAR_STORAGE_KEY = "orvion_sidebar_collapsed";
 const UI_FONT_STORAGE_KEY = "orvion_ui_font";
+const TELEGRAM_AGENT_CONFIG_CHANGED_EVENT = "telegram-agent-config-changed";
 type UIFontOption = "default" | "kunming_seagull" | "fenyuan" | "lxgw_wenkai";
 const UI_FONT_CLASS_MAP: Record<UIFontOption, string> = {
   default: "main-content-font-default",
@@ -112,6 +113,7 @@ export default function Layout() {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(getInitialSidebarCollapsed);
   const [uiFont, setUIFont] = useState<UIFontOption>(getInitialUIFont);
+  const [telegramAgentEnabled, setTelegramAgentEnabled] = useState(true);
   const [navigationProgressVisible, setNavigationProgressVisible] = useState(false);
   const [navigationProgressValue, setNavigationProgressValue] = useState(0);
   const navigate = useNavigate();
@@ -251,6 +253,40 @@ export default function Layout() {
       return undefined;
     }
 
+    let active = true;
+    const fetchTelegramAgentConfig = async () => {
+      try {
+        const response = await configAPI.getConfig("telegram_agent");
+        if (!active) {
+          return;
+        }
+        const parsed = response.value ? JSON.parse(response.value) as Partial<TelegramAgentConfig> : {};
+        setTelegramAgentEnabled(parsed.enabled !== false);
+      } catch {
+        if (active) {
+          setTelegramAgentEnabled(true);
+        }
+      }
+    };
+
+    const handleTelegramAgentConfigChanged = (event: Event) => {
+      const customEvent = event as CustomEvent<{ enabled?: boolean }>;
+      setTelegramAgentEnabled(customEvent.detail?.enabled !== false);
+    };
+
+    void fetchTelegramAgentConfig();
+    window.addEventListener(TELEGRAM_AGENT_CONFIG_CHANGED_EVENT, handleTelegramAgentConfigChanged as EventListener);
+    return () => {
+      active = false;
+      window.removeEventListener(TELEGRAM_AGENT_CONFIG_CHANGED_EVENT, handleTelegramAgentConfigChanged as EventListener);
+    };
+  }, [isAuthKeyToken]);
+
+  useEffect(() => {
+    if (isAuthKeyToken) {
+      return undefined;
+    }
+
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key.toLowerCase() === "b" && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
@@ -354,7 +390,15 @@ export default function Layout() {
 
   const renderNavGroups = (mobile = false) => {
     const collapsed = !mobile && sidebarCollapsed;
-    const sections = isAuthKeyToken ? authKeyNavSections : navSections;
+    const baseSections = isAuthKeyToken ? authKeyNavSections : navSections;
+    const sections = baseSections
+      .map((section) => ({
+        ...section,
+        items: isAuthKeyToken || telegramAgentEnabled
+          ? section.items
+          : section.items.filter((item) => item.to !== "/skills" && item.to !== "/tg-agent"),
+      }))
+      .filter((section) => section.items.length > 0);
 
     return sections.map((section) => (
       <div key={section.title} className={SIDEBAR_GROUP_PADDING}>

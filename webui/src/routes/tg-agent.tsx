@@ -378,7 +378,6 @@ export default function TelegramAgentPage() {
             <Bot className="size-4" />
             Telegram Agent
           </div>
-          <h1 className="mt-1 text-2xl font-semibold tracking-normal">TG Agent 执行步骤</h1>
         </div>
         <Button variant="outline" size="sm" onClick={() => void fetchLogs(false)} disabled={refreshing}>
           <RefreshCw className={cn("mr-2 size-4", refreshing && "animate-spin")} />

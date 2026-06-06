@@ -20,7 +20,7 @@ const (
 	telegramAgentSystemLogWindowBytes  = 512 * 1024
 
 	telegramAgentDefaultRequestLogLimit = 10
-	telegramAgentMaxRequestLogLimit     = 50
+	telegramAgentMaxRequestLogLimit     = 200
 )
 
 var (

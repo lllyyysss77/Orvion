@@ -70,7 +70,7 @@ func telegramAgentFunctionToolDefinitions(cfg models.TelegramAgentConfig) []tele
 				"recent_minutes": map[string]any{"type": "integer", "description": "只看最近多少分钟，可为空或 0。"},
 				"start_at":       map[string]any{"type": "string", "description": "开始时间，可用 RFC3339、YYYY-MM-DD HH:mm:ss 或 YYYY-MM-DD。"},
 				"end_at":         map[string]any{"type": "string", "description": "结束时间，可用 RFC3339、YYYY-MM-DD HH:mm:ss 或 YYYY-MM-DD。"},
-				"limit":          map[string]any{"type": "integer", "description": "最多返回条数，默认 10，最大 50。"},
+				"limit":          map[string]any{"type": "integer", "description": "最多返回条数，默认 10，最大 200。"},
 			},
 			Handler: telegramAgentFunctionReadRequestLogs,
 		},

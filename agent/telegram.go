@@ -21,6 +21,7 @@ import (
 	"github.com/racio/orvion/models"
 	"github.com/racio/orvion/pkg"
 	"github.com/racio/orvion/providers"
+	"github.com/racio/orvion/service/ifacebridge"
 	runtimesvc "github.com/racio/orvion/service/runtime"
 	"github.com/tidwall/gjson"
 	"gorm.io/gorm"
@@ -80,10 +81,23 @@ type selectedModelProvider struct {
 	ProviderConfig  string
 	ProviderProxy   string
 	ProviderStyle   string
+	ClientStyle     string
+	BridgePlan      ifacebridge.Plan
 	WithHeader      bool
 	CustomerHeaders map[string]string
 	TimeoutSeconds  int
 	IOLog           bool
+}
+
+func (selected selectedModelProvider) responseStyle() string {
+	if strings.TrimSpace(selected.ClientStyle) != "" {
+		return selected.ClientStyle
+	}
+	return selected.ProviderStyle
+}
+
+func (selected selectedModelProvider) supportsFunctionTools() bool {
+	return selected.responseStyle() == consts.StyleOpenAI
 }
 
 type streamDeltaHandler func(delta string) error
@@ -461,7 +475,7 @@ func streamTelegramAgentReply(ctx context.Context, cfg models.TelegramAgentConfi
 	}
 	result.Selected = selected
 
-	if selected.ProviderStyle == consts.StyleOpenAI {
+	if selected.supportsFunctionTools() {
 		return streamTelegramAgentReplyWithFunctionTools(ctx, cfg, selected, history, prompt, chatID, onDelta, onStatus)
 	}
 
@@ -471,32 +485,12 @@ func streamTelegramAgentReply(ctx context.Context, cfg models.TelegramAgentConfi
 	}
 	result.RequestBody = append([]byte(nil), body...)
 
-	provider, err := providers.NewForStyleWithProxy(selected.ProviderStyle, selected.ProviderConfig, selected.ProviderProxy)
-	if err != nil {
-		return result, err
-	}
-
-	header := runtimesvc.BuildHeaders(nil, selected.WithHeader, selected.CustomerHeaders, true)
-	req, err := provider.BuildReq(endpointCtx, header, selected.ProviderModel, body)
-	if err != nil {
-		return result, err
-	}
-
-	timeout := time.Duration(selected.TimeoutSeconds) * time.Second
-	if timeout <= 0 {
-		timeout = 90 * time.Second
-	}
-	client, err := providers.GetClientWithProxy(timeout, selected.ProviderProxy)
-	if err != nil {
-		return result, err
-	}
-
-	res, err := client.Do(req)
+	res, proxyMs, err := performTelegramAgentProviderRequestWithContext(endpointCtx, selected, body, true, result.StartedAt)
 	if err != nil {
 		return result, err
 	}
 	defer res.Body.Close()
-	result.ProxyTimeMs = int(time.Since(result.StartedAt).Milliseconds())
+	result.ProxyTimeMs = proxyMs
 
 	if res.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
@@ -504,7 +498,7 @@ func streamTelegramAgentReply(ctx context.Context, cfg models.TelegramAgentConfi
 		return result, fmt.Errorf("%s/%s 返回状态 %d: %s", selected.ProviderName, selected.ProviderModel, res.StatusCode, strings.TrimSpace(string(body)))
 	}
 
-	streamResult, err := readTelegramAgentStream(ctx, selected.ProviderStyle, res.Body, result.StartedAt, onDelta)
+	streamResult, err := readTelegramAgentStream(ctx, selected.responseStyle(), res.Body, result.StartedAt, onDelta)
 	result.Usage = streamResult.Usage
 	result.FirstChunkTimeMs = streamResult.FirstChunkTimeMs
 	result.ChunkTimeMs = streamResult.ChunkTimeMs
@@ -565,7 +559,8 @@ func selectTelegramAgentModelProvider(ctx context.Context, cfg models.TelegramAg
 		if !ok {
 			continue
 		}
-		if !models.ProviderSupportsEndpoint(provider.Capabilities, "chat/completions") {
+		providerStyle, clientStyle, bridgePlan, ok := resolveTelegramAgentProviderInterface(provider)
+		if !ok {
 			continue
 		}
 
@@ -589,7 +584,9 @@ func selectTelegramAgentModelProvider(ctx context.Context, cfg models.TelegramAg
 			ModelProviderID: association.ID,
 			ProviderConfig:  provider.Config,
 			ProviderProxy:   provider.ProxyURL,
-			ProviderStyle:   providers.ResolveStyle("", provider.Config),
+			ProviderStyle:   providerStyle,
+			ClientStyle:     clientStyle,
+			BridgePlan:      bridgePlan,
 			WithHeader:      association.WithHeader == 1,
 			CustomerHeaders: customHeaders,
 			TimeoutSeconds:  timeoutSeconds,
@@ -598,6 +595,46 @@ func selectTelegramAgentModelProvider(ctx context.Context, cfg models.TelegramAg
 	}
 
 	return selectedModelProvider{}, fmt.Errorf("模型 %s 没有支持对话接口的可用提供商", model.Name)
+}
+
+func resolveTelegramAgentProviderInterface(provider models.Provider) (string, string, ifacebridge.Plan, bool) {
+	providerStyle := providers.ResolveStyle("", provider.Config)
+	if providerStyle == "" {
+		providerStyle = consts.StyleOpenAI
+	}
+
+	if models.ProviderSupportsEndpoint(provider.Capabilities, "chat") {
+		return providerStyle, providerStyle, ifacebridge.Plan{}, true
+	}
+
+	if plan, ok := ifacebridge.ResolvePlan(provider, "chat"); ok {
+		upstreamStyle := plan.UpstreamStyle()
+		if strings.TrimSpace(upstreamStyle) == "" {
+			return "", "", ifacebridge.Plan{}, false
+		}
+		return upstreamStyle, consts.StyleOpenAI, plan, true
+	}
+
+	nativeEndpoint := telegramAgentNativeEndpointForStyle(providerStyle)
+	if nativeEndpoint == "" || !models.ProviderSupportsEndpoint(provider.Capabilities, nativeEndpoint) {
+		return "", "", ifacebridge.Plan{}, false
+	}
+	return providerStyle, providerStyle, ifacebridge.Plan{}, true
+}
+
+func telegramAgentNativeEndpointForStyle(style string) string {
+	switch style {
+	case consts.StyleOpenAI:
+		return "chat"
+	case consts.StyleOpenAIRes:
+		return "responses"
+	case consts.StyleAnthropic:
+		return "messages"
+	case consts.StyleGemini:
+		return "chat"
+	default:
+		return ""
+	}
 }
 
 func buildTelegramAgentRequestBody(ctx context.Context, cfg models.TelegramAgentConfig, selected selectedModelProvider, history []chatMessage, prompt string) ([]byte, context.Context, error) {
@@ -1209,7 +1246,7 @@ func normalizeTelegramAgentUsage(usage *models.Usage) {
 }
 
 func estimateTelegramAgentUsage(selected selectedModelProvider, requestBody []byte, answer string) models.Usage {
-	inputText := extractTelegramAgentInputText(selected.ProviderStyle, requestBody)
+	inputText := extractTelegramAgentInputText(selected.responseStyle(), requestBody)
 	if strings.TrimSpace(inputText) == "" {
 		inputText = string(requestBody)
 	}

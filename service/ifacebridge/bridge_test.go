@@ -145,3 +145,68 @@ func TestConvertResponseResponsesToChatNonStream(t *testing.T) {
 		}
 	}
 }
+
+func TestConvertResponseResponsesToolCallStreamToChat(t *testing.T) {
+	streamPayload := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_tool","created_at":1700000020,"model":"gpt-4o-mini"}}`,
+		"",
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"set_model_status","arguments":""}}`,
+		"",
+		`data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"{\"target\":\"claude\""}`,
+		"",
+		`data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":",\"enabled\":false}"}`,
+		"",
+		`data: {"type":"response.completed","response":{"id":"resp_tool","created_at":1700000020,"model":"gpt-4o-mini","output":[{"id":"fc_1","type":"function_call","call_id":"call_1","name":"set_model_status","arguments":"{\"target\":\"claude\",\"enabled\":false}"}],"usage":{"input_tokens":20,"output_tokens":8,"total_tokens":28}}}`,
+		"",
+		`data: [DONE]`,
+		"",
+	}, "\n")
+
+	res := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewBufferString(streamPayload)), Header: make(http.Header)}
+	plan := Plan{Enabled: true, ClientEndpoint: EndpointChat, UpstreamEndpoint: EndpointResponses}
+	converted, err := ConvertResponseBody(plan, res, true)
+	if err != nil {
+		t.Fatalf("convert error: %v", err)
+	}
+	body, _ := io.ReadAll(converted.Body)
+	content := string(body)
+	for _, expected := range []string{`"tool_calls"`, `"set_model_status"`, `{\"target\":\"claude\",\"enabled\":false}`, `"finish_reason":"tool_calls"`, `"prompt_tokens":20`} {
+		if !strings.Contains(content, expected) {
+			t.Fatalf("converted tool stream missing %s: %s", expected, content)
+		}
+	}
+}
+
+func TestConvertResponseMessagesToolUseStreamToChat(t *testing.T) {
+	streamPayload := strings.Join([]string{
+		`event: message_start`,
+		`data: {"type":"message_start","message":{"id":"msg_tool","model":"claude-sonnet","usage":{"input_tokens":14}}}`,
+		"",
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"read_system_logs","input":{}}}`,
+		"",
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"level\":\"ERROR\"}"}}`,
+		"",
+		`event: message_delta`,
+		`data: {"type":"message_delta","usage":{"output_tokens":6}}`,
+		"",
+		`event: message_stop`,
+		`data: {"type":"message_stop"}`,
+		"",
+	}, "\n")
+
+	res := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewBufferString(streamPayload)), Header: make(http.Header)}
+	plan := Plan{Enabled: true, ClientEndpoint: EndpointChat, UpstreamEndpoint: EndpointMessages}
+	converted, err := ConvertResponseBody(plan, res, true)
+	if err != nil {
+		t.Fatalf("convert error: %v", err)
+	}
+	body, _ := io.ReadAll(converted.Body)
+	content := string(body)
+	for _, expected := range []string{`"tool_calls"`, `"read_system_logs"`, `{\"level\":\"ERROR\"}`, `"finish_reason":"tool_calls"`, `"completion_tokens":6`} {
+		if !strings.Contains(content, expected) {
+			t.Fatalf("converted messages tool stream missing %s: %s", expected, content)
+		}
+	}
+}

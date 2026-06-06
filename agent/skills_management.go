@@ -52,7 +52,6 @@ type TelegramAgentSkillView struct {
 	Triggers     []string                       `json:"triggers"`
 	Scripts      []TelegramAgentSkillScriptView `json:"scripts"`
 	Score        float64                        `json:"score,omitempty"`
-	Installed    bool                           `json:"installed,omitempty"`
 }
 
 type TelegramAgentSkillListResult struct {
@@ -67,13 +66,6 @@ type TelegramAgentSkillListResult struct {
 type TelegramAgentSkillReloadResult struct {
 	TelegramAgentSkillListResult
 	Message string `json:"message"`
-}
-
-type TelegramAgentSkillMarketResult struct {
-	Skills     []TelegramAgentSkillView `json:"skills"`
-	Total      int                      `json:"total"`
-	MarketDirs []string                 `json:"market_dirs"`
-	ScannedAt  time.Time                `json:"scanned_at"`
 }
 
 type TelegramAgentSkillImportRequest struct {
@@ -298,47 +290,6 @@ func SetTelegramAgentSkillEnabled(ctx context.Context, cfg models.TelegramAgentC
 		return TelegramAgentSkillView{}, err
 	}
 	return toTelegramAgentSkillView(skill, 0), nil
-}
-
-func ListTelegramAgentSkillMarket(ctx context.Context, cfg models.TelegramAgentConfig, query string) (TelegramAgentSkillMarketResult, error) {
-	_ = ctx
-	installed, err := scanTelegramAgentSkills(cfg)
-	if err != nil {
-		return TelegramAgentSkillMarketResult{}, err
-	}
-	installedNames := make(map[string]struct{}, len(installed))
-	for _, skill := range installed {
-		installedNames[strings.ToLower(skill.Name)] = struct{}{}
-	}
-
-	marketDirs := telegramAgentSkillMarketDirs(cfg)
-	items := make([]TelegramAgentSkillView, 0)
-	for _, dir := range marketDirs {
-		skills, err := scanTelegramAgentSkillsFromRoot(dir)
-		if err != nil {
-			return TelegramAgentSkillMarketResult{}, err
-		}
-		for _, skill := range skills {
-			if strings.TrimSpace(query) != "" && !telegramAgentSkillMatches(skill, strings.ToLower(strings.TrimSpace(query))) {
-				continue
-			}
-			view := toTelegramAgentSkillView(skill, 0)
-			_, view.Installed = installedNames[strings.ToLower(skill.Name)]
-			items = append(items, view)
-		}
-	}
-	sort.SliceStable(items, func(i, j int) bool {
-		if items[i].Installed != items[j].Installed {
-			return !items[i].Installed
-		}
-		return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name)
-	})
-	return TelegramAgentSkillMarketResult{
-		Skills:     items,
-		Total:      len(items),
-		MarketDirs: marketDirs,
-		ScannedAt:  time.Now(),
-	}, nil
 }
 
 func ImportTelegramAgentSkill(ctx context.Context, cfg models.TelegramAgentConfig, req TelegramAgentSkillImportRequest) (TelegramAgentSkillView, error) {
@@ -945,42 +896,6 @@ func writeTelegramAgentSkillEnabled(file string, skillName string, enabled bool)
 	}
 	next := "---\n" + strings.Join(lines, "\n") + rest
 	return os.WriteFile(file, []byte(next), 0o644)
-}
-
-func telegramAgentSkillMarketDirs(cfg models.TelegramAgentConfig) []string {
-	roots := []string{}
-	if env := strings.TrimSpace(os.Getenv("ORVION_SKILL_MARKET_DIR")); env != "" {
-		roots = append(roots, env)
-	}
-	cwd, err := os.Getwd()
-	if err == nil {
-		if root, err := resolveTelegramAgentSkillsRoot(cfg); err == nil {
-			roots = append(roots, filepath.Join(filepath.Dir(root), "skills-market"))
-		}
-		roots = append(roots,
-			filepath.Join(cwd, "data", "skills-market"),
-			filepath.Join(cwd, "skills-market"),
-			filepath.Join(cwd, "skill-market"),
-			filepath.Join(cwd, "skills_market"),
-		)
-	}
-	seen := make(map[string]struct{}, len(roots))
-	result := make([]string, 0, len(roots))
-	for _, root := range roots {
-		if strings.TrimSpace(root) == "" {
-			continue
-		}
-		if !filepath.IsAbs(root) && cwd != "" {
-			root = filepath.Join(cwd, root)
-		}
-		root = filepath.Clean(root)
-		if _, ok := seen[root]; ok {
-			continue
-		}
-		seen[root] = struct{}{}
-		result = append(result, root)
-	}
-	return result
 }
 
 func normalizeTelegramAgentSkillImportSource(source string) (string, error) {

@@ -213,14 +213,12 @@ func registerTelegramAgentRoutes(api *gin.RouterGroup) {
 
 func registerSkillRoutes(api *gin.RouterGroup) {
 	api.GET("/skills", adminhandler.GetSkills)
-	api.GET("/skills/market", adminhandler.GetSkillMarket)
 	api.GET("/skills/detail/:name/files", adminhandler.GetSkillFiles)
 	api.GET("/skills/detail/:name/file-content", adminhandler.GetSkillFileContent)
 	api.GET("/skills/detail/:name", adminhandler.GetSkill)
 	api.PUT("/skills/detail/:name/file-content", adminhandler.UpdateSkillFileContent)
 	api.DELETE("/skills/detail/:name", adminhandler.DeleteSkill)
 	api.POST("/skills/reload", adminhandler.ReloadSkills)
-	api.POST("/skills/import", adminhandler.ImportSkill)
 	api.POST("/skills/upload", adminhandler.UploadSkill)
 	api.PATCH("/skills/:name/status", adminhandler.UpdateSkillStatus)
 }

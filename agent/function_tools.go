@@ -13,6 +13,7 @@ import (
 	"github.com/racio/orvion/consts"
 	"github.com/racio/orvion/models"
 	"github.com/racio/orvion/providers"
+	"github.com/racio/orvion/service/ifacebridge"
 	runtimesvc "github.com/racio/orvion/service/runtime"
 	"github.com/tidwall/gjson"
 )
@@ -120,7 +121,7 @@ func streamTelegramAgentReplyWithFunctionTools(ctx context.Context, cfg models.T
 		Selected:  selected,
 		StartedAt: time.Now(),
 	}
-	if selected.ProviderStyle != consts.StyleOpenAI {
+	if !selected.supportsFunctionTools() {
 		return result, errors.New("当前 TG Agent 模型提供商暂不支持 function call 工具调用")
 	}
 
@@ -201,7 +202,7 @@ func streamTelegramAgentPlainReplyWithSelected(ctx context.Context, cfg models.T
 	var body []byte
 	var endpointCtx context.Context
 	var err error
-	if selected.ProviderStyle == consts.StyleOpenAI {
+	if selected.responseStyle() == consts.StyleOpenAI {
 		messages := toTelegramAgentOpenAIMessages(strings.TrimSpace(cfg.SystemPrompt), history, prompt)
 		body, err = buildTelegramAgentOpenAIChatBody(cfg, messages, true, false)
 		endpointCtx = context.WithValue(ctx, consts.ContextKeyOpenAIEndpoint, "chat/completions")
@@ -228,7 +229,7 @@ func streamTelegramAgentPlainReplyWithSelected(ctx context.Context, cfg models.T
 		return result, fmt.Errorf("%s/%s 返回状态 %d: %s", selected.ProviderName, selected.ProviderModel, res.StatusCode, strings.TrimSpace(string(body)))
 	}
 
-	streamResult, err := readTelegramAgentStream(ctx, selected.ProviderStyle, res.Body, result.StartedAt, onDelta)
+	streamResult, err := readTelegramAgentStream(ctx, selected.responseStyle(), res.Body, result.StartedAt, onDelta)
 	mergeTelegramAgentUsageAdd(&result.Usage, streamResult.Usage)
 	if result.FirstChunkTimeMs == 0 {
 		result.FirstChunkTimeMs = streamResult.FirstChunkTimeMs
@@ -270,13 +271,26 @@ func performTelegramAgentProviderRequest(ctx context.Context, selected selectedM
 }
 
 func performTelegramAgentProviderRequestWithContext(ctx context.Context, selected selectedModelProvider, body []byte, stream bool, startedAt time.Time) (*http.Response, int, error) {
-	provider, err := providers.NewForStyleWithProxy(selected.ProviderStyle, selected.ProviderConfig, selected.ProviderProxy)
+	upstreamBody := body
+	upstreamCtx := ctx
+	upstreamStyle := selected.ProviderStyle
+	if selected.BridgePlan.Enabled {
+		convertedBody, err := ifacebridge.ConvertRequestBody(selected.BridgePlan, body)
+		if err != nil {
+			return nil, 0, err
+		}
+		upstreamBody = convertedBody
+		upstreamCtx = ifacebridge.ApplyUpstreamContext(ctx, selected.BridgePlan)
+		upstreamStyle = selected.BridgePlan.UpstreamStyle()
+	}
+
+	provider, err := providers.NewForStyleWithProxy(upstreamStyle, selected.ProviderConfig, selected.ProviderProxy)
 	if err != nil {
 		return nil, 0, err
 	}
 
 	header := runtimesvc.BuildHeaders(nil, selected.WithHeader, selected.CustomerHeaders, stream)
-	req, err := provider.BuildReq(ctx, header, selected.ProviderModel, body)
+	req, err := provider.BuildReq(upstreamCtx, header, selected.ProviderModel, upstreamBody)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -293,6 +307,14 @@ func performTelegramAgentProviderRequestWithContext(ctx context.Context, selecte
 	res, err := client.Do(req)
 	if err != nil {
 		return nil, 0, err
+	}
+	if res.StatusCode == http.StatusOK && selected.BridgePlan.Enabled {
+		convertedRes, convertErr := ifacebridge.ConvertResponseBody(selected.BridgePlan, res, stream)
+		if convertErr != nil {
+			_ = res.Body.Close()
+			return nil, 0, convertErr
+		}
+		res = convertedRes
 	}
 	return res, int(time.Since(startedAt).Milliseconds()), nil
 }
