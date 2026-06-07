@@ -9,6 +9,7 @@ import {
   Activity,
   Bot,
   Boxes,
+  CalendarClock,
   ChevronsUpDown,
   Cloud,
   FileTerminal,
@@ -58,6 +59,7 @@ const navSections = [
       { to: "/auth-keys", label: "API 密钥", icon: KeyRound },
       { to: "/skills", label: "Skills", icon: Sparkles },
       { to: "/tg-agent", label: "TG Agent", icon: Bot },
+      { to: "/tg-agent-schedules", label: "Agent 定时", icon: CalendarClock },
     ],
   },
   {
@@ -396,7 +398,7 @@ export default function Layout() {
         ...section,
         items: isAuthKeyToken || telegramAgentEnabled
           ? section.items
-          : section.items.filter((item) => item.to !== "/skills" && item.to !== "/tg-agent"),
+          : section.items.filter((item) => item.to !== "/skills" && item.to !== "/tg-agent" && item.to !== "/tg-agent-schedules"),
       }))
       .filter((section) => section.items.length > 0);
 

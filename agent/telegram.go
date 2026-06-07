@@ -56,15 +56,28 @@ type TelegramClient interface {
 	SendTyping(ctx context.Context, chatID int64) error
 }
 
+type TelegramAttachmentClient interface {
+	SendPhoto(ctx context.Context, chatID int64, source string, caption string) error
+	SendDocument(ctx context.Context, chatID int64, source string, caption string) error
+}
+
 type TelegramMessage struct {
-	ChatID    int64
-	MessageID int64
-	Text      string
+	ChatID      int64
+	MessageID   int64
+	Text        string
+	Attachments []TelegramInputAttachment
+}
+
+type TelegramInputAttachment struct {
+	FileName string
+	MIMEType string
+	Data     []byte
 }
 
 type chatMessage struct {
-	Role    string
-	Content string
+	Role        string
+	Content     string
+	Attachments []TelegramInputAttachment
 }
 
 type chatSession struct {
@@ -126,9 +139,13 @@ func HandleTelegramMessage(ctx context.Context, client TelegramClient, message T
 		return false, errors.New("telegram agent client is nil")
 	}
 
+	attachments := normalizeTelegramAgentInputAttachments(message.Attachments)
 	raw := strings.TrimSpace(message.Text)
-	if raw == "" {
+	if raw == "" && len(attachments) == 0 {
 		return false, nil
+	}
+	if raw == "" {
+		raw = defaultTelegramAgentImagePrompt
 	}
 
 	cfg, err := loadTelegramAgentConfig(ctx)
@@ -146,29 +163,33 @@ func HandleTelegramMessage(ctx context.Context, client TelegramClient, message T
 	command, commandText := parseTelegramAgentCommand(raw)
 	switch command {
 	case "/new", "/reset":
-		conversationID, err := startNewTelegramConversation(ctx, message.ChatID)
+		_, err := startNewTelegramConversation(ctx, message.ChatID)
 		if err != nil {
 			return true, err
 		}
-		_, err = client.SendMessage(ctx, message.ChatID, "已开启新的对话。\n会话 ID："+conversationID)
+		_, err = client.SendMessage(ctx, message.ChatID, "已开启新的对话。")
 		return true, err
 	case "/chat":
-		if strings.TrimSpace(commandText) == "" {
+		if strings.TrimSpace(commandText) == "" && len(attachments) == 0 {
 			_, err := client.SendMessage(ctx, message.ChatID, "请在 /chat 后面输入要对话的内容。")
 			return true, err
 		}
-		return true, runTelegramAgentConversation(ctx, client, message.ChatID, commandText, cfg)
+		prompt := strings.TrimSpace(commandText)
+		if prompt == "" {
+			prompt = defaultTelegramAgentImagePrompt
+		}
+		return true, runTelegramAgentConversation(ctx, client, message.ChatID, prompt, attachments, cfg)
 	case "":
 		if shouldBypassTelegramAgent(raw) {
 			return false, nil
 		}
-		return true, runTelegramAgentConversation(ctx, client, message.ChatID, raw, cfg)
+		return true, runTelegramAgentConversation(ctx, client, message.ChatID, raw, attachments, cfg)
 	default:
 		return false, nil
 	}
 }
 
-func runTelegramAgentConversation(ctx context.Context, client TelegramClient, chatID int64, prompt string, cfg models.TelegramAgentConfig) error {
+func runTelegramAgentConversation(ctx context.Context, client TelegramClient, chatID int64, prompt string, attachments []TelegramInputAttachment, cfg models.TelegramAgentConfig) error {
 	session := getTelegramSession(chatID)
 	session.mu.Lock()
 	defer session.mu.Unlock()
@@ -222,7 +243,8 @@ func runTelegramAgentConversation(ctx context.Context, client TelegramClient, ch
 		return edit(true)
 	}
 
-	result, err := streamTelegramAgentReply(ctx, cfg, history, prompt, chatID, func(delta string) error {
+	attachments = normalizeTelegramAgentInputAttachments(attachments)
+	result, err := streamTelegramAgentReply(ctx, cfg, history, prompt, attachments, chatID, func(delta string) error {
 		if delta == "" {
 			return nil
 		}
@@ -238,12 +260,17 @@ func runTelegramAgentConversation(ctx context.Context, client TelegramClient, ch
 		return err
 	}
 
-	finalAnswer := strings.TrimSpace(answer.String())
+	rawFinalAnswer := strings.TrimSpace(answer.String())
+	finalAnswer, outputAttachments := extractTelegramAgentAttachments(rawFinalAnswer)
 	if finalAnswer == "" {
-		finalAnswer = "上游返回了空响应。"
-		answer.Reset()
-		answer.WriteString(finalAnswer)
+		if len(outputAttachments) > 0 {
+			finalAnswer = "已生成附件。"
+		} else {
+			finalAnswer = "上游返回了空响应。"
+		}
 	}
+	answer.Reset()
+	answer.WriteString(finalAnswer)
 	if err := edit(true); err != nil {
 		return err
 	}
@@ -258,9 +285,13 @@ func runTelegramAgentConversation(ctx context.Context, client TelegramClient, ch
 			}
 		}
 	}
+	if err := sendTelegramAgentAttachments(ctx, client, chatID, outputAttachments); err != nil {
+		return err
+	}
 
+	historyPrompt := buildTelegramAgentHistoryPrompt(prompt, attachments)
 	nextHistory := trimTelegramHistory(append(history,
-		chatMessage{Role: "user", Content: prompt},
+		chatMessage{Role: "user", Content: historyPrompt},
 		chatMessage{Role: "assistant", Content: finalAnswer},
 	), cfg)
 	session.messages = nextHistory
@@ -334,12 +365,17 @@ func runTelegramAgentToolResultFollowup(ctx context.Context, client TelegramClie
 		return nil
 	}
 
-	finalAnswer := strings.TrimSpace(answer.String())
+	rawFinalAnswer := strings.TrimSpace(answer.String())
+	finalAnswer, attachments := extractTelegramAgentAttachments(rawFinalAnswer)
 	if finalAnswer == "" {
-		finalAnswer = "工具已执行完成，但模型没有生成整理内容。"
-		answer.Reset()
-		answer.WriteString(finalAnswer)
+		if len(attachments) > 0 {
+			finalAnswer = "已生成附件。"
+		} else {
+			finalAnswer = "工具已执行完成，但模型没有生成整理内容。"
+		}
 	}
+	answer.Reset()
+	answer.WriteString(finalAnswer)
 	if err := edit(true); err != nil {
 		return err
 	}
@@ -354,6 +390,9 @@ func runTelegramAgentToolResultFollowup(ctx context.Context, client TelegramClie
 			}
 		}
 	}
+	if err := sendTelegramAgentAttachments(ctx, client, chatID, attachments); err != nil {
+		return err
+	}
 
 	nextHistory := trimTelegramHistory(append(history,
 		chatMessage{Role: "user", Content: "确认"},
@@ -367,13 +406,15 @@ func runTelegramAgentToolResultFollowup(ctx context.Context, client TelegramClie
 }
 
 func editTelegramAgentToolResultFallback(ctx context.Context, client TelegramClient, chatID int64, messageID int64, toolResult string) error {
-	text := strings.TrimSpace(toolResult)
-	if text == "" {
+	text, attachments := extractTelegramAgentAttachments(strings.TrimSpace(toolResult))
+	if text == "" && len(attachments) == 0 {
 		text = "工具已执行完成，但没有输出。"
+	} else if text == "" {
+		text = "已生成附件。"
 	}
 	parts := splitTelegramMessage(text)
 	if len(parts) == 0 {
-		return nil
+		return sendTelegramAgentAttachments(ctx, client, chatID, attachments)
 	}
 	if err := client.EditMessage(ctx, chatID, messageID, trimTelegramMessage(parts[0])); err != nil {
 		return err
@@ -386,7 +427,7 @@ func editTelegramAgentToolResultFallback(ctx context.Context, client TelegramCli
 			return err
 		}
 	}
-	return nil
+	return sendTelegramAgentAttachments(ctx, client, chatID, attachments)
 }
 
 func buildTelegramAgentToolResultFollowupPrompt(action telegramToolAction, toolResult string) string {
@@ -464,7 +505,7 @@ func startTelegramTypingLoop(ctx context.Context, client TelegramClient, chatID 
 	}
 }
 
-func streamTelegramAgentReply(ctx context.Context, cfg models.TelegramAgentConfig, history []chatMessage, prompt string, chatID int64, onDelta streamDeltaHandler, onStatus streamStatusHandler) (telegramAgentReplyResult, error) {
+func streamTelegramAgentReply(ctx context.Context, cfg models.TelegramAgentConfig, history []chatMessage, prompt string, attachments []TelegramInputAttachment, chatID int64, onDelta streamDeltaHandler, onStatus streamStatusHandler) (telegramAgentReplyResult, error) {
 	result := telegramAgentReplyResult{
 		StartedAt: time.Now(),
 	}
@@ -476,10 +517,10 @@ func streamTelegramAgentReply(ctx context.Context, cfg models.TelegramAgentConfi
 	result.Selected = selected
 
 	if selected.supportsFunctionTools() {
-		return streamTelegramAgentReplyWithFunctionTools(ctx, cfg, selected, history, prompt, chatID, onDelta, onStatus)
+		return streamTelegramAgentReplyWithFunctionTools(ctx, cfg, selected, history, prompt, attachments, chatID, onDelta, onStatus)
 	}
 
-	body, endpointCtx, err := buildTelegramAgentRequestBody(ctx, cfg, selected, history, prompt)
+	body, endpointCtx, err := buildTelegramAgentRequestBody(ctx, cfg, selected, history, prompt, attachments)
 	if err != nil {
 		return result, err
 	}
@@ -637,10 +678,10 @@ func telegramAgentNativeEndpointForStyle(style string) string {
 	}
 }
 
-func buildTelegramAgentRequestBody(ctx context.Context, cfg models.TelegramAgentConfig, selected selectedModelProvider, history []chatMessage, prompt string) ([]byte, context.Context, error) {
+func buildTelegramAgentRequestBody(ctx context.Context, cfg models.TelegramAgentConfig, selected selectedModelProvider, history []chatMessage, prompt string, attachments []TelegramInputAttachment) ([]byte, context.Context, error) {
 	systemPrompt := strings.TrimSpace(cfg.SystemPrompt)
 	messages := append([]chatMessage(nil), history...)
-	messages = append(messages, chatMessage{Role: "user", Content: prompt})
+	messages = append(messages, chatMessage{Role: "user", Content: prompt, Attachments: normalizeTelegramAgentInputAttachments(attachments)})
 	maxTokens := resolveTelegramAgentMaxTokens(cfg)
 	temperature := cfg.Temperature
 
@@ -899,7 +940,7 @@ func recordTelegramAgentLog(ctx context.Context, result telegramAgentReplyResult
 			output = logErr.Error()
 		}
 		if err := models.DB.WithContext(ctx).Create(&models.ChatIO{
-			Input:        string(result.RequestBody),
+			Input:        maskTelegramAgentVisionDataForLog(string(result.RequestBody)),
 			OutputString: output,
 			LogId:        ref.ID,
 			LogUUID:      ref.UUID,
@@ -1704,41 +1745,41 @@ func resolveTelegramAgentEditInterval(cfg models.TelegramAgentConfig) time.Durat
 	return defaultTelegramAgentEditInterval
 }
 
-func toOpenAIChatMessages(systemPrompt string, messages []chatMessage) []map[string]string {
-	result := make([]map[string]string, 0, len(messages)+1)
+func toOpenAIChatMessages(systemPrompt string, messages []chatMessage) []map[string]any {
+	result := make([]map[string]any, 0, len(messages)+1)
 	if strings.TrimSpace(systemPrompt) != "" {
-		result = append(result, map[string]string{"role": "system", "content": systemPrompt})
+		result = append(result, map[string]any{"role": "system", "content": systemPrompt})
 	}
 	for _, message := range messages {
-		result = append(result, map[string]string{
+		result = append(result, map[string]any{
 			"role":    normalizeOpenAIRole(message.Role),
-			"content": message.Content,
+			"content": toOpenAIChatContent(message.Content, message.Attachments),
 		})
 	}
 	return result
 }
 
-func toOpenAIResponsesInput(messages []chatMessage) []map[string]string {
-	result := make([]map[string]string, 0, len(messages))
+func toOpenAIResponsesInput(messages []chatMessage) []map[string]any {
+	result := make([]map[string]any, 0, len(messages))
 	for _, message := range messages {
-		result = append(result, map[string]string{
+		result = append(result, map[string]any{
 			"role":    normalizeOpenAIRole(message.Role),
-			"content": message.Content,
+			"content": toOpenAIResponsesContent(message.Content, message.Attachments),
 		})
 	}
 	return result
 }
 
-func toAnthropicMessages(messages []chatMessage) []map[string]string {
-	result := make([]map[string]string, 0, len(messages))
+func toAnthropicMessages(messages []chatMessage) []map[string]any {
+	result := make([]map[string]any, 0, len(messages))
 	for _, message := range messages {
 		role := "user"
 		if strings.TrimSpace(strings.ToLower(message.Role)) == "assistant" {
 			role = "assistant"
 		}
-		result = append(result, map[string]string{
+		result = append(result, map[string]any{
 			"role":    role,
-			"content": message.Content,
+			"content": toAnthropicMessageContent(message.Content, message.Attachments),
 		})
 	}
 	return result
@@ -1752,10 +1793,8 @@ func toGeminiContents(messages []chatMessage) []map[string]any {
 			role = "model"
 		}
 		result = append(result, map[string]any{
-			"role": role,
-			"parts": []map[string]string{
-				{"text": message.Content},
-			},
+			"role":  role,
+			"parts": toGeminiParts(message.Content, message.Attachments),
 		})
 	}
 	return result

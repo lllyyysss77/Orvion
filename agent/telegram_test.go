@@ -322,14 +322,18 @@ func TestTelegramAgentToolModelStatusRequiresConfirmation(t *testing.T) {
 	}
 
 	client := &telegramToolTestClient{}
-	handled, err := HandleTelegramMessage(ctx, client, TelegramMessage{ChatID: chatID, Text: "/disable_model gpt-tool-test"})
-	if err != nil || !handled {
-		t.Fatalf("期望工具消息被处理，handled=%v err=%v", handled, err)
+	action, err := buildTelegramSetModelStatusActionWithMode(ctx, chatID, "gpt-tool-test", false, false)
+	if err != nil {
+		t.Fatalf("准备工具动作失败: %v", err)
 	}
-	if !strings.Contains(client.lastSent(), "操作：禁用模型") {
-		t.Fatalf("期望返回待确认提示，实际为: %s", client.lastSent())
+	text, err := prepareOrExecuteTelegramToolAction(ctx, action, true)
+	if err != nil {
+		t.Fatalf("写入待确认操作失败: %v", err)
 	}
-	assertTelegramToolTextHasNoVisibleID(t, client.lastSent())
+	if !strings.Contains(text, "操作：禁用模型") {
+		t.Fatalf("期望返回待确认提示，实际为: %s", text)
+	}
+	assertTelegramToolTextHasNoVisibleID(t, text)
 
 	var before models.Model
 	if err := db.First(&before, model.ID).Error; err != nil {
@@ -339,7 +343,7 @@ func TestTelegramAgentToolModelStatusRequiresConfirmation(t *testing.T) {
 		t.Fatalf("确认前不应修改模型状态，实际 status=%d", before.Status)
 	}
 
-	handled, err = HandleTelegramMessage(ctx, client, TelegramMessage{ChatID: chatID, Text: "确认"})
+	handled, err := HandleTelegramMessage(ctx, client, TelegramMessage{ChatID: chatID, Text: "确认"})
 	if err != nil || !handled {
 		t.Fatalf("期望确认消息被处理，handled=%v err=%v", handled, err)
 	}
@@ -368,8 +372,12 @@ func TestTelegramAgentToolCancelKeepsModelStatus(t *testing.T) {
 	}
 
 	client := &telegramToolTestClient{}
-	if handled, err := HandleTelegramMessage(ctx, client, TelegramMessage{ChatID: chatID, Text: "/disable_model gpt-tool-cancel"}); err != nil || !handled {
-		t.Fatalf("期望工具消息被处理，handled=%v err=%v", handled, err)
+	action, err := buildTelegramSetModelStatusActionWithMode(ctx, chatID, "gpt-tool-cancel", false, false)
+	if err != nil {
+		t.Fatalf("准备工具动作失败: %v", err)
+	}
+	if _, err := prepareOrExecuteTelegramToolAction(ctx, action, true); err != nil {
+		t.Fatalf("写入待确认操作失败: %v", err)
 	}
 	if handled, err := HandleTelegramMessage(ctx, client, TelegramMessage{ChatID: chatID, Text: "取消"}); err != nil || !handled {
 		t.Fatalf("期望取消消息被处理，handled=%v err=%v", handled, err)
@@ -403,18 +411,22 @@ func TestTelegramAgentToolBulkModelStatusByKeyword(t *testing.T) {
 	}
 
 	client := &telegramToolTestClient{}
-	handled, err := HandleTelegramMessage(ctx, client, TelegramMessage{ChatID: chatID, Text: "/disable_model claude的所有模型"})
-	if err != nil || !handled {
-		t.Fatalf("期望批量工具消息被处理，handled=%v err=%v", handled, err)
+	action, err := buildTelegramSetModelStatusActionWithMode(ctx, chatID, "claude", false, true)
+	if err != nil {
+		t.Fatalf("准备批量工具动作失败: %v", err)
 	}
-	if !strings.Contains(client.lastSent(), "操作：禁用模型（匹配“claude”，共 2 个）") {
-		t.Fatalf("期望返回批量待确认提示，实际为: %s", client.lastSent())
+	text, err := prepareOrExecuteTelegramToolAction(ctx, action, true)
+	if err != nil {
+		t.Fatalf("写入批量待确认操作失败: %v", err)
+	}
+	if !strings.Contains(text, "操作：禁用模型（匹配“claude”，共 2 个）") {
+		t.Fatalf("期望返回批量待确认提示，实际为: %s", text)
 	}
 	assertTelegramModelStatus(t, db, modelsToCreate[0].ID, 1)
 	assertTelegramModelStatus(t, db, modelsToCreate[1].ID, 1)
 	assertTelegramModelStatus(t, db, modelsToCreate[2].ID, 1)
 
-	handled, err = HandleTelegramMessage(ctx, client, TelegramMessage{ChatID: chatID, Text: "确认"})
+	handled, err := HandleTelegramMessage(ctx, client, TelegramMessage{ChatID: chatID, Text: "确认"})
 	if err != nil || !handled {
 		t.Fatalf("期望确认批量操作被处理，handled=%v err=%v", handled, err)
 	}
@@ -469,8 +481,12 @@ func TestTelegramAgentToolProviderStatusRestoresSnapshotOnly(t *testing.T) {
 	}
 
 	client := &telegramToolTestClient{}
-	if handled, err := HandleTelegramMessage(ctx, client, TelegramMessage{ChatID: chatID, Text: "/disable_provider ToolProvider"}); err != nil || !handled {
-		t.Fatalf("期望关闭提供商消息被处理，handled=%v err=%v", handled, err)
+	disableAction, err := buildTelegramSetProviderStatusAction(ctx, chatID, "ToolProvider", false)
+	if err != nil {
+		t.Fatalf("准备关闭提供商动作失败: %v", err)
+	}
+	if _, err := prepareOrExecuteTelegramToolAction(ctx, disableAction, true); err != nil {
+		t.Fatalf("写入关闭提供商待确认失败: %v", err)
 	}
 	assertTelegramModelProviderStatus(t, db, enabledAssoc.ID, 1)
 	assertTelegramModelProviderStatus(t, db, disabledAssoc.ID, 0)
@@ -481,8 +497,12 @@ func TestTelegramAgentToolProviderStatusRestoresSnapshotOnly(t *testing.T) {
 	assertTelegramModelProviderStatus(t, db, enabledAssoc.ID, 0)
 	assertTelegramModelProviderStatus(t, db, disabledAssoc.ID, 0)
 
-	if handled, err := HandleTelegramMessage(ctx, client, TelegramMessage{ChatID: chatID, Text: "/enable_provider ToolProvider"}); err != nil || !handled {
-		t.Fatalf("期望开启提供商消息被处理，handled=%v err=%v", handled, err)
+	enableAction, err := buildTelegramSetProviderStatusAction(ctx, chatID, "ToolProvider", true)
+	if err != nil {
+		t.Fatalf("准备开启提供商动作失败: %v", err)
+	}
+	if _, err := prepareOrExecuteTelegramToolAction(ctx, enableAction, true); err != nil {
+		t.Fatalf("写入开启提供商待确认失败: %v", err)
 	}
 	if handled, err := HandleTelegramMessage(ctx, client, TelegramMessage{ChatID: chatID, Text: "确认"}); err != nil || !handled {
 		t.Fatalf("期望确认开启被处理，handled=%v err=%v", handled, err)
@@ -1916,6 +1936,7 @@ func setupTelegramAgentToolTestDB(t *testing.T, name string) *gorm.DB {
 		&models.TelegramAgentSession{},
 		&models.TelegramAgentPendingAction{},
 		&models.TelegramAgentToolCallLog{},
+		&models.TelegramAgentScheduledTask{},
 	); err != nil {
 		t.Fatalf("迁移测试表失败: %v", err)
 	}

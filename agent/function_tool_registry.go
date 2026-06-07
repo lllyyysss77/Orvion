@@ -75,6 +75,18 @@ func telegramAgentFunctionToolDefinitions(cfg models.TelegramAgentConfig) []tele
 			Handler: telegramAgentFunctionReadRequestLogs,
 		},
 		{
+			Name:        telegramAgentToolCreateAttachmentFile,
+			Description: "创建可发送给 Telegram 用户的本地附件文件。适合生成 SVG、Markdown、JSON、HTML、文本等内容；SVG 应作为 file 附件发送，不要只口头说明已生成。",
+			Properties: map[string]any{
+				"file_name":       map[string]any{"type": "string", "description": "文件名，只需要文件名本身，例如 cat.svg、report.md。不要传目录路径。"},
+				"content":         map[string]any{"type": "string", "description": "完整文件内容。SVG 需要传完整 <svg>...</svg> 文本。"},
+				"attachment_kind": map[string]any{"type": "string", "description": "附件类型。SVG 使用 file；普通图片 URL 或真实图片文件才使用 image。默认 file。", "enum": []string{"file", "image"}},
+				"caption":         map[string]any{"type": "string", "description": "Telegram 附件说明，可为空。"},
+			},
+			Required: []string{"file_name", "content"},
+			Handler:  telegramAgentFunctionCreateAttachmentFile,
+		},
+		{
 			Name:        telegramAgentToolListAuthKeys,
 			Description: "查看 Orvion API Key 列表，只返回项目名称、掩码 Key、状态、权限、RPM、用量和最后使用时间，不返回完整 Key。",
 			Properties: map[string]any{
@@ -129,6 +141,66 @@ func telegramAgentFunctionToolDefinitions(cfg models.TelegramAgentConfig) []tele
 			},
 			Required: []string{"target"},
 			Handler:  telegramAgentFunctionUpdateAuthKey,
+		},
+		{
+			Name:        telegramAgentToolListScheduledTasks,
+			Description: "查看 Orvion TG Agent 定时任务列表，可按名称、内容关键词和状态筛选。",
+			Properties: map[string]any{
+				"query": map[string]any{"type": "string", "description": "任务名称或任务内容关键词，可为空。"},
+				"status": map[string]any{
+					"type":        "string",
+					"description": "状态筛选。all 表示不过滤状态。",
+					"enum":        []string{"all", "enabled", "disabled", "running"},
+				},
+				"limit": map[string]any{"type": "integer", "description": "最多返回条数，默认 20，最大 50。"},
+			},
+			Handler: telegramAgentFunctionListScheduledTasks,
+		},
+		{
+			Name:        telegramAgentToolCreateScheduledTask,
+			Description: "新增 Orvion TG Agent 定时任务。" + mutationDescriptionSuffix,
+			Properties: map[string]any{
+				"name":                 map[string]any{"type": "string", "description": "任务名称。"},
+				"prompt":               map[string]any{"type": "string", "description": "任务内容，也就是到时间后让 Agent 执行的自然语言指令。"},
+				"enabled":              map[string]any{"type": "boolean", "description": "是否启用，默认 true。"},
+				"schedule_type":        map[string]any{"type": "string", "description": "定时类型。interval 表示每隔多少分钟；daily 表示每天固定时间。默认 interval。", "enum": []string{"interval", "daily"}},
+				"interval_minutes":     map[string]any{"type": "integer", "description": "间隔分钟数，schedule_type=interval 时使用，默认 60。"},
+				"time_of_day":          map[string]any{"type": "string", "description": "每天执行时间，schedule_type=daily 时必填，格式 HH:mm，例如 09:30。"},
+				"timezone":             map[string]any{"type": "string", "description": "时区，默认 Local；可传 Asia/Shanghai。"},
+				"push_to_conversation": map[string]any{"type": "boolean", "description": "是否把执行结果推送并写入当前 Agent 对话上下文，默认 false。"},
+				"chat_id":              map[string]any{"type": "integer", "description": "推送目标 Telegram Chat ID。0 或不传表示使用默认配置。"},
+			},
+			Required: []string{"name", "prompt"},
+			Handler:  telegramAgentFunctionCreateScheduledTask,
+		},
+		{
+			Name:        telegramAgentToolUpdateScheduledTask,
+			Description: "修改 Orvion TG Agent 定时任务的名称、内容、计划、启用状态、推送设置或 Chat ID。" + mutationDescriptionSuffix,
+			Properties: map[string]any{
+				"target":               map[string]any{"type": "string", "description": "任务名称或 ID。"},
+				"name":                 map[string]any{"type": "string", "description": "新的任务名称，可选。"},
+				"prompt":               map[string]any{"type": "string", "description": "新的任务内容，可选。"},
+				"enabled":              map[string]any{"type": "boolean", "description": "是否启用，可选。"},
+				"schedule_type":        map[string]any{"type": "string", "description": "定时类型：interval 或 daily。", "enum": []string{"interval", "daily"}},
+				"interval_minutes":     map[string]any{"type": "integer", "description": "间隔分钟数，schedule_type=interval 时使用。"},
+				"time_of_day":          map[string]any{"type": "string", "description": "每天执行时间，格式 HH:mm。"},
+				"timezone":             map[string]any{"type": "string", "description": "时区，例如 Local 或 Asia/Shanghai。"},
+				"push_to_conversation": map[string]any{"type": "boolean", "description": "是否把执行结果推送并写入 Agent 对话上下文。"},
+				"chat_id":              map[string]any{"type": "integer", "description": "推送目标 Telegram Chat ID。0 表示使用默认配置。"},
+				"clear_chat_id":        map[string]any{"type": "boolean", "description": "是否清空自定义 Chat ID，改用默认配置。"},
+			},
+			Required: []string{"target"},
+			Handler:  telegramAgentFunctionUpdateScheduledTask,
+		},
+		{
+			Name:        telegramAgentToolSetScheduledTaskStatus,
+			Description: "启用或禁用 Orvion TG Agent 定时任务。" + mutationDescriptionSuffix,
+			Properties: map[string]any{
+				"target":  map[string]any{"type": "string", "description": "任务名称或 ID。"},
+				"enabled": map[string]any{"type": "boolean", "description": "true 表示启用，false 表示禁用。"},
+			},
+			Required: []string{"target", "enabled"},
+			Handler:  telegramAgentFunctionSetScheduledTaskStatus,
 		},
 		{
 			Name:        telegramAgentToolSetModelStatus,
@@ -371,6 +443,14 @@ func telegramAgentFunctionReadRequestLogs(ctx context.Context, _ int64, _ models
 	return telegramAgentToolResult(true, text)
 }
 
+func telegramAgentFunctionCreateAttachmentFile(_ context.Context, _ int64, _ models.TelegramAgentConfig, args telegramAgentToolCallArgs) string {
+	text, err := createTelegramAgentAttachmentFile(args)
+	if err != nil {
+		return telegramAgentToolResult(false, "创建附件文件失败："+err.Error())
+	}
+	return telegramAgentToolFinalResult(true, text)
+}
+
 func telegramAgentFunctionListAuthKeys(ctx context.Context, _ int64, _ models.TelegramAgentConfig, args telegramAgentToolCallArgs) string {
 	text, err := listTelegramAgentAuthKeys(ctx, args)
 	if err != nil {
@@ -427,6 +507,50 @@ func telegramAgentFunctionUpdateAuthKey(ctx context.Context, chatID int64, cfg m
 	text, err := prepareOrExecuteTelegramToolAction(ctx, action, telegramAgentRequiresToolConfirmation(cfg))
 	if err != nil {
 		return telegramAgentToolFinalResult(false, "修改 API Key 失败："+err.Error())
+	}
+	return telegramAgentToolFinalResult(true, text)
+}
+
+func telegramAgentFunctionListScheduledTasks(ctx context.Context, _ int64, _ models.TelegramAgentConfig, args telegramAgentToolCallArgs) string {
+	text, err := listTelegramAgentScheduledTasks(ctx, args)
+	if err != nil {
+		return telegramAgentToolResult(false, "查看 Agent 定时任务失败："+err.Error())
+	}
+	return telegramAgentToolResult(true, text)
+}
+
+func telegramAgentFunctionCreateScheduledTask(ctx context.Context, chatID int64, cfg models.TelegramAgentConfig, args telegramAgentToolCallArgs) string {
+	action, err := buildTelegramCreateScheduledTaskAction(ctx, chatID, args)
+	if err != nil {
+		return telegramAgentToolResult(false, "准备新增 Agent 定时任务失败："+err.Error())
+	}
+	text, err := prepareOrExecuteTelegramToolAction(ctx, action, telegramAgentRequiresToolConfirmation(cfg))
+	if err != nil {
+		return telegramAgentToolFinalResult(false, "新增 Agent 定时任务失败："+err.Error())
+	}
+	return telegramAgentToolFinalResult(true, text)
+}
+
+func telegramAgentFunctionUpdateScheduledTask(ctx context.Context, chatID int64, cfg models.TelegramAgentConfig, args telegramAgentToolCallArgs) string {
+	action, err := buildTelegramUpdateScheduledTaskAction(ctx, chatID, args)
+	if err != nil {
+		return telegramAgentToolResult(false, "准备修改 Agent 定时任务失败："+err.Error())
+	}
+	text, err := prepareOrExecuteTelegramToolAction(ctx, action, telegramAgentRequiresToolConfirmation(cfg))
+	if err != nil {
+		return telegramAgentToolFinalResult(false, "修改 Agent 定时任务失败："+err.Error())
+	}
+	return telegramAgentToolFinalResult(true, text)
+}
+
+func telegramAgentFunctionSetScheduledTaskStatus(ctx context.Context, chatID int64, cfg models.TelegramAgentConfig, args telegramAgentToolCallArgs) string {
+	action, err := buildTelegramSetScheduledTaskStatusAction(ctx, chatID, args)
+	if err != nil {
+		return telegramAgentToolResult(false, "准备 Agent 定时任务状态操作失败："+err.Error())
+	}
+	text, err := prepareOrExecuteTelegramToolAction(ctx, action, telegramAgentRequiresToolConfirmation(cfg))
+	if err != nil {
+		return telegramAgentToolFinalResult(false, "执行 Agent 定时任务状态操作失败："+err.Error())
 	}
 	return telegramAgentToolFinalResult(true, text)
 }

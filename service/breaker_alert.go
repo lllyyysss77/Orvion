@@ -73,6 +73,12 @@ type telegramSendPhotoRequest struct {
 	Caption string `json:"caption,omitempty"`
 }
 
+type telegramSendDocumentRequest struct {
+	ChatID   string `json:"chat_id"`
+	Document string `json:"document"`
+	Caption  string `json:"caption,omitempty"`
+}
+
 type telegramEditMessageTextRequest struct {
 	ChatID      int64  `json:"chat_id"`
 	MessageID   int64  `json:"message_id"`
@@ -458,23 +464,71 @@ func (n *telegramNotifier) sendTextToChatAndReturnMessageIDWithParseMode(ctx con
 }
 
 func (n *telegramNotifier) sendPhotoBinaryToChat(chatID string, filename string, photoData []byte, caption string) error {
+	return n.sendMultipartBinaryToChat(context.Background(), "sendPhoto", "photo", chatID, filename, photoData, caption, telegramPhotoHTTPTimeout)
+}
+
+func (n *telegramNotifier) sendPhotoURLToChat(ctx context.Context, chatID string, photoURL string, caption string) error {
 	if n == nil {
 		return fmt.Errorf("telegram notifier is nil")
-	}
-	methodURL := n.telegramMethodURL("sendPhoto")
-	if methodURL == "" {
-		return fmt.Errorf("telegram method url is empty: sendPhoto")
 	}
 	chatID = strings.TrimSpace(chatID)
 	if chatID == "" {
 		return fmt.Errorf("chat_id is empty")
 	}
-	if len(photoData) == 0 {
-		return fmt.Errorf("photo binary is empty")
+	photoURL = strings.TrimSpace(photoURL)
+	if photoURL == "" {
+		return fmt.Errorf("photo url is empty")
+	}
+	return n.postTelegramMethod(ctx, "sendPhoto", telegramSendPhotoRequest{
+		ChatID:  chatID,
+		Photo:   photoURL,
+		Caption: strings.TrimSpace(caption),
+	})
+}
+
+func (n *telegramNotifier) sendDocumentBinaryToChat(ctx context.Context, chatID string, filename string, documentData []byte, caption string) error {
+	return n.sendMultipartBinaryToChat(ctx, "sendDocument", "document", chatID, filename, documentData, caption, telegramPhotoHTTPTimeout)
+}
+
+func (n *telegramNotifier) sendDocumentURLToChat(ctx context.Context, chatID string, documentURL string, caption string) error {
+	if n == nil {
+		return fmt.Errorf("telegram notifier is nil")
+	}
+	chatID = strings.TrimSpace(chatID)
+	if chatID == "" {
+		return fmt.Errorf("chat_id is empty")
+	}
+	documentURL = strings.TrimSpace(documentURL)
+	if documentURL == "" {
+		return fmt.Errorf("document url is empty")
+	}
+	return n.postTelegramMethod(ctx, "sendDocument", telegramSendDocumentRequest{
+		ChatID:   chatID,
+		Document: documentURL,
+		Caption:  strings.TrimSpace(caption),
+	})
+}
+
+func (n *telegramNotifier) sendMultipartBinaryToChat(ctx context.Context, method string, fieldName string, chatID string, filename string, fileData []byte, caption string, timeout time.Duration) error {
+	if n == nil {
+		return fmt.Errorf("telegram notifier is nil")
+	}
+	method = strings.TrimSpace(method)
+	fieldName = strings.TrimSpace(fieldName)
+	methodURL := n.telegramMethodURL(method)
+	if methodURL == "" {
+		return fmt.Errorf("telegram method url is empty: %s", method)
+	}
+	chatID = strings.TrimSpace(chatID)
+	if chatID == "" {
+		return fmt.Errorf("chat_id is empty")
+	}
+	if len(fileData) == 0 {
+		return fmt.Errorf("file binary is empty")
 	}
 	filename = strings.TrimSpace(filename)
 	if filename == "" {
-		filename = "status.jpg"
+		filename = "attachment"
 	}
 
 	var body bytes.Buffer
@@ -487,22 +541,22 @@ func (n *telegramNotifier) sendPhotoBinaryToChat(chatID string, filename string,
 			return err
 		}
 	}
-	filePart, err := writer.CreateFormFile("photo", filename)
+	filePart, err := writer.CreateFormFile(fieldName, filename)
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(filePart, bytes.NewReader(photoData)); err != nil {
+	if _, err := io.Copy(filePart, bytes.NewReader(fileData)); err != nil {
 		return err
 	}
 	if err := writer.Close(); err != nil {
 		return err
 	}
 
-	if err := n.postTelegramRawWithRetry(context.Background(), methodURL, writer.FormDataContentType(), body.Bytes(), telegramPhotoHTTPTimeout); err != nil {
-		slog.Warn("发送 TG 二进制图片消息失败", "chat_id", chatID, "filename", filename, "photo_bytes", len(photoData), "caption_bytes", len(strings.TrimSpace(caption)), "error", err)
+	if err := n.postTelegramRawWithRetry(ctx, methodURL, writer.FormDataContentType(), body.Bytes(), timeout); err != nil {
+		slog.Warn("发送 TG 二进制附件失败", "method", method, "chat_id", chatID, "filename", filename, "file_bytes", len(fileData), "caption_bytes", len(strings.TrimSpace(caption)), "error", err)
 		return err
 	}
-	slog.Info("已发送 TG 二进制图片消息", "chat_id", chatID, "filename", filename, "photo_bytes", len(photoData), "caption_bytes", len(strings.TrimSpace(caption)))
+	slog.Info("已发送 TG 二进制附件", "method", method, "chat_id", chatID, "filename", filename, "file_bytes", len(fileData), "caption_bytes", len(strings.TrimSpace(caption)))
 	return nil
 }
 

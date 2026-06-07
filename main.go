@@ -183,4 +183,5 @@ func startBackgroundWorkers(ctx context.Context) {
 	service.StartModelProviderAutoRecovery(ctx)
 	service.StartTelegramCommandBot(ctx)
 	service.StartTelegramDailyUsageReport(ctx)
+	service.StartTelegramAgentScheduledTasks(ctx)
 }

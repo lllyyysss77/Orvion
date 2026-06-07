@@ -21,26 +21,31 @@ import (
 const (
 	telegramAgentToolLoopMaxRounds = 20
 
-	telegramAgentToolListModels           = "list_models"
-	telegramAgentToolListProviders        = "list_providers"
-	telegramAgentToolSetModelStatus       = "set_model_status"
-	telegramAgentToolSetModelsStatusBatch = "set_models_status_batch"
-	telegramAgentToolSetProviderStatus    = "set_provider_status"
-	telegramAgentToolGetProviderConfig    = "get_provider_config"
-	telegramAgentToolUpdateProviderConfig = "update_provider_config"
-	telegramAgentToolReadSystemLogs       = "read_system_logs"
-	telegramAgentToolReadRequestLogs      = "read_request_logs"
-	telegramAgentToolListAuthKeys         = "list_auth_keys"
-	telegramAgentToolCreateAuthKey        = "create_auth_key"
-	telegramAgentToolUpdateAuthKey        = "update_auth_key"
-	telegramAgentToolListSkills           = "list_skills"
-	telegramAgentToolReadSkill            = "read_skill"
-	telegramAgentToolRunTerminalCommand   = "run_terminal_command"
+	telegramAgentToolListModels             = "list_models"
+	telegramAgentToolListProviders          = "list_providers"
+	telegramAgentToolSetModelStatus         = "set_model_status"
+	telegramAgentToolSetModelsStatusBatch   = "set_models_status_batch"
+	telegramAgentToolSetProviderStatus      = "set_provider_status"
+	telegramAgentToolGetProviderConfig      = "get_provider_config"
+	telegramAgentToolUpdateProviderConfig   = "update_provider_config"
+	telegramAgentToolReadSystemLogs         = "read_system_logs"
+	telegramAgentToolReadRequestLogs        = "read_request_logs"
+	telegramAgentToolListAuthKeys           = "list_auth_keys"
+	telegramAgentToolCreateAuthKey          = "create_auth_key"
+	telegramAgentToolUpdateAuthKey          = "update_auth_key"
+	telegramAgentToolListScheduledTasks     = "list_telegram_agent_scheduled_tasks"
+	telegramAgentToolCreateScheduledTask    = "create_telegram_agent_scheduled_task"
+	telegramAgentToolUpdateScheduledTask    = "update_telegram_agent_scheduled_task"
+	telegramAgentToolSetScheduledTaskStatus = "set_telegram_agent_scheduled_task_status"
+	telegramAgentToolListSkills             = "list_skills"
+	telegramAgentToolReadSkill              = "read_skill"
+	telegramAgentToolRunTerminalCommand     = "run_terminal_command"
+	telegramAgentToolCreateAttachmentFile   = "create_attachment_file"
 )
 
 type telegramAgentOpenAIMessage struct {
 	Role       string                        `json:"role"`
-	Content    string                        `json:"content,omitempty"`
+	Content    any                           `json:"content,omitempty"`
 	ToolCallID string                        `json:"tool_call_id,omitempty"`
 	ToolCalls  []telegramAgentOpenAIToolCall `json:"tool_calls,omitempty"`
 }
@@ -74,6 +79,14 @@ type telegramAgentToolCallArgs struct {
 	ExpiresAt                  *string                             `json:"expires_at"`
 	ClearExpiresAt             bool                                `json:"clear_expires_at"`
 	RPMLimit                   *int                                `json:"rpm_limit"`
+	TaskPrompt                 *string                             `json:"prompt"`
+	ScheduleType               *string                             `json:"schedule_type"`
+	IntervalMinutes            *int                                `json:"interval_minutes"`
+	TimeOfDay                  *string                             `json:"time_of_day"`
+	Timezone                   *string                             `json:"timezone"`
+	PushToConversation         *bool                               `json:"push_to_conversation"`
+	ChatID                     *int64                              `json:"chat_id"`
+	ClearChatID                bool                                `json:"clear_chat_id"`
 	Target                     string                              `json:"target"`
 	Enabled                    *bool                               `json:"enabled"`
 	Bulk                       bool                                `json:"bulk"`
@@ -94,6 +107,10 @@ type telegramAgentToolCallArgs struct {
 	WorkingDir                 string                              `json:"working_dir"`
 	Stdin                      *string                             `json:"stdin"`
 	TimeoutMs                  int                                 `json:"timeout_ms"`
+	FileName                   string                              `json:"file_name"`
+	Content                    string                              `json:"content"`
+	AttachmentKind             string                              `json:"attachment_kind"`
+	Caption                    string                              `json:"caption"`
 }
 
 type telegramAgentModelStatusBatchItem struct {
@@ -116,7 +133,7 @@ type telegramAgentToolResultPayload struct {
 	Final bool   `json:"final,omitempty"`
 }
 
-func streamTelegramAgentReplyWithFunctionTools(ctx context.Context, cfg models.TelegramAgentConfig, selected selectedModelProvider, history []chatMessage, prompt string, chatID int64, onDelta streamDeltaHandler, onStatus streamStatusHandler) (telegramAgentReplyResult, error) {
+func streamTelegramAgentReplyWithFunctionTools(ctx context.Context, cfg models.TelegramAgentConfig, selected selectedModelProvider, history []chatMessage, prompt string, attachments []TelegramInputAttachment, chatID int64, onDelta streamDeltaHandler, onStatus streamStatusHandler) (telegramAgentReplyResult, error) {
 	result := telegramAgentReplyResult{
 		Selected:  selected,
 		StartedAt: time.Now(),
@@ -131,7 +148,7 @@ func streamTelegramAgentReplyWithFunctionTools(ctx context.Context, cfg models.T
 	}
 	systemPrompt += telegramAgentFunctionToolSystemPrompt(cfg)
 
-	messages := toTelegramAgentOpenAIMessages(systemPrompt, history, prompt)
+	messages := toTelegramAgentOpenAIMessages(systemPrompt, history, prompt, attachments)
 	for round := 0; round < telegramAgentToolLoopMaxRounds; round++ {
 		body, err := buildTelegramAgentOpenAIChatBody(cfg, messages, true, true)
 		if err != nil {
@@ -203,11 +220,11 @@ func streamTelegramAgentPlainReplyWithSelected(ctx context.Context, cfg models.T
 	var endpointCtx context.Context
 	var err error
 	if selected.responseStyle() == consts.StyleOpenAI {
-		messages := toTelegramAgentOpenAIMessages(strings.TrimSpace(cfg.SystemPrompt), history, prompt)
+		messages := toTelegramAgentOpenAIMessages(strings.TrimSpace(cfg.SystemPrompt), history, prompt, nil)
 		body, err = buildTelegramAgentOpenAIChatBody(cfg, messages, true, false)
 		endpointCtx = context.WithValue(ctx, consts.ContextKeyOpenAIEndpoint, "chat/completions")
 	} else {
-		body, endpointCtx, err = buildTelegramAgentRequestBody(ctx, cfg, selected, history, prompt)
+		body, endpointCtx, err = buildTelegramAgentRequestBody(ctx, cfg, selected, history, prompt, nil)
 	}
 	if err != nil {
 		return result, err
@@ -340,7 +357,7 @@ func buildTelegramAgentOpenAIChatBody(cfg models.TelegramAgentConfig, messages [
 	return json.Marshal(payload)
 }
 
-func toTelegramAgentOpenAIMessages(systemPrompt string, history []chatMessage, prompt string) []telegramAgentOpenAIMessage {
+func toTelegramAgentOpenAIMessages(systemPrompt string, history []chatMessage, prompt string, attachments []TelegramInputAttachment) []telegramAgentOpenAIMessage {
 	messages := make([]telegramAgentOpenAIMessage, 0, len(history)+2)
 	if strings.TrimSpace(systemPrompt) != "" {
 		messages = append(messages, telegramAgentOpenAIMessage{Role: "system", Content: systemPrompt})
@@ -355,7 +372,7 @@ func toTelegramAgentOpenAIMessages(systemPrompt string, history []chatMessage, p
 			Content: content,
 		})
 	}
-	messages = append(messages, telegramAgentOpenAIMessage{Role: "user", Content: prompt})
+	messages = append(messages, telegramAgentOpenAIMessage{Role: "user", Content: toOpenAIChatContent(prompt, attachments)})
 	return messages
 }
 
@@ -484,7 +501,7 @@ func telegramAgentToolDirectFinalText(raw string) (string, bool) {
 		return "", false
 	}
 	text := strings.TrimSpace(payload.Text)
-	return text, payload.Final && text != "" && strings.Contains(text, "待确认操作")
+	return text, payload.Final && text != "" && (strings.Contains(text, "待确认操作") || telegramAgentTextContainsAttachmentMarker(text))
 }
 
 func telegramAgentFunctionToolSystemPrompt(cfg models.TelegramAgentConfig) string {
@@ -494,9 +511,12 @@ func telegramAgentFunctionToolSystemPrompt(cfg models.TelegramAgentConfig) strin
 		"用户提到报错、错误日志、慢响应、请求失败、最近日志、timeout、panic、SQL 等排查诉求时，优先调用日志读取工具。",
 		"修改提供商配置时，provider 的 config 字段使用 config_updates 做局部修改，例如 base_url、api_key；删除配置字段使用 remove_config_keys。",
 		"新增或修改 API Key 时，allow_all=false 表示限制模型；如用户给的是模型关键词，请用 model_keywords 批量匹配模型，不要把“claude 的模型”当成单个模型名。",
+		"用户要求查看、新增、修改、启用或禁用 Agent 定时任务时，必须调用对应定时任务工具；不要只口头说明。",
 		"不要在普通回复中泄露 api_key、token、secret、password 等敏感配置值。",
 		"用户提到 skills、技能、脚本、自动化能力包、本地能力扩展时，如果 Skills 工具可用，优先调用 list_skills/read_skill；用户用自然语言描述能力需求时，list_skills 可使用 search_mode=embedding；需要执行本地脚本时，先 read_skill 获取 Skill 目录和脚本绝对路径，再调用 run_terminal_command 自己执行命令，不要编造脚本结果。",
 		"run_terminal_command 使用结构化参数 command + command_args + working_dir；不要把整段 shell 文本塞进 command，也不要使用 bash -c/sh -c/zsh -c。",
+		"用户要求生成 SVG、文本文件、配置文件、HTML 文件等你可以直接写出内容的文件时，必须调用 create_attachment_file 创建附件文件；尤其是 SVG，不要只回复“已生成”。",
+		"如果工具生成了需要发给用户的图片或文件，请在最终回复中使用附件标记：[orvion:image:/绝对路径或URL|可选说明] 或 [orvion:file:/绝对路径或URL|可选说明]；不要把这个标记放进代码块。",
 		"用户说“claude 的相关模型”“所有 claude 模型”“claude 那批模型”这类表达时，target 应为 claude，bulk 应为 true。",
 		"用户一句话里包含多个模型启停动作时，例如“禁用 claude 并开启 deepseek”，必须调用 set_models_status_batch，并把每个动作分别放进 items；不要只处理其中一个动作。",
 		"如果用户在同一句话中要求修改后继续检查某些模型或提供商状态，修改工具执行后还要继续调用查看工具，不要只总结修改结果。",

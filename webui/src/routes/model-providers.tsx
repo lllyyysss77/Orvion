@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useFieldArray, useForm } from "react-hook-form";
 import { z } from "zod";
@@ -46,12 +46,9 @@ import {
   testModelProvider,
 } from "@/lib/api";
 import type { ModelWithProvider, Model, Provider, ProviderModel } from "@/lib/api";
-import { fetchEventSource } from "@microsoft/fetch-event-source";
-import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 import { Plus, Pencil, Trash2, Zap, RefreshCw } from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
-import { getStoredAuthToken } from "@/lib/auth";
 
 // 表单验证
 const headerPairSchema = z.object({
@@ -93,18 +90,6 @@ export function ModelProvidersPanel({ embedded = false, fixedModel = null }: Mod
   const [testResults, setTestResults] = useState<Record<number, { loading: boolean; result: ProviderTestResult }>>({});
   const [testDialogOpen, setTestDialogOpen] = useState(false);
   const [selectedTestId, setSelectedTestId] = useState<number | null>(null);
-  const [testType, setTestType] = useState<"connectivity" | "react">("connectivity");
-  const [reactTestResult, setReactTestResult] = useState<{
-    loading: boolean;
-    messages: string;
-    success: boolean | null;
-    error: string | null;
-  }>({
-    loading: false,
-    messages: "",
-    success: null,
-    error: null,
-  });
   const [statusUpdating, setStatusUpdating] = useState<Record<number, boolean>>({});
   const [statusError, setStatusError] = useState<string | null>(null);
 
@@ -310,16 +295,8 @@ export function ModelProvidersPanel({ embedded = false, fixedModel = null }: Mod
   };
 
   const handleTest = (id: number) => {
-    currentControllerRef.current?.abort();
     setSelectedTestId(id);
-    setTestType("connectivity");
     setTestDialogOpen(true);
-    setReactTestResult({
-      loading: false,
-      messages: "",
-      success: null,
-      error: null,
-    });
   };
 
   const handleConnectivityTest = async (id: number) => {
@@ -345,98 +322,9 @@ export function ModelProvidersPanel({ embedded = false, fixedModel = null }: Mod
     }
   };
 
-  const currentControllerRef = useRef<AbortController | null>(null);
-  const handleReactTest = async (id: number) => {
-    setReactTestResult((prev) => ({
-      ...prev,
-      messages: "",
-      loading: true,
-    }));
-    try {
-      const token = getStoredAuthToken();
-      const controller = new AbortController();
-      currentControllerRef.current = controller;
-      await fetchEventSource(`/api/test/react/${id}`, {
-        method: "GET",
-        headers: {
-          "Authorization": `Bearer ${token}`,
-        },
-        signal: controller.signal,
-        onmessage(event) {
-          setReactTestResult((prev) => {
-            if (event.event === "start") {
-              return {
-                ...prev,
-                messages: prev.messages + `[开始测试] ${event.data}\n`,
-              };
-            } else if (event.event === "toolcall") {
-              return {
-                ...prev,
-                messages: prev.messages + `\n[调用工具] ${event.data}\n`,
-              };
-            } else if (event.event === "toolres") {
-              return {
-                ...prev,
-                messages: prev.messages + `\n[工具输出] ${event.data}\n`,
-              };
-            } else if (event.event === "message") {
-              if (event.data.trim()) {
-                return {
-                  ...prev,
-                  messages: prev.messages + `${event.data}`,
-                };
-              }
-            } else if (event.event === "error") {
-              return {
-                ...prev,
-                success: false,
-                messages: prev.messages + `\n[错误] ${event.data}\n`,
-              };
-            } else if (event.event === "success") {
-              return {
-                ...prev,
-                success: true,
-                messages: prev.messages + `\n[成功] ${event.data}`,
-              };
-            }
-            return prev;
-          });
-        },
-        onclose() {
-          setReactTestResult((prev) => ({
-            ...prev,
-            loading: false,
-          }));
-        },
-        onerror(err) {
-          setReactTestResult((prev) => ({
-            ...prev,
-            loading: false,
-            error: err.message || "测试过程中发生错误",
-            success: false,
-          }));
-          throw err;
-        },
-      });
-    } catch (err) {
-      setReactTestResult((prev) => ({
-        ...prev,
-        loading: false,
-        error: "测试失败",
-        success: false,
-      }));
-      console.error(err);
-    }
-  };
-
   const executeTest = async () => {
     if (!selectedTestId) return;
-
-    if (testType === "connectivity") {
-      await handleConnectivityTest(selectedTestId);
-    } else {
-      await handleReactTest(selectedTestId);
-    }
+    await handleConnectivityTest(selectedTestId);
   };
 
   const openEditDialog = (association: ModelWithProvider) => {
@@ -880,81 +768,26 @@ export function ModelProvidersPanel({ embedded = false, fixedModel = null }: Mod
         <DialogContent className="max-w-2xl">
           <DialogHeader>
             <DialogTitle>模型测试</DialogTitle>
-            <DialogDescription>选择要执行的测试类型</DialogDescription>
+            <DialogDescription>执行当前模型提供商的连通性测试</DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-3 text-sm">
-            <label className="flex items-center gap-2">
-              <input
-                type="radio"
-                name="testType"
-                checked={testType === "connectivity"}
-                onChange={() => setTestType("connectivity")}
-              />
-              连通性测试
-            </label>
-            <label className="flex items-center gap-2">
-              <input
-                type="radio"
-                name="testType"
-                checked={testType === "react"}
-                onChange={() => setTestType("react")}
-              />
-              React Agent 能力测试
-            </label>
+          <div className="mt-4">
+            {selectedTestId && testResults[selectedTestId]?.loading ? (
+              <div className="flex items-center justify-center py-4">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900"></div>
+                <span className="ml-2">测试中...</span>
+              </div>
+            ) : selectedTestId && testResults[selectedTestId] ? (
+              <div className={`p-4 rounded-md ${testResults[selectedTestId].result?.error ? "bg-red-100 text-red-800" : "bg-green-100 text-green-800"}`}>
+                <p>{testResults[selectedTestId].result?.error ? testResults[selectedTestId].result?.error : "测试成功"}</p>
+                {testResults[selectedTestId].result?.message && (
+                  <p className="mt-2">{testResults[selectedTestId].result.message}</p>
+                )}
+              </div>
+            ) : (
+              <p className="text-gray-500">点击"执行测试"开始测试</p>
+            )}
           </div>
-
-          {testType === "connectivity" && (
-            <div className="mt-4">
-              {selectedTestId && testResults[selectedTestId]?.loading ? (
-                <div className="flex items-center justify-center py-4">
-                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900"></div>
-                  <span className="ml-2">测试中...</span>
-                </div>
-              ) : selectedTestId && testResults[selectedTestId] ? (
-                <div className={`p-4 rounded-md ${testResults[selectedTestId].result?.error ? "bg-red-100 text-red-800" : "bg-green-100 text-green-800"}`}>
-                  <p>{testResults[selectedTestId].result?.error ? testResults[selectedTestId].result?.error : "测试成功"}</p>
-                  {testResults[selectedTestId].result?.message && (
-                    <p className="mt-2">{testResults[selectedTestId].result.message}</p>
-                  )}
-                </div>
-              ) : (
-                <p className="text-gray-500">点击"执行测试"开始测试</p>
-              )}
-            </div>
-          )}
-
-          {testType === "react" && (
-            <div className="mt-4 max-h-96 min-w-0">
-              {reactTestResult.loading ? (
-                <div className="flex items-center justify-center py-4">
-                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900"></div>
-                  <span className="ml-2">测试中...</span>
-                </div>
-              ) : (
-                <>
-                  {reactTestResult.error ? (
-                    <div className="p-4 rounded-md bg-red-100 text-red-800">
-                      <p>测试失败: {reactTestResult.error}</p>
-                    </div>
-                  ) : reactTestResult.success !== null ? (
-                    <div className={`p-4 rounded-md ${reactTestResult.success ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"}`}>
-                      <p>{reactTestResult.success ? "测试成功！" : "测试失败"}</p>
-                    </div>
-                  ) : null}
-                </>
-              )}
-
-              {reactTestResult.messages && (
-                <Textarea
-                  name="logs"
-                  className="mt-4 max-h-50 resize-none whitespace-pre overflow-x-auto"
-                  readOnly
-                  value={reactTestResult.messages}
-                />
-              )}
-            </div>
-          )}
 
           <DialogFooter>
             <Button variant="outline" onClick={() => setTestDialogOpen(false)}>
@@ -962,13 +795,9 @@ export function ModelProvidersPanel({ embedded = false, fixedModel = null }: Mod
             </Button>
             <Button
               onClick={executeTest}
-              disabled={testType === "connectivity"
-                ? (selectedTestId ? testResults[selectedTestId]?.loading : false)
-                : reactTestResult.loading}
+              disabled={selectedTestId ? testResults[selectedTestId]?.loading : false}
             >
-              {testType === "connectivity"
-                ? (selectedTestId && testResults[selectedTestId]?.loading ? "测试中..." : "执行测试")
-                : (reactTestResult.loading ? "测试中..." : "执行测试")}
+              {selectedTestId && testResults[selectedTestId]?.loading ? "测试中..." : "执行测试"}
             </Button>
           </DialogFooter>
         </DialogContent>

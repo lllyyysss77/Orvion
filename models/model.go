@@ -195,6 +195,33 @@ func (TelegramAgentToolCallLog) TableName() string {
 	return "telegram_agent_tool_call_logs"
 }
 
+type TelegramAgentScheduledTask struct {
+	ID                 uint `gorm:"primaryKey"`
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	Name               string     `gorm:"column:name;size:120;index"`
+	Prompt             string     `gorm:"column:prompt"`
+	Enabled            int        `gorm:"column:enabled;index"`
+	ScheduleType       string     `gorm:"column:schedule_type;size:32;index"` // interval/daily
+	IntervalMinutes    int        `gorm:"column:interval_minutes"`
+	TimeOfDay          string     `gorm:"column:time_of_day;size:8"`
+	Timezone           string     `gorm:"column:timezone;size:64"`
+	PushToConversation int        `gorm:"column:push_to_conversation"`
+	ChatID             int64      `gorm:"column:chat_id;index"`
+	Running            int        `gorm:"column:running;index"`
+	NextRunAt          *time.Time `gorm:"column:next_run_at;index"`
+	LastRunAt          *time.Time `gorm:"column:last_run_at"`
+	LastStatus         string     `gorm:"column:last_status;size:32;index"`
+	LastResult         string     `gorm:"column:last_result"`
+	LastError          string     `gorm:"column:last_error"`
+	RunCount           int64      `gorm:"column:run_count"`
+	FailureCount       int64      `gorm:"column:failure_count"`
+}
+
+func (TelegramAgentScheduledTask) TableName() string {
+	return "telegram_agent_scheduled_tasks"
+}
+
 type OutputUnion struct {
 	OfString      string
 	OfStringArray []string `gorm:"serializer:json"`

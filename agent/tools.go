@@ -25,46 +25,33 @@ const (
 type telegramToolActionKind string
 
 const (
-	telegramToolActionSetModelStatus       telegramToolActionKind = "set_model_status"
-	telegramToolActionSetProviderStatus    telegramToolActionKind = "set_provider_status"
-	telegramToolActionUpdateProviderConfig telegramToolActionKind = "update_provider_config"
-	telegramToolActionCreateAuthKey        telegramToolActionKind = "create_auth_key"
-	telegramToolActionUpdateAuthKey        telegramToolActionKind = "update_auth_key"
-	telegramToolActionRunTerminalCommand   telegramToolActionKind = "run_terminal_command"
-	telegramToolActionBatch                telegramToolActionKind = "batch"
+	telegramToolActionSetModelStatus         telegramToolActionKind = "set_model_status"
+	telegramToolActionSetProviderStatus      telegramToolActionKind = "set_provider_status"
+	telegramToolActionUpdateProviderConfig   telegramToolActionKind = "update_provider_config"
+	telegramToolActionCreateAuthKey          telegramToolActionKind = "create_auth_key"
+	telegramToolActionUpdateAuthKey          telegramToolActionKind = "update_auth_key"
+	telegramToolActionCreateScheduledTask    telegramToolActionKind = "create_telegram_agent_scheduled_task"
+	telegramToolActionUpdateScheduledTask    telegramToolActionKind = "update_telegram_agent_scheduled_task"
+	telegramToolActionSetScheduledTaskStatus telegramToolActionKind = "set_telegram_agent_scheduled_task_status"
+	telegramToolActionRunTerminalCommand     telegramToolActionKind = "run_terminal_command"
+	telegramToolActionBatch                  telegramToolActionKind = "batch"
 )
-
-type telegramToolIntentKind string
-
-const (
-	telegramToolIntentHelp              telegramToolIntentKind = "help"
-	telegramToolIntentListModels        telegramToolIntentKind = "list_models"
-	telegramToolIntentListProviders     telegramToolIntentKind = "list_providers"
-	telegramToolIntentSetModelStatus    telegramToolIntentKind = "set_model_status"
-	telegramToolIntentSetProviderStatus telegramToolIntentKind = "set_provider_status"
-)
-
-type telegramToolIntent struct {
-	Kind    telegramToolIntentKind
-	Target  string
-	Enabled bool
-	Bulk    bool
-}
 
 type telegramToolAction struct {
-	ChatID         int64
-	ConversationID string
-	Kind           telegramToolActionKind
-	TargetID       uint
-	TargetIDs      []uint
-	TargetName     string
-	Enabled        bool
-	ProviderPatch  telegramProviderConfigPatch
-	AuthKeyPatch   telegramAuthKeyPatch
-	CommandRun     telegramCommandRun
-	Actions        []telegramToolAction
-	Summary        string
-	CreatedAt      time.Time
+	ChatID             int64
+	ConversationID     string
+	Kind               telegramToolActionKind
+	TargetID           uint
+	TargetIDs          []uint
+	TargetName         string
+	Enabled            bool
+	ProviderPatch      telegramProviderConfigPatch
+	AuthKeyPatch       telegramAuthKeyPatch
+	ScheduledTaskPatch telegramScheduledTaskPatch
+	CommandRun         telegramCommandRun
+	Actions            []telegramToolAction
+	Summary            string
+	CreatedAt          time.Time
 }
 
 type telegramProviderSummary struct {
@@ -87,6 +74,19 @@ type telegramProviderConfigPatch struct {
 	InterfaceConversionTarget  *string
 }
 
+type telegramScheduledTaskPatch struct {
+	Name               *string
+	Prompt             *string
+	Enabled            *bool
+	ScheduleType       *string
+	IntervalMinutes    *int
+	TimeOfDay          *string
+	Timezone           *string
+	PushToConversation *bool
+	ChatID             *int64
+	ClearChatID        bool
+}
+
 var (
 	telegramPendingToolActions       sync.Map
 	errTelegramProviderSnapshotEmpty = errors.New("telegram provider status snapshot not found")
@@ -100,56 +100,7 @@ func handleTelegramAgentToolMessage(ctx context.Context, client TelegramClient, 
 	if isTelegramToolCancel(raw) && (hasPendingAction || isStrictTelegramToolCancel(raw)) {
 		return true, cancelTelegramToolAction(ctx, client, chatID)
 	}
-	if !strings.HasPrefix(strings.TrimSpace(raw), "/") {
-		return false, nil
-	}
-
-	intent, ok := parseTelegramAgentToolIntent(raw)
-	if !ok {
-		return false, nil
-	}
-	if models.DB == nil {
-		return true, sendTelegramToolText(ctx, client, chatID, "数据库未初始化，暂时无法调用项目工具。")
-	}
-
-	switch intent.Kind {
-	case telegramToolIntentHelp:
-		return true, sendTelegramToolText(ctx, client, chatID, telegramAgentToolHelpText(cfg))
-	case telegramToolIntentListModels:
-		text, err := listTelegramAgentModels(ctx, intent.Target)
-		if err != nil {
-			text = "查看模型失败：" + err.Error()
-		}
-		return true, sendTelegramToolText(ctx, client, chatID, text)
-	case telegramToolIntentListProviders:
-		text, err := listTelegramAgentProviders(ctx, intent.Target)
-		if err != nil {
-			text = "查看提供商失败：" + err.Error()
-		}
-		return true, sendTelegramToolText(ctx, client, chatID, text)
-	case telegramToolIntentSetModelStatus:
-		action, err := buildTelegramSetModelStatusActionWithMode(ctx, chatID, intent.Target, intent.Enabled, intent.Bulk)
-		if err != nil {
-			return true, sendTelegramToolText(ctx, client, chatID, "准备操作失败："+err.Error())
-		}
-		text, err := prepareOrExecuteTelegramToolAction(ctx, action, telegramAgentRequiresToolConfirmation(cfg))
-		if err != nil {
-			return true, sendTelegramToolText(ctx, client, chatID, "执行失败："+err.Error())
-		}
-		return true, sendTelegramToolText(ctx, client, chatID, text)
-	case telegramToolIntentSetProviderStatus:
-		action, err := buildTelegramSetProviderStatusAction(ctx, chatID, intent.Target, intent.Enabled)
-		if err != nil {
-			return true, sendTelegramToolText(ctx, client, chatID, "准备操作失败："+err.Error())
-		}
-		text, err := prepareOrExecuteTelegramToolAction(ctx, action, telegramAgentRequiresToolConfirmation(cfg))
-		if err != nil {
-			return true, sendTelegramToolText(ctx, client, chatID, "执行失败："+err.Error())
-		}
-		return true, sendTelegramToolText(ctx, client, chatID, text)
-	default:
-		return false, nil
-	}
+	return false, nil
 }
 
 func confirmTelegramToolAction(ctx context.Context, client TelegramClient, chatID int64, cfg models.TelegramAgentConfig) error {
@@ -349,49 +300,6 @@ func orderedUniqueTelegramModelIDs(ids []uint) []uint {
 	return result
 }
 
-func parseTelegramAgentToolIntent(raw string) (telegramToolIntent, bool) {
-	command, commandText := parseTelegramAgentCommand(raw)
-	switch command {
-	case "/tools", "/tool", "/help":
-		return telegramToolIntent{Kind: telegramToolIntentHelp}, true
-	case "/models", "/model_list":
-		return telegramToolIntent{Kind: telegramToolIntentListModels, Target: strings.TrimSpace(commandText)}, true
-	case "/providers", "/provider_list":
-		return telegramToolIntent{Kind: telegramToolIntentListProviders, Target: strings.TrimSpace(commandText)}, true
-	case "/enable_model":
-		target := cleanupTelegramToolTarget(commandText)
-		return telegramToolIntent{Kind: telegramToolIntentSetModelStatus, Target: target, Enabled: true, Bulk: isTelegramToolBulkModelRequest(normalizeTelegramToolText(commandText), commandText)}, true
-	case "/disable_model":
-		target := cleanupTelegramToolTarget(commandText)
-		return telegramToolIntent{Kind: telegramToolIntentSetModelStatus, Target: target, Enabled: false, Bulk: isTelegramToolBulkModelRequest(normalizeTelegramToolText(commandText), commandText)}, true
-	case "/enable_provider":
-		return telegramToolIntent{Kind: telegramToolIntentSetProviderStatus, Target: strings.TrimSpace(commandText), Enabled: true}, true
-	case "/disable_provider":
-		return telegramToolIntent{Kind: telegramToolIntentSetProviderStatus, Target: strings.TrimSpace(commandText), Enabled: false}, true
-	}
-
-	return telegramToolIntent{}, false
-}
-
-func telegramAgentToolHelpText(cfg models.TelegramAgentConfig) string {
-	lines := []string{
-		"我现在可以安全调用这些项目工具：",
-		"1. 查看模型列表：发送“列出模型”或 /models",
-		"2. 查看提供商列表：发送“列出提供商”或 /providers",
-		"3. 读取系统日志和请求日志：例如“查看最近错误日志”",
-		"4. 新增/修改 API Key：例如“创建一个只允许 claude 模型的 key”",
-		"5. 启用/禁用模型：例如“禁用模型 gpt-5”",
-		"6. 启用/禁用提供商：例如“关闭提供商 OpenAI”",
-		"",
-	}
-	if telegramAgentRequiresToolConfirmation(cfg) {
-		lines = append(lines, "修改操作不会立即执行。我会先给出待确认内容，你回复“确认”后才会真正修改。回复“取消”可以放弃。")
-	} else {
-		lines = append(lines, "修改操作会直接执行，不再等待“确认/取消”。")
-	}
-	return strings.Join(lines, "\n")
-}
-
 func telegramToolConfirmationText(action telegramToolAction) string {
 	return strings.Join([]string{
 		"待确认操作",
@@ -452,6 +360,12 @@ func executeTelegramToolAction(ctx context.Context, action telegramToolAction) (
 		return createTelegramAgentAuthKey(ctx, action.AuthKeyPatch)
 	case telegramToolActionUpdateAuthKey:
 		return updateTelegramAgentAuthKey(ctx, action.TargetID, action.AuthKeyPatch)
+	case telegramToolActionCreateScheduledTask:
+		return createTelegramAgentScheduledTask(ctx, action.ScheduledTaskPatch)
+	case telegramToolActionUpdateScheduledTask:
+		return updateTelegramAgentScheduledTask(ctx, action.TargetID, action.ScheduledTaskPatch)
+	case telegramToolActionSetScheduledTaskStatus:
+		return setTelegramAgentScheduledTaskStatus(ctx, action.TargetID, action.Enabled)
 	case telegramToolActionRunTerminalCommand:
 		return executeTelegramCommandAction(ctx, action.CommandRun)
 	default:
@@ -1345,17 +1259,7 @@ func telegramProviderStatusSnapshotKey(providerID uint) string {
 }
 
 func sendTelegramToolText(ctx context.Context, client TelegramClient, chatID int64, text string) error {
-	parts := splitTelegramMessage(strings.TrimSpace(text))
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		if _, err := client.SendMessage(ctx, chatID, part); err != nil {
-			return err
-		}
-	}
-	return nil
+	return sendTelegramAgentTextWithAttachments(ctx, client, chatID, text)
 }
 
 func isTelegramToolConfirm(raw string) bool {

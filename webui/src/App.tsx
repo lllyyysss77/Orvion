@@ -20,6 +20,7 @@ const ConfigPage = lazy(() => import('./routes/config'));
 const AuthKeysPage = lazy(() => import('./routes/auth-keys'));
 const SkillsPage = lazy(() => import('./routes/skills'));
 const TelegramAgentPage = lazy(() => import('./routes/tg-agent'));
+const TelegramAgentSchedulesPage = lazy(() => import('./routes/tg-agent-schedules'));
 
 // 简单的加载组件
 const PageLoader = () => (
@@ -52,6 +53,7 @@ function App() {
                   <Route path="auth-keys" element={<AuthKeysPage />} />
                   <Route path="skills" element={<SkillsPage />} />
                   <Route path="tg-agent" element={<TelegramAgentPage />} />
+                  <Route path="tg-agent-schedules" element={<TelegramAgentSchedulesPage />} />
                 </Route>
               </Routes>
             </Suspense>

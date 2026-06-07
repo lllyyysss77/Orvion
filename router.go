@@ -97,12 +97,7 @@ func registerPublicRoutes(router *gin.Engine) {
 	router.GET("/health/ready", handler.ReadinessCheck)
 	router.GET("/health/detail", handler.GetSystemHealthDetail)
 
-	// 兼容性路由
-	router.GET("/healthz", handler.HealthCheck)
-	router.GET("/livez", handler.LivenessCheck)
-	router.GET("/readyz", handler.ReadinessCheck)
-
-	// API 健康检查接口（无需认证，为了兼容前端）
+	// API 健康检查接口（无需认证）
 	router.GET("/api/health/detail", handler.GetSystemHealthDetail)
 
 }
@@ -112,8 +107,6 @@ func registerUnifiedRoutes(router *gin.Engine, authOpenAI gin.HandlerFunc, authO
 	v1 := router.Group("/v1")
 	v1.Use(middleware.LimitRequestBody(middleware.ResolveMaxRequestBodyBytes()))
 	v1.GET("/models", authOpenAIOptional, handler.OpenAIModelsHandler)
-	// 兼容历史访问路径：/v1models
-	router.GET("/v1models", authOpenAIOptional, handler.OpenAIModelsHandler)
 	v1.POST("/chat/completions", authOpenAI, handler.ChatCompletionsHandler)
 	v1.POST("/responses", authOpenAI, handler.ResponsesHandler)
 	v1.POST("/responses/compact", authOpenAI, handler.ResponsesCompactHandler)
@@ -207,6 +200,11 @@ func registerSystemRoutes(api *gin.RouterGroup) {
 
 func registerTelegramAgentRoutes(api *gin.RouterGroup) {
 	api.GET("/tg-agent/tool-call-logs", adminhandler.GetTelegramAgentToolCallLogs)
+	api.GET("/tg-agent/scheduled-tasks", adminhandler.GetTelegramAgentScheduledTasks)
+	api.POST("/tg-agent/scheduled-tasks", adminhandler.CreateTelegramAgentScheduledTask)
+	api.PUT("/tg-agent/scheduled-tasks/:id", adminhandler.UpdateTelegramAgentScheduledTask)
+	api.PATCH("/tg-agent/scheduled-tasks/:id/status", adminhandler.UpdateTelegramAgentScheduledTaskStatus)
+	api.DELETE("/tg-agent/scheduled-tasks/:id", adminhandler.DeleteTelegramAgentScheduledTask)
 	api.DELETE("/tg-agent/sessions", adminhandler.DeleteTelegramAgentSession)
 	api.DELETE("/tg-agent/sessions/:conversation_id", adminhandler.DeleteTelegramAgentSession)
 }
@@ -246,8 +244,6 @@ func registerLimiterRoutes(api *gin.RouterGroup) {
 
 func registerTestRoutes(api *gin.RouterGroup) {
 	api.GET("/test/:id", handler.ProviderTestHandler)
-	api.GET("/test/react/:id", handler.TestReactHandler)
-	api.GET("/test/count_tokens", handler.TestCountTokens)
 	api.POST("/test/chat/:id", handler.ModelChatTestHandler)
 }
 
@@ -278,6 +274,8 @@ func shouldServeSPA(path string) bool {
 	case path == "/api", strings.HasPrefix(path, "/api/"):
 		return false
 	case path == "/v1", strings.HasPrefix(path, "/v1/"):
+		return false
+	case path == "/v1models":
 		return false
 	case path == "/auth-key", strings.HasPrefix(path, "/auth-key/"):
 		return false

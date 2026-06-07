@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -38,7 +39,11 @@ const (
 	telegramStatusImageDownloadTimeout = 18 * time.Second
 	telegramStatusImageRetryBaseWait   = 1200 * time.Millisecond
 	// Telegram sendPhoto 单图上限 10MB。
-	telegramStatusImageTGMaxBytes = 10 << 20
+	telegramStatusImageTGMaxBytes   = 10 << 20
+	telegramAgentPhotoMaxBytes      = 10 << 20
+	telegramAgentDocumentMaxBytes   = 50 << 20
+	telegramAgentInputImageMaxBytes = 10 << 20
+	telegramAgentInputImageMaxCount = 4
 
 	telegramModelListPageSize         = 12
 	telegramModelProviderListPageSize = 8
@@ -69,6 +74,17 @@ type telegramUpdateResponse struct {
 	Result      []telegramUpdate `json:"result"`
 }
 
+type telegramGetFileResponse struct {
+	OK          bool   `json:"ok"`
+	Description string `json:"description"`
+	Result      struct {
+		FileID       string `json:"file_id"`
+		FileUniqueID string `json:"file_unique_id"`
+		FileSize     int64  `json:"file_size"`
+		FilePath     string `json:"file_path"`
+	} `json:"result"`
+}
+
 type telegramUpdate struct {
 	UpdateID      int64                  `json:"update_id"`
 	Message       *telegramMessage       `json:"message"`
@@ -76,13 +92,32 @@ type telegramUpdate struct {
 }
 
 type telegramMessage struct {
-	MessageID int64        `json:"message_id"`
-	Text      string       `json:"text"`
-	Chat      telegramChat `json:"chat"`
+	MessageID int64                 `json:"message_id"`
+	Text      string                `json:"text"`
+	Caption   string                `json:"caption"`
+	Chat      telegramChat          `json:"chat"`
+	Photo     []telegramPhotoSize   `json:"photo"`
+	Document  *telegramDocumentFile `json:"document"`
 }
 
 type telegramChat struct {
 	ID int64 `json:"id"`
+}
+
+type telegramPhotoSize struct {
+	FileID       string `json:"file_id"`
+	FileUniqueID string `json:"file_unique_id"`
+	Width        int    `json:"width"`
+	Height       int    `json:"height"`
+	FileSize     int64  `json:"file_size"`
+}
+
+type telegramDocumentFile struct {
+	FileID       string `json:"file_id"`
+	FileUniqueID string `json:"file_unique_id"`
+	FileName     string `json:"file_name"`
+	MIMEType     string `json:"mime_type"`
+	FileSize     int64  `json:"file_size"`
 }
 
 type telegramCallbackQuery struct {
@@ -259,7 +294,9 @@ func telegramCommandLoop(ctx context.Context) {
 			slog.Info("接收到 TG 消息",
 				"chat_id", update.Message.Chat.ID,
 				"message_id", update.Message.MessageID,
-				"text_bytes", len(strings.TrimSpace(update.Message.Text)),
+				"text_bytes", len(strings.TrimSpace(resolveTelegramMessageText(*update.Message))),
+				"photo_count", len(update.Message.Photo),
+				"has_document", update.Message.Document != nil,
 			)
 			handledStatus, statusErr := handleTelegramStatusCommand(ctx, notifier, *update.Message, allowedChat)
 			if statusErr != nil {
@@ -960,6 +997,44 @@ func (c telegramAgentClient) SendTyping(ctx context.Context, chatID int64) error
 	return c.notifier.sendChatAction(ctx, strconv.FormatInt(chatID, 10), "typing")
 }
 
+func (c telegramAgentClient) SendPhoto(ctx context.Context, chatID int64, source string, caption string) error {
+	if c.notifier == nil {
+		return errors.New("telegram notifier is nil")
+	}
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return errors.New("图片来源不能为空")
+	}
+	chatIDText := strconv.FormatInt(chatID, 10)
+	if isTelegramAgentAttachmentURL(source) {
+		return c.notifier.sendPhotoURLToChat(ctx, chatIDText, source, caption)
+	}
+	data, filename, err := readTelegramAgentAttachmentFile(source, telegramAgentPhotoMaxBytes)
+	if err != nil {
+		return err
+	}
+	return c.notifier.sendPhotoBinaryToChat(chatIDText, filename, data, caption)
+}
+
+func (c telegramAgentClient) SendDocument(ctx context.Context, chatID int64, source string, caption string) error {
+	if c.notifier == nil {
+		return errors.New("telegram notifier is nil")
+	}
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return errors.New("文件来源不能为空")
+	}
+	chatIDText := strconv.FormatInt(chatID, 10)
+	if isTelegramAgentAttachmentURL(source) {
+		return c.notifier.sendDocumentURLToChat(ctx, chatIDText, source, caption)
+	}
+	data, filename, err := readTelegramAgentAttachmentFile(source, telegramAgentDocumentMaxBytes)
+	if err != nil {
+		return err
+	}
+	return c.notifier.sendDocumentBinaryToChat(ctx, chatIDText, filename, data, caption)
+}
+
 func handleTelegramAgentMessage(ctx context.Context, notifier *telegramNotifier, message telegramMessage, allowedChatID string) (bool, error) {
 	if notifier == nil {
 		return false, nil
@@ -967,11 +1042,313 @@ func handleTelegramAgentMessage(ctx context.Context, notifier *telegramNotifier,
 	if !isAllowedTelegramChat(message.Chat.ID, allowedChatID) {
 		return false, nil
 	}
+	attachments, err := buildTelegramAgentInputAttachments(ctx, notifier, message)
+	if err != nil {
+		if len(message.Photo) > 0 || message.Document != nil {
+			_, _ = telegramAgentClient{notifier: notifier}.SendMessage(ctx, message.Chat.ID, "读取图片失败："+err.Error())
+			return true, err
+		}
+		return false, nil
+	}
 	return agent.HandleTelegramMessage(ctx, telegramAgentClient{notifier: notifier}, agent.TelegramMessage{
-		ChatID:    message.Chat.ID,
-		MessageID: message.MessageID,
-		Text:      message.Text,
+		ChatID:      message.Chat.ID,
+		MessageID:   message.MessageID,
+		Text:        resolveTelegramMessageText(message),
+		Attachments: attachments,
 	})
+}
+
+func resolveTelegramMessageText(message telegramMessage) string {
+	if text := strings.TrimSpace(message.Text); text != "" {
+		return text
+	}
+	return strings.TrimSpace(message.Caption)
+}
+
+func buildTelegramAgentInputAttachments(ctx context.Context, notifier *telegramNotifier, message telegramMessage) ([]agent.TelegramInputAttachment, error) {
+	if notifier == nil {
+		return nil, errors.New("telegram notifier is nil")
+	}
+	attachments := make([]agent.TelegramInputAttachment, 0, 2)
+	if photo, ok := selectTelegramLargestPhoto(message.Photo); ok {
+		attachment, err := notifier.downloadTelegramAgentInputImage(ctx, photo.FileID, "telegram-photo-"+telegramTextFallback(photo.FileUniqueID, strconv.FormatInt(message.MessageID, 10))+".jpg", "image/jpeg", photo.FileSize)
+		if err != nil {
+			return nil, err
+		}
+		attachments = append(attachments, attachment)
+	}
+	if message.Document != nil && isTelegramImageDocument(*message.Document) {
+		document := *message.Document
+		fileName := strings.TrimSpace(document.FileName)
+		if fileName == "" {
+			fileName = "telegram-document-" + telegramTextFallback(document.FileUniqueID, strconv.FormatInt(message.MessageID, 10))
+		}
+		attachment, err := notifier.downloadTelegramAgentInputImage(ctx, document.FileID, fileName, document.MIMEType, document.FileSize)
+		if err != nil {
+			return nil, err
+		}
+		attachments = append(attachments, attachment)
+	}
+	if len(attachments) > telegramAgentInputImageMaxCount {
+		return attachments[:telegramAgentInputImageMaxCount], nil
+	}
+	return attachments, nil
+}
+
+func selectTelegramLargestPhoto(photos []telegramPhotoSize) (telegramPhotoSize, bool) {
+	var selected telegramPhotoSize
+	for _, photo := range photos {
+		if strings.TrimSpace(photo.FileID) == "" {
+			continue
+		}
+		if strings.TrimSpace(selected.FileID) == "" || telegramPhotoScore(photo) > telegramPhotoScore(selected) {
+			selected = photo
+		}
+	}
+	return selected, strings.TrimSpace(selected.FileID) != ""
+}
+
+func telegramPhotoScore(photo telegramPhotoSize) int64 {
+	if photo.FileSize > 0 {
+		return photo.FileSize
+	}
+	return int64(photo.Width) * int64(photo.Height)
+}
+
+func isTelegramImageDocument(document telegramDocumentFile) bool {
+	mimeType := strings.ToLower(strings.TrimSpace(document.MIMEType))
+	if strings.HasPrefix(mimeType, "image/") {
+		return true
+	}
+	guessedType := strings.ToLower(mime.TypeByExtension(filepath.Ext(document.FileName)))
+	return strings.HasPrefix(guessedType, "image/")
+}
+
+func (n *telegramNotifier) downloadTelegramAgentInputImage(ctx context.Context, fileID string, fileName string, mimeType string, declaredSize int64) (agent.TelegramInputAttachment, error) {
+	fileID = strings.TrimSpace(fileID)
+	if fileID == "" {
+		return agent.TelegramInputAttachment{}, errors.New("Telegram 文件 ID 为空")
+	}
+	if declaredSize > telegramAgentInputImageMaxBytes {
+		return agent.TelegramInputAttachment{}, fmt.Errorf("图片超过大小限制: %d > %d", declaredSize, telegramAgentInputImageMaxBytes)
+	}
+	data, filePath, detectedType, err := n.downloadTelegramFile(ctx, fileID, telegramAgentInputImageMaxBytes)
+	if err != nil {
+		return agent.TelegramInputAttachment{}, err
+	}
+	if strings.TrimSpace(fileName) == "" {
+		fileName = filepath.Base(filePath)
+	}
+	if strings.TrimSpace(fileName) == "" || fileName == "." {
+		fileName = "telegram-image"
+	}
+	if strings.TrimSpace(mimeType) == "" {
+		mimeType = detectedType
+	}
+	if strings.TrimSpace(mimeType) == "" {
+		mimeType = mime.TypeByExtension(filepath.Ext(fileName))
+	}
+	if strings.TrimSpace(mimeType) == "" {
+		mimeType = http.DetectContentType(data)
+	}
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(mimeType)), "image/") {
+		return agent.TelegramInputAttachment{}, fmt.Errorf("Telegram 文件不是图片: %s", mimeType)
+	}
+	return agent.TelegramInputAttachment{
+		FileName: filepath.Base(fileName),
+		MIMEType: mimeType,
+		Data:     data,
+	}, nil
+}
+
+func (n *telegramNotifier) downloadTelegramFile(ctx context.Context, fileID string, maxBytes int64) ([]byte, string, string, error) {
+	if n == nil {
+		return nil, "", "", errors.New("telegram notifier is nil")
+	}
+	filePath, err := n.getTelegramFilePath(ctx, fileID)
+	if err != nil {
+		return nil, "", "", err
+	}
+	fileURL := n.telegramFileURL(filePath)
+	if fileURL == "" {
+		return nil, "", "", errors.New("Telegram 文件下载地址为空")
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, telegramPhotoHTTPTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, fileURL, nil)
+	if err != nil {
+		return nil, "", "", err
+	}
+	res, err := n.client.Do(req)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("下载 Telegram 文件失败: %w", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(res.Body, 1024))
+		return nil, "", "", fmt.Errorf("下载 Telegram 文件返回状态 %d: %s", res.StatusCode, strings.TrimSpace(string(body)))
+	}
+	raw, err := io.ReadAll(io.LimitReader(res.Body, maxBytes+1))
+	if err != nil {
+		return nil, "", "", fmt.Errorf("读取 Telegram 文件失败: %w", err)
+	}
+	if int64(len(raw)) > maxBytes {
+		return nil, "", "", fmt.Errorf("图片超过大小限制: %d > %d", len(raw), maxBytes)
+	}
+	return raw, filePath, strings.TrimSpace(res.Header.Get("Content-Type")), nil
+}
+
+func (n *telegramNotifier) getTelegramFilePath(ctx context.Context, fileID string) (string, error) {
+	methodURL := n.telegramMethodURL("getFile")
+	if methodURL == "" {
+		return "", errors.New("Telegram getFile 地址为空")
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, telegramHTTPTimeout)
+	defer cancel()
+	parsed, err := url.Parse(methodURL)
+	if err != nil {
+		return "", err
+	}
+	query := parsed.Query()
+	query.Set("file_id", strings.TrimSpace(fileID))
+	parsed.RawQuery = query.Encode()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, parsed.String(), nil)
+	if err != nil {
+		return "", err
+	}
+	res, err := n.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("调用 Telegram getFile 失败: %w", err)
+	}
+	defer res.Body.Close()
+	var response telegramGetFileResponse
+	if err := json.NewDecoder(io.LimitReader(res.Body, 4096)).Decode(&response); err != nil {
+		return "", fmt.Errorf("解析 Telegram getFile 响应失败: %w", err)
+	}
+	if res.StatusCode != http.StatusOK || !response.OK {
+		if strings.TrimSpace(response.Description) == "" {
+			response.Description = res.Status
+		}
+		return "", fmt.Errorf("Telegram getFile 失败: %s", response.Description)
+	}
+	if strings.TrimSpace(response.Result.FilePath) == "" {
+		return "", errors.New("Telegram getFile 未返回 file_path")
+	}
+	if response.Result.FileSize > telegramAgentInputImageMaxBytes {
+		return "", fmt.Errorf("图片超过大小限制: %d > %d", response.Result.FileSize, telegramAgentInputImageMaxBytes)
+	}
+	return response.Result.FilePath, nil
+}
+
+func (n *telegramNotifier) telegramFileURL(filePath string) string {
+	if n == nil || strings.TrimSpace(n.apiBase) == "" || strings.TrimSpace(n.botToken) == "" {
+		return ""
+	}
+	filePath = strings.TrimLeft(strings.TrimSpace(filePath), "/")
+	if filePath == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s/file/bot%s/%s", strings.TrimRight(n.apiBase, "/"), strings.TrimSpace(n.botToken), escapeTelegramFilePath(filePath))
+}
+
+func escapeTelegramFilePath(filePath string) string {
+	parts := strings.Split(filePath, "/")
+	for i, part := range parts {
+		parts[i] = url.PathEscape(part)
+	}
+	return strings.Join(parts, "/")
+}
+
+func telegramTextFallback(value string, fallback string) string {
+	value = strings.TrimSpace(value)
+	if value != "" {
+		return value
+	}
+	return strings.TrimSpace(fallback)
+}
+
+func isTelegramAgentAttachmentURL(source string) bool {
+	source = strings.ToLower(strings.TrimSpace(source))
+	return strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://")
+}
+
+func readTelegramAgentAttachmentFile(source string, maxBytes int64) ([]byte, string, error) {
+	path, err := normalizeTelegramAgentAttachmentPath(source)
+	if err != nil {
+		return nil, "", err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, "", fmt.Errorf("读取附件失败: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, "", errors.New("附件必须是普通文件")
+	}
+	if maxBytes > 0 && info.Size() > maxBytes {
+		return nil, "", fmt.Errorf("附件超过大小限制: %d > %d", info.Size(), maxBytes)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, "", fmt.Errorf("读取附件内容失败: %w", err)
+	}
+	return data, filepath.Base(path), nil
+}
+
+func normalizeTelegramAgentAttachmentPath(source string) (string, error) {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return "", errors.New("附件路径不能为空")
+	}
+	if strings.HasPrefix(strings.ToLower(source), "file://") {
+		parsed, err := url.Parse(source)
+		if err != nil {
+			return "", fmt.Errorf("附件 file URL 无效: %w", err)
+		}
+		source = parsed.Path
+	}
+	absPath, err := filepath.Abs(source)
+	if err != nil {
+		return "", fmt.Errorf("附件路径无效: %w", err)
+	}
+	realPath, err := filepath.EvalSymlinks(absPath)
+	if err != nil {
+		return "", fmt.Errorf("附件路径不可用: %w", err)
+	}
+	if !isTelegramAgentAttachmentPathAllowed(realPath) {
+		return "", errors.New("附件路径不在允许目录内")
+	}
+	return realPath, nil
+}
+
+func isTelegramAgentAttachmentPathAllowed(path string) bool {
+	roots := []string{}
+	if cwd, err := os.Getwd(); err == nil {
+		roots = append(roots, cwd)
+	}
+	if tmpDir := strings.TrimSpace(os.TempDir()); tmpDir != "" {
+		roots = append(roots, tmpDir)
+	}
+	for _, root := range roots {
+		rootPath, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			rootPath, err = filepath.Abs(root)
+			if err != nil {
+				continue
+			}
+		}
+		if isPathWithinRoot(path, rootPath) {
+			return true
+		}
+	}
+	return false
+}
+
+func isPathWithinRoot(path string, root string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
 func sendTelegramCaptionWithStatusImage(ctx context.Context, notifier *telegramNotifier, chatID string, content string) error {

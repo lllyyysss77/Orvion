@@ -1,5 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -64,6 +74,7 @@ const sourceLabel: Record<string, string> = {
   function_call: "函数调用",
   tool_action: "工具动作",
   confirmation: "确认操作",
+  scheduled_task: "定时任务",
 };
 
 const formatDateTime = (value?: string) => {
@@ -98,6 +109,7 @@ const shortConversationID = (value?: string) => {
   if (text.length <= 18) return text;
   return `${text.slice(0, 10)}...${text.slice(-6)}`;
 };
+
 
 const sessionIdentity = (chatID: number, conversationID?: string) => `${chatID}:${(conversationID ?? "").trim() || "__unrecorded__"}`;
 
@@ -256,6 +268,76 @@ function TimelineStep({
   );
 }
 
+function DeleteSessionDialog({
+  session,
+  deleting,
+  onOpenChange,
+  onConfirm,
+}: {
+  session: TelegramAgentSessionSummary | null;
+  deleting: boolean;
+  onOpenChange: (open: boolean) => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <AlertDialog open={Boolean(session)} onOpenChange={onOpenChange}>
+      <AlertDialogContent className="overflow-hidden p-0 sm:max-w-xl">
+        <div className="border-b bg-rose-50/70 px-5 py-4 dark:bg-rose-500/10">
+          <AlertDialogHeader className="text-left">
+            <div className="flex items-start gap-3">
+              <div className="flex size-10 shrink-0 items-center justify-center rounded-full border border-rose-300/60 bg-rose-100 text-rose-700 dark:border-rose-400/30 dark:bg-rose-500/15 dark:text-rose-300">
+                <Trash2 className="size-5" />
+              </div>
+              <div className="min-w-0">
+                <AlertDialogTitle className="text-base">删除这个 TG 对话？</AlertDialogTitle>
+                <AlertDialogDescription className="mt-1">
+                  将删除该会话的上下文、工具调用记录和待确认操作。
+                </AlertDialogDescription>
+              </div>
+            </div>
+          </AlertDialogHeader>
+        </div>
+
+        {session ? (
+          <div className="space-y-3 px-5 py-4">
+            <div className="rounded-lg border bg-muted/30 px-4 py-3">
+              <div className="truncate text-sm font-semibold text-foreground">
+                会话 {shortConversationID(session.conversation_id)}
+              </div>
+              <div className="mt-2 grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+                <span>Chat：{session.chat_id}</span>
+                <span>步骤：{session.total_steps}</span>
+                <span>失败：{session.failed}</span>
+                <span>最近：{formatDateTime(session.latest_at)}</span>
+              </div>
+              <div className="mt-3 rounded-md border bg-background/70 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+                最近工具：{session.latest_tool_name || "未记录"}
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              这会让后续 Agent 对话无法再读取该会话的历史上下文。此操作无法撤销。
+            </p>
+          </div>
+        ) : null}
+
+        <AlertDialogFooter className="border-t px-5 py-4">
+          <AlertDialogCancel disabled={deleting}>取消</AlertDialogCancel>
+          <AlertDialogAction
+            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            disabled={deleting}
+            onClick={(event) => {
+              event.preventDefault();
+              onConfirm();
+            }}
+          >
+            {deleting ? "删除中..." : "确认删除"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
 export default function TelegramAgentPage() {
   const [snapshot, setSnapshot] = useState<TelegramAgentToolLogResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -263,6 +345,7 @@ export default function TelegramAgentPage() {
   const [selectedConversationID, setSelectedConversationID] = useState<string>("all");
   const [expandedStepIDs, setExpandedStepIDs] = useState<Set<number>>(() => new Set());
   const [deletingConversationID, setDeletingConversationID] = useState("");
+  const [deleteSessionTarget, setDeleteSessionTarget] = useState<TelegramAgentSessionSummary | null>(null);
   const timelineViewportRef = useRef<HTMLDivElement | null>(null);
 
   const fetchLogs = useCallback(async (initial = false) => {
@@ -313,8 +396,6 @@ export default function TelegramAgentPage() {
   const handleDeleteSession = useCallback(async (session: TelegramAgentSessionSummary) => {
     const conversationID = session.conversation_id.trim();
     const deletingKey = sessionIdentity(session.chat_id, conversationID);
-    const confirmed = window.confirm(`确认删除会话 ${shortConversationID(conversationID)} 的执行记录和上下文吗？`);
-    if (!confirmed) return;
 
     setDeletingConversationID(deletingKey);
     try {
@@ -341,6 +422,7 @@ export default function TelegramAgentPage() {
         setSelectedConversationID("all");
       }
       toast.success("会话已删除");
+      setDeleteSessionTarget(null);
       void fetchLogs(false);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "删除会话失败");
@@ -379,7 +461,12 @@ export default function TelegramAgentPage() {
             Telegram Agent
           </div>
         </div>
-        <Button variant="outline" size="sm" onClick={() => void fetchLogs(false)} disabled={refreshing}>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => void fetchLogs(false)}
+          disabled={refreshing}
+        >
           <RefreshCw className={cn("mr-2 size-4", refreshing && "animate-spin")} />
           刷新
         </Button>
@@ -409,7 +496,7 @@ export default function TelegramAgentPage() {
                 selected={selectedConversationID === session.conversation_id}
                 deleting={deletingConversationID === sessionIdentity(session.chat_id, session.conversation_id)}
                 onClick={() => setSelectedConversationID(session.conversation_id)}
-                onDelete={() => void handleDeleteSession(session)}
+                onDelete={() => setDeleteSessionTarget(session)}
               />
             ))}
             {!loading && sessions.length === 0 ? (
@@ -459,6 +546,16 @@ export default function TelegramAgentPage() {
           </div>
         </section>
       </div>
+      <DeleteSessionDialog
+        session={deleteSessionTarget}
+        deleting={deleteSessionTarget ? deletingConversationID === sessionIdentity(deleteSessionTarget.chat_id, deleteSessionTarget.conversation_id) : false}
+        onOpenChange={(open) => {
+          if (!open && deletingConversationID === "") setDeleteSessionTarget(null);
+        }}
+        onConfirm={() => {
+          if (deleteSessionTarget) void handleDeleteSession(deleteSessionTarget);
+        }}
+      />
     </div>
   );
 }
