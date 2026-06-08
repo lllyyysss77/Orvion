@@ -133,12 +133,11 @@ type telegramAgentToolResultPayload struct {
 	Final bool   `json:"final,omitempty"`
 }
 
-func streamTelegramAgentReplyWithFunctionTools(ctx context.Context, cfg models.TelegramAgentConfig, selected selectedModelProvider, history []chatMessage, prompt string, attachments []TelegramInputAttachment, chatID int64, onDelta streamDeltaHandler, onStatus streamStatusHandler) (telegramAgentReplyResult, error) {
+func streamTelegramAgentReplyWithFunctionTools(ctx context.Context, cfg models.TelegramAgentConfig, pool telegramAgentModelProviderPool, history []chatMessage, prompt string, attachments []TelegramInputAttachment, chatID int64, onDelta streamDeltaHandler, onStatus streamStatusHandler) (telegramAgentReplyResult, error) {
 	result := telegramAgentReplyResult{
-		Selected:  selected,
 		StartedAt: time.Now(),
 	}
-	if !selected.supportsFunctionTools() {
+	if len(pool.Candidates) == 0 {
 		return result, errors.New("当前 TG Agent 模型提供商暂不支持 function call 工具调用")
 	}
 
@@ -154,21 +153,21 @@ func streamTelegramAgentReplyWithFunctionTools(ctx context.Context, cfg models.T
 		if err != nil {
 			return result, err
 		}
-		result.RequestBody = append([]byte(nil), body...)
 
-		res, proxyMs, err := performTelegramAgentProviderRequest(ctx, selected, body, true, result.StartedAt)
+		attempt, err := performTelegramAgentProviderRequestWithFallback(ctx, cfg, pool, true, true, result.StartedAt, func(requestCtx context.Context, selected selectedModelProvider) ([]byte, context.Context, error) {
+			return body, context.WithValue(requestCtx, consts.ContextKeyOpenAIEndpoint, "chat/completions"), nil
+		})
 		if err != nil {
 			return result, err
 		}
+		selected := attempt.Selected
+		res := attempt.Response
+		result.Selected = selected
+		result.RequestBody = append([]byte(nil), attempt.RequestBody...)
 		if result.ProxyTimeMs == 0 {
-			result.ProxyTimeMs = proxyMs
+			result.ProxyTimeMs = attempt.ProxyTimeMs
 		}
-		if res.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
-			_ = res.Body.Close()
-			result.Size += len(body)
-			return result, fmt.Errorf("%s/%s 返回状态 %d: %s", selected.ProviderName, selected.ProviderModel, res.StatusCode, strings.TrimSpace(string(body)))
-		}
+		result.Retry = attempt.Retry
 
 		streamResult, err := readTelegramAgentOpenAIStreamWithTools(ctx, res.Body, result.StartedAt, onDelta)
 		_ = res.Body.Close()
@@ -209,42 +208,35 @@ func streamTelegramAgentReplyWithFunctionTools(ctx context.Context, cfg models.T
 	return result, errors.New("工具调用轮次过多，请拆成更明确的指令")
 }
 
-func streamTelegramAgentPlainReplyWithSelected(ctx context.Context, cfg models.TelegramAgentConfig, selected selectedModelProvider, history []chatMessage, prompt string, onDelta streamDeltaHandler) (telegramAgentReplyResult, error) {
+func streamTelegramAgentToolResultPlainReplyWithPool(ctx context.Context, cfg models.TelegramAgentConfig, pool telegramAgentModelProviderPool, history []chatMessage, prompt string, onDelta streamDeltaHandler) (telegramAgentReplyResult, error) {
+	cfg = withTelegramAgentSystemPromptSuffix(cfg, telegramAgentToolResultFollowupSystemPrompt())
+	return streamTelegramAgentPlainReplyWithPool(ctx, cfg, pool, history, prompt, onDelta)
+}
+
+func streamTelegramAgentPlainReplyWithPool(ctx context.Context, cfg models.TelegramAgentConfig, pool telegramAgentModelProviderPool, history []chatMessage, prompt string, onDelta streamDeltaHandler) (telegramAgentReplyResult, error) {
 	result := telegramAgentReplyResult{
-		Selected:  selected,
 		StartedAt: time.Now(),
 	}
-	cfg = withTelegramAgentSystemPromptSuffix(cfg, telegramAgentToolResultFollowupSystemPrompt())
-
-	var body []byte
-	var endpointCtx context.Context
-	var err error
-	if selected.responseStyle() == consts.StyleOpenAI {
-		messages := toTelegramAgentOpenAIMessages(strings.TrimSpace(cfg.SystemPrompt), history, prompt, nil)
-		body, err = buildTelegramAgentOpenAIChatBody(cfg, messages, true, false)
-		endpointCtx = context.WithValue(ctx, consts.ContextKeyOpenAIEndpoint, "chat/completions")
-	} else {
-		body, endpointCtx, err = buildTelegramAgentRequestBody(ctx, cfg, selected, history, prompt, nil)
-	}
+	attempt, err := performTelegramAgentProviderRequestWithFallback(ctx, cfg, pool, false, true, result.StartedAt, func(requestCtx context.Context, selected selectedModelProvider) ([]byte, context.Context, error) {
+		if selected.responseStyle() == consts.StyleOpenAI {
+			messages := toTelegramAgentOpenAIMessages(strings.TrimSpace(cfg.SystemPrompt), history, prompt, nil)
+			body, err := buildTelegramAgentOpenAIChatBody(cfg, messages, true, false)
+			return body, context.WithValue(requestCtx, consts.ContextKeyOpenAIEndpoint, "chat/completions"), err
+		}
+		return buildTelegramAgentRequestBody(requestCtx, cfg, selected, history, prompt, nil)
+	})
 	if err != nil {
 		return result, err
 	}
-	result.RequestBody = append([]byte(nil), body...)
-
-	res, proxyMs, err := performTelegramAgentProviderRequestWithContext(endpointCtx, selected, body, true, result.StartedAt)
-	if err != nil {
-		return result, err
-	}
+	selected := attempt.Selected
+	res := attempt.Response
+	result.Selected = selected
+	result.RequestBody = append([]byte(nil), attempt.RequestBody...)
 	if result.ProxyTimeMs == 0 {
-		result.ProxyTimeMs = proxyMs
+		result.ProxyTimeMs = attempt.ProxyTimeMs
 	}
+	result.Retry = attempt.Retry
 	defer res.Body.Close()
-
-	if res.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
-		result.Size += len(body)
-		return result, fmt.Errorf("%s/%s 返回状态 %d: %s", selected.ProviderName, selected.ProviderModel, res.StatusCode, strings.TrimSpace(string(body)))
-	}
 
 	streamResult, err := readTelegramAgentStream(ctx, selected.responseStyle(), res.Body, result.StartedAt, onDelta)
 	mergeTelegramAgentUsageAdd(&result.Usage, streamResult.Usage)
@@ -282,10 +274,7 @@ func telegramAgentToolCallsNeedResultSummary(toolCalls []telegramAgentOpenAITool
 	return false
 }
 
-func performTelegramAgentProviderRequest(ctx context.Context, selected selectedModelProvider, body []byte, stream bool, startedAt time.Time) (*http.Response, int, error) {
-	endpointCtx := context.WithValue(ctx, consts.ContextKeyOpenAIEndpoint, "chat/completions")
-	return performTelegramAgentProviderRequestWithContext(endpointCtx, selected, body, stream, startedAt)
-}
+var telegramAgentProviderRequestExecutor = performTelegramAgentProviderRequestWithContext
 
 func performTelegramAgentProviderRequestWithContext(ctx context.Context, selected selectedModelProvider, body []byte, stream bool, startedAt time.Time) (*http.Response, int, error) {
 	upstreamBody := body

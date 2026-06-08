@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -225,6 +227,127 @@ func TestSelectTelegramAgentModelProviderUsesInterfaceBridge(t *testing.T) {
 	}
 	if !selected.supportsFunctionTools() {
 		t.Fatalf("桥接到 Chat 后应支持 TG Agent 工具调用")
+	}
+}
+
+func TestStreamTelegramAgentReplyRetriesAndSwitchesProvider(t *testing.T) {
+	previousDB := models.DB
+	defer func() {
+		models.DB = previousDB
+	}()
+
+	previousExecutor := telegramAgentProviderRequestExecutor
+	defer func() {
+		telegramAgentProviderRequestExecutor = previousExecutor
+	}()
+
+	db, err := gorm.Open(sqlite.Open("file:tg_agent_retry_switch_test?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("初始化测试数据库失败: %v", err)
+	}
+	models.DB = db
+	if err := db.AutoMigrate(
+		&models.Model{},
+		&models.Provider{},
+		&models.ModelWithProvider{},
+		&models.AuthKey{},
+		&models.ChatLog{},
+		&models.ChatIO{},
+		&models.Config{},
+		&models.ModelPrice{},
+	); err != nil {
+		t.Fatalf("迁移测试表失败: %v", err)
+	}
+	if err := db.Table(models.ChatLogMonthlyTableName(time.Now())).AutoMigrate(&models.ChatLog{}); err != nil {
+		t.Fatalf("迁移日志月表失败: %v", err)
+	}
+
+	model := models.Model{
+		Name:     "tg-agent-retry-test",
+		Status:   1,
+		MaxRetry: 3,
+		TimeOut:  10,
+		Strategy: consts.BalancerRotor,
+	}
+	if err := db.Create(&model).Error; err != nil {
+		t.Fatalf("创建模型失败: %v", err)
+	}
+	failedProvider := models.Provider{
+		Name:         "失败提供商",
+		Config:       `{"base_url":"https://failed.example/v1","api_key":"bad"}`,
+		Capabilities: models.ProviderCapabilities([]string{"chat"}),
+	}
+	successProvider := models.Provider{
+		Name:         "成功提供商",
+		Config:       `{"base_url":"https://success.example/v1","api_key":"good"}`,
+		Capabilities: models.ProviderCapabilities([]string{"chat"}),
+	}
+	if err := db.Create(&failedProvider).Error; err != nil {
+		t.Fatalf("创建失败提供商失败: %v", err)
+	}
+	if err := db.Create(&successProvider).Error; err != nil {
+		t.Fatalf("创建成功提供商失败: %v", err)
+	}
+	if err := db.Create(&models.ModelWithProvider{
+		ModelID:       model.ID,
+		ProviderID:    failedProvider.ID,
+		ProviderModel: "gpt-5.5",
+		Status:        1,
+		Weight:        1,
+	}).Error; err != nil {
+		t.Fatalf("创建失败关联失败: %v", err)
+	}
+	if err := db.Create(&models.ModelWithProvider{
+		ModelID:       model.ID,
+		ProviderID:    successProvider.ID,
+		ProviderModel: "gpt-5.5",
+		Status:        1,
+		Weight:        1,
+	}).Error; err != nil {
+		t.Fatalf("创建成功关联失败: %v", err)
+	}
+
+	telegramAgentProviderRequestExecutor = func(ctx context.Context, selected selectedModelProvider, body []byte, stream bool, startedAt time.Time) (*http.Response, int, error) {
+		switch selected.ProviderName {
+		case failedProvider.Name:
+			return &http.Response{
+				StatusCode: http.StatusBadGateway,
+				Header:     http.Header{},
+				Body:       io.NopCloser(strings.NewReader("error code: 502")),
+			}, 5, nil
+		case successProvider.Name:
+			streamBody := strings.Join([]string{
+				`data: {"choices":[{"delta":{"content":"切换成功"}}]}`,
+				"",
+				`data: [DONE]`,
+				"",
+			}, "\n")
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(strings.NewReader(streamBody)),
+			}, 8, nil
+		default:
+			return nil, 0, fmt.Errorf("未预期的提供商: %s", selected.ProviderName)
+		}
+	}
+
+	var answer strings.Builder
+	result, err := streamTelegramAgentReply(context.Background(), models.TelegramAgentConfig{Model: model.Name}, nil, "测试重试", nil, 1, func(delta string) error {
+		answer.WriteString(delta)
+		return nil
+	}, nil)
+	if err != nil {
+		t.Fatalf("TG Agent 重试切换后仍失败: %v", err)
+	}
+	if answer.String() != "切换成功" {
+		t.Fatalf("期望收到成功提供商回复，实际为 %q", answer.String())
+	}
+	if result.Selected.ProviderName != successProvider.Name {
+		t.Fatalf("期望切换到成功提供商，实际为 %s", result.Selected.ProviderName)
+	}
+	if result.Retry == 0 {
+		t.Fatalf("期望成功请求记录 retry > 0，实际为 %d", result.Retry)
 	}
 }
 

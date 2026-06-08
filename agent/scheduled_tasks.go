@@ -5,14 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/racio/orvion/consts"
 	"github.com/racio/orvion/models"
 	"gorm.io/gorm"
 )
@@ -261,13 +258,13 @@ func FinishTelegramAgentScheduledTask(ctx context.Context, task models.TelegramA
 }
 
 func runTelegramAgentScheduledTaskSilently(ctx context.Context, cfg models.TelegramAgentConfig, prompt string) (string, error) {
-	selected, err := selectTelegramAgentModelProvider(ctx, cfg)
+	pool, err := loadTelegramAgentModelProviderPool(ctx, cfg, 0, false)
 	if err != nil {
 		return "", err
 	}
 
 	var answer strings.Builder
-	replyResult, err := streamTelegramAgentScheduledPlainReply(ctx, cfg, selected, prompt, func(delta string) error {
+	replyResult, err := streamTelegramAgentPlainReplyWithPool(ctx, cfg, pool, nil, prompt, func(delta string) error {
 		answer.WriteString(delta)
 		return nil
 	})
@@ -281,53 +278,6 @@ func runTelegramAgentScheduledTaskSilently(ctx context.Context, cfg models.Teleg
 	}
 	recordTelegramAgentLog(ctx, replyResult, finalAnswer, nil)
 	return finalAnswer, nil
-}
-
-func streamTelegramAgentScheduledPlainReply(ctx context.Context, cfg models.TelegramAgentConfig, selected selectedModelProvider, prompt string, onDelta streamDeltaHandler) (telegramAgentReplyResult, error) {
-	result := telegramAgentReplyResult{
-		Selected:  selected,
-		StartedAt: time.Now(),
-	}
-
-	var body []byte
-	var endpointCtx context.Context
-	var err error
-	if selected.responseStyle() == consts.StyleOpenAI {
-		messages := toTelegramAgentOpenAIMessages(strings.TrimSpace(cfg.SystemPrompt), nil, prompt, nil)
-		body, err = buildTelegramAgentOpenAIChatBody(cfg, messages, true, false)
-		endpointCtx = context.WithValue(ctx, consts.ContextKeyOpenAIEndpoint, "chat/completions")
-	} else {
-		body, endpointCtx, err = buildTelegramAgentRequestBody(ctx, cfg, selected, nil, prompt, nil)
-	}
-	if err != nil {
-		return result, err
-	}
-	result.RequestBody = append([]byte(nil), body...)
-
-	res, proxyMs, err := performTelegramAgentProviderRequestWithContext(endpointCtx, selected, body, true, result.StartedAt)
-	if err != nil {
-		return result, err
-	}
-	if result.ProxyTimeMs == 0 {
-		result.ProxyTimeMs = proxyMs
-	}
-	defer res.Body.Close()
-
-	if res.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
-		result.Size += len(body)
-		return result, fmt.Errorf("%s/%s 返回状态 %d: %s", selected.ProviderName, selected.ProviderModel, res.StatusCode, strings.TrimSpace(string(body)))
-	}
-
-	streamResult, err := readTelegramAgentStream(ctx, selected.responseStyle(), res.Body, result.StartedAt, onDelta)
-	mergeTelegramAgentUsageAdd(&result.Usage, streamResult.Usage)
-	if result.FirstChunkTimeMs == 0 {
-		result.FirstChunkTimeMs = streamResult.FirstChunkTimeMs
-	}
-	result.ChunkTimeMs += streamResult.ChunkTimeMs
-	result.Size += streamResult.Size
-	normalizeTelegramAgentUsage(&result.Usage)
-	return result, err
 }
 
 func recordTelegramAgentScheduledTaskExecutingLog(ctx context.Context, task models.TelegramAgentScheduledTask, chatID int64) uint {
