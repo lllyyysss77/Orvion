@@ -154,7 +154,7 @@ func streamTelegramAgentReplyWithFunctionTools(ctx context.Context, cfg models.T
 			return result, err
 		}
 
-		attempt, err := performTelegramAgentProviderRequestWithFallback(ctx, cfg, pool, true, true, result.StartedAt, func(requestCtx context.Context, selected selectedModelProvider) ([]byte, context.Context, error) {
+		attempt, err := performTelegramAgentProviderRequestWithRetry(ctx, pool, true, result.StartedAt, func(requestCtx context.Context, selected selectedModelProvider) ([]byte, context.Context, error) {
 			return body, context.WithValue(requestCtx, consts.ContextKeyOpenAIEndpoint, "chat/completions"), nil
 		})
 		if err != nil {
@@ -217,7 +217,7 @@ func streamTelegramAgentPlainReplyWithPool(ctx context.Context, cfg models.Teleg
 	result := telegramAgentReplyResult{
 		StartedAt: time.Now(),
 	}
-	attempt, err := performTelegramAgentProviderRequestWithFallback(ctx, cfg, pool, false, true, result.StartedAt, func(requestCtx context.Context, selected selectedModelProvider) ([]byte, context.Context, error) {
+	attempt, err := performTelegramAgentProviderRequestWithRetry(ctx, pool, true, result.StartedAt, func(requestCtx context.Context, selected selectedModelProvider) ([]byte, context.Context, error) {
 		if selected.responseStyle() == consts.StyleOpenAI {
 			messages := toTelegramAgentOpenAIMessages(strings.TrimSpace(cfg.SystemPrompt), history, prompt, nil)
 			body, err := buildTelegramAgentOpenAIChatBody(cfg, messages, true, false)

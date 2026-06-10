@@ -58,6 +58,8 @@ type TelegramBreakerAlertConfig struct {
 
 type TelegramAgentConfig struct {
 	Enabled                  *bool    `json:"enabled,omitempty"`
+	BaseURL                  string   `json:"base_url"`
+	APIKey                   string   `json:"api_key"`
 	Model                    string   `json:"model"`
 	SystemPrompt             string   `json:"system_prompt"`
 	MaxHistoryMessages       int      `json:"max_history_messages"`

@@ -893,6 +893,8 @@ export interface TelegramBreakerAlertConfig {
 
 export interface TelegramAgentConfig {
   enabled?: boolean;
+  base_url?: string;
+  api_key?: string;
   model: string;
   system_prompt: string;
   max_history_messages: number;
@@ -1050,6 +1052,12 @@ export const configAPI = {
   runTelegramBreakerAlertTest: () =>
     apiRequest<{ status: string }>(`/config/breaker-alert-tg/test`, {
       method: 'POST',
+    }),
+
+  getTelegramAgentModels: (data: { base_url: string; api_key: string }) =>
+    apiRequest<ProviderModel[]>(`/config/telegram-agent/models`, {
+      method: 'POST',
+      body: JSON.stringify(data),
     }),
 };
 

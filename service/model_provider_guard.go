@@ -13,7 +13,7 @@ import (
 
 const (
 	modelProviderAutoDisableThreshold = 10
-	modelProviderAutoDisableWindow    = 30 * time.Second
+	modelProviderAutoDisableWindow    = time.Minute
 	modelProviderAutoRecoverAfter     = 5 * time.Minute
 	modelProviderAutoRecoverInterval  = 30 * time.Second
 	modelProviderAutoDisableWorkers   = 4

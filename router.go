@@ -233,6 +233,7 @@ func registerAuthKeyRoutes(api *gin.RouterGroup) {
 func registerConfigRoutes(api *gin.RouterGroup) {
 	api.GET("/config/:key", adminhandler.GetConfigByKey)
 	api.PUT("/config/:key", adminhandler.UpdateConfigByKey)
+	api.POST("/config/telegram-agent/models", adminhandler.GetTelegramAgentDirectModels)
 	api.POST("/config/model-price-sync/run", adminhandler.RunModelPriceSync)
 	api.POST("/config/breaker-alert-tg/test", adminhandler.RunTelegramBreakerAlertTest)
 }

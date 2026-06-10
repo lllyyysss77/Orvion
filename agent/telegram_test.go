@@ -176,148 +176,73 @@ func TestReadTelegramAgentOpenAIStreamWithToolsCollectsToolCalls(t *testing.T) {
 	}
 }
 
-func TestSelectTelegramAgentModelProviderUsesInterfaceBridge(t *testing.T) {
+func TestBuildTelegramAgentDirectProviderPoolUsesDirectConfig(t *testing.T) {
 	previousDB := models.DB
 	defer func() {
 		models.DB = previousDB
 	}()
+	models.DB = nil
 
-	db, err := gorm.Open(sqlite.Open("file:tg_agent_bridge_select_test?mode=memory&cache=shared"), &gorm.Config{})
+	pool, err := buildTelegramAgentDirectProviderPool(models.TelegramAgentConfig{
+		BaseURL: "https://api.example.com/v1/chat/completions",
+		APIKey:  "sk-test",
+		Model:   "gpt-direct",
+	}, true)
 	if err != nil {
-		t.Fatalf("初始化测试数据库失败: %v", err)
-	}
-	models.DB = db
-	if err := db.AutoMigrate(&models.Model{}, &models.Provider{}, &models.ModelWithProvider{}); err != nil {
-		t.Fatalf("迁移测试表失败: %v", err)
+		t.Fatalf("加载直连 TG Agent 提供商失败: %v", err)
 	}
 
-	model := models.Model{Name: "tg-agent-test", Status: 1, TimeOut: 60}
-	if err := db.Create(&model).Error; err != nil {
-		t.Fatalf("创建模型失败: %v", err)
+	selected, ok := pool.Candidates[1]
+	if !ok {
+		t.Fatalf("期望直连候选提供商存在: %+v", pool.Candidates)
 	}
-	provider := models.Provider{
-		Name:                       "responses-only",
-		Config:                     `{"base_url":"https://example.com/v1","api_key":"test"}`,
-		Capabilities:               models.ProviderCapabilities([]string{"openai"}),
-		InterfaceConversionEnabled: 1,
-		InterfaceConversionTarget:  "responses",
+	if selected.ProviderName != "TG Agent 直连" || selected.ProviderModel != "gpt-direct" {
+		t.Fatalf("直连提供商信息不正确: %+v", selected)
 	}
-	if err := db.Create(&provider).Error; err != nil {
-		t.Fatalf("创建提供商失败: %v", err)
-	}
-	if err := db.Create(&models.ModelWithProvider{
-		ModelID:       model.ID,
-		ProviderID:    provider.ID,
-		ProviderModel: "upstream-model",
-		Status:        1,
-		Weight:        1,
-	}).Error; err != nil {
-		t.Fatalf("创建模型提供商关联失败: %v", err)
+	if selected.ProviderStyle != consts.StyleOpenAI || selected.responseStyle() != consts.StyleOpenAI {
+		t.Fatalf("直连提供商应使用 OpenAI 兼容格式: %+v", selected)
 	}
 
-	selected, err := selectTelegramAgentModelProvider(context.Background(), models.TelegramAgentConfig{Model: model.Name})
-	if err != nil {
-		t.Fatalf("选择 TG Agent 提供商失败: %v", err)
+	var cfg map[string]string
+	if err := json.Unmarshal([]byte(selected.ProviderConfig), &cfg); err != nil {
+		t.Fatalf("解析直连提供商配置失败: %v", err)
 	}
-	if !selected.BridgePlan.Enabled {
-		t.Fatalf("期望启用接口转换计划: %+v", selected)
+	if cfg["base_url"] != "https://api.example.com/v1" {
+		t.Fatalf("直连 base_url 归一化不正确: %s", cfg["base_url"])
 	}
-	if selected.ProviderStyle != consts.StyleOpenAIRes || selected.responseStyle() != consts.StyleOpenAI {
-		t.Fatalf("接口转换风格不正确，provider=%s response=%s", selected.ProviderStyle, selected.responseStyle())
-	}
-	if !selected.supportsFunctionTools() {
-		t.Fatalf("桥接到 Chat 后应支持 TG Agent 工具调用")
+	if cfg["api_key"] != "sk-test" {
+		t.Fatalf("直连 api_key 不正确: %s", cfg["api_key"])
 	}
 }
 
-func TestStreamTelegramAgentReplyRetriesAndSwitchesProvider(t *testing.T) {
+func TestStreamTelegramAgentReplyRetriesDirectProvider(t *testing.T) {
 	previousDB := models.DB
 	defer func() {
 		models.DB = previousDB
 	}()
+	models.DB = nil
 
 	previousExecutor := telegramAgentProviderRequestExecutor
 	defer func() {
 		telegramAgentProviderRequestExecutor = previousExecutor
 	}()
 
-	db, err := gorm.Open(sqlite.Open("file:tg_agent_retry_switch_test?mode=memory&cache=shared"), &gorm.Config{})
-	if err != nil {
-		t.Fatalf("初始化测试数据库失败: %v", err)
-	}
-	models.DB = db
-	if err := db.AutoMigrate(
-		&models.Model{},
-		&models.Provider{},
-		&models.ModelWithProvider{},
-		&models.AuthKey{},
-		&models.ChatLog{},
-		&models.ChatIO{},
-		&models.Config{},
-		&models.ModelPrice{},
-	); err != nil {
-		t.Fatalf("迁移测试表失败: %v", err)
-	}
-	if err := db.Table(models.ChatLogMonthlyTableName(time.Now())).AutoMigrate(&models.ChatLog{}); err != nil {
-		t.Fatalf("迁移日志月表失败: %v", err)
-	}
-
-	model := models.Model{
-		Name:     "tg-agent-retry-test",
-		Status:   1,
-		MaxRetry: 3,
-		TimeOut:  10,
-		Strategy: consts.BalancerRotor,
-	}
-	if err := db.Create(&model).Error; err != nil {
-		t.Fatalf("创建模型失败: %v", err)
-	}
-	failedProvider := models.Provider{
-		Name:         "失败提供商",
-		Config:       `{"base_url":"https://failed.example/v1","api_key":"bad"}`,
-		Capabilities: models.ProviderCapabilities([]string{"chat"}),
-	}
-	successProvider := models.Provider{
-		Name:         "成功提供商",
-		Config:       `{"base_url":"https://success.example/v1","api_key":"good"}`,
-		Capabilities: models.ProviderCapabilities([]string{"chat"}),
-	}
-	if err := db.Create(&failedProvider).Error; err != nil {
-		t.Fatalf("创建失败提供商失败: %v", err)
-	}
-	if err := db.Create(&successProvider).Error; err != nil {
-		t.Fatalf("创建成功提供商失败: %v", err)
-	}
-	if err := db.Create(&models.ModelWithProvider{
-		ModelID:       model.ID,
-		ProviderID:    failedProvider.ID,
-		ProviderModel: "gpt-5.5",
-		Status:        1,
-		Weight:        1,
-	}).Error; err != nil {
-		t.Fatalf("创建失败关联失败: %v", err)
-	}
-	if err := db.Create(&models.ModelWithProvider{
-		ModelID:       model.ID,
-		ProviderID:    successProvider.ID,
-		ProviderModel: "gpt-5.5",
-		Status:        1,
-		Weight:        1,
-	}).Error; err != nil {
-		t.Fatalf("创建成功关联失败: %v", err)
-	}
-
+	attempts := 0
 	telegramAgentProviderRequestExecutor = func(ctx context.Context, selected selectedModelProvider, body []byte, stream bool, startedAt time.Time) (*http.Response, int, error) {
-		switch selected.ProviderName {
-		case failedProvider.Name:
+		attempts++
+		if selected.ProviderName != "TG Agent 直连" || selected.ProviderModel != "gpt-direct" {
+			return nil, 0, fmt.Errorf("未预期的直连提供商: %+v", selected)
+		}
+		switch attempts {
+		case 1:
 			return &http.Response{
 				StatusCode: http.StatusBadGateway,
 				Header:     http.Header{},
 				Body:       io.NopCloser(strings.NewReader("error code: 502")),
 			}, 5, nil
-		case successProvider.Name:
+		case 2:
 			streamBody := strings.Join([]string{
-				`data: {"choices":[{"delta":{"content":"切换成功"}}]}`,
+				`data: {"choices":[{"delta":{"content":"重试成功"}}]}`,
 				"",
 				`data: [DONE]`,
 				"",
@@ -328,26 +253,30 @@ func TestStreamTelegramAgentReplyRetriesAndSwitchesProvider(t *testing.T) {
 				Body:       io.NopCloser(strings.NewReader(streamBody)),
 			}, 8, nil
 		default:
-			return nil, 0, fmt.Errorf("未预期的提供商: %s", selected.ProviderName)
+			return nil, 0, fmt.Errorf("未预期的重试次数: %d", attempts)
 		}
 	}
 
 	var answer strings.Builder
-	result, err := streamTelegramAgentReply(context.Background(), models.TelegramAgentConfig{Model: model.Name}, nil, "测试重试", nil, 1, func(delta string) error {
+	result, err := streamTelegramAgentReply(context.Background(), models.TelegramAgentConfig{
+		BaseURL: "https://api.example.com/v1",
+		APIKey:  "sk-test",
+		Model:   "gpt-direct",
+	}, nil, "测试重试", nil, 1, func(delta string) error {
 		answer.WriteString(delta)
 		return nil
 	}, nil)
 	if err != nil {
-		t.Fatalf("TG Agent 重试切换后仍失败: %v", err)
+		t.Fatalf("TG Agent 直连重试后仍失败: %v", err)
 	}
-	if answer.String() != "切换成功" {
-		t.Fatalf("期望收到成功提供商回复，实际为 %q", answer.String())
+	if answer.String() != "重试成功" {
+		t.Fatalf("期望收到重试成功回复，实际为 %q", answer.String())
 	}
-	if result.Selected.ProviderName != successProvider.Name {
-		t.Fatalf("期望切换到成功提供商，实际为 %s", result.Selected.ProviderName)
+	if result.Selected.ProviderName != "TG Agent 直连" {
+		t.Fatalf("期望使用直连提供商，实际为 %s", result.Selected.ProviderName)
 	}
-	if result.Retry == 0 {
-		t.Fatalf("期望成功请求记录 retry > 0，实际为 %d", result.Retry)
+	if result.Retry != 1 || attempts != 2 {
+		t.Fatalf("期望直连重试一次后成功，retry=%d attempts=%d", result.Retry, attempts)
 	}
 }
 

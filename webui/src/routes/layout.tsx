@@ -10,7 +10,6 @@ import {
   Bot,
   Boxes,
   CalendarClock,
-  ChevronsUpDown,
   Cloud,
   FileTerminal,
   House,
@@ -21,7 +20,6 @@ import {
   ScrollText,
   Settings2,
   Sparkles,
-  UserCircle2,
   X,
 } from "lucide-react";
 import { checkVersionUpdate, configAPI, getVersion, type TelegramAgentConfig, type VersionUpdateCheck } from "@/lib/api";
@@ -58,7 +56,7 @@ const navSections = [
       { to: "/models", label: "模型", icon: Boxes },
       { to: "/auth-keys", label: "API 密钥", icon: KeyRound },
       { to: "/skills", label: "Skills", icon: Sparkles },
-      { to: "/tg-agent", label: "TG Agent", icon: Bot },
+      { to: "/tg-agent", label: "Agent", icon: Bot },
       { to: "/tg-agent-schedules", label: "Agent 定时", icon: CalendarClock },
     ],
   },
@@ -446,68 +444,6 @@ export default function Layout() {
     ));
   };
 
-  const renderUserMenu = (mobile = false) => {
-    const collapsed = !mobile && sidebarCollapsed;
-
-    return (
-      <Popover>
-        <PopoverTrigger asChild>
-          <button
-            type="button"
-            className={cn(
-              "flex h-10 w-full items-center gap-2 rounded-[18px] px-2.5 py-2 text-left text-[13px] outline-none transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring",
-              collapsed && "mx-auto h-9 w-9 justify-center rounded-full p-0"
-            )}
-            title={collapsed ? "控制台用户" : undefined}
-          >
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/12 text-primary">
-              <UserCircle2 className="h-4 w-4" />
-            </div>
-            <div className={cn("grid flex-1 text-left text-[13px] leading-tight", collapsed && "hidden")}>
-              <span className="truncate font-semibold">控制台用户</span>
-              <span className="truncate text-[11px] text-sidebar-foreground/70">当前会话</span>
-            </div>
-            <ChevronsUpDown className={cn("ml-auto h-4 w-4 shrink-0", collapsed && "hidden")} />
-          </button>
-        </PopoverTrigger>
-        <PopoverContent
-          side={mobile ? "bottom" : "right"}
-          align="end"
-          sideOffset={8}
-          className="w-56 rounded-lg border-border/70 bg-popover/98 p-1"
-        >
-          <div className="flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/12 text-primary">
-              <UserCircle2 className="h-5 w-5" />
-            </div>
-            <div className="grid flex-1 leading-tight">
-              <span className="truncate font-semibold">控制台用户</span>
-              <span className="truncate text-xs text-muted-foreground">当前会话</span>
-            </div>
-          </div>
-          <div className="my-1 h-px bg-border/70" />
-          {!isAuthKeyToken ? (
-            <Link
-              to="/config"
-              className="flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors hover:bg-accent hover:text-accent-foreground"
-            >
-              <Settings2 className="h-4 w-4" />
-              系统配置
-            </Link>
-          ) : null}
-          <button
-            type="button"
-            onClick={handleLogout}
-            className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors hover:bg-accent hover:text-accent-foreground"
-          >
-            <LogOut className="h-4 w-4" />
-            退出登录
-          </button>
-        </PopoverContent>
-      </Popover>
-    );
-  };
-
   const renderDesktopSidebar = () => {
     return (
       <aside
@@ -524,7 +460,6 @@ export default function Layout() {
               </div>
               <div className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-sidebar to-transparent" />
             </div>
-            <div className="flex flex-col gap-1 p-1.5">{renderUserMenu()}</div>
           </div>
         </div>
       </aside>
@@ -573,7 +508,6 @@ export default function Layout() {
               </Button>
             </div>
             <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-auto">{renderNavGroups(true)}</div>
-            <div className="flex flex-col gap-1 border-t border-sidebar-border/70 p-1.5">{renderUserMenu(true)}</div>
           </div>
         </aside>
       </div>

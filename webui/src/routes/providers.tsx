@@ -678,33 +678,35 @@ export default function ProvidersPage() {
                 )}
               />
 
-              <FormField
-                control={form.control}
-                name="console"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>控制台地址</FormLabel>
-                    <FormControl>
-                      <Input {...field} placeholder="https://example.com/console" />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
+              <div className="grid gap-4 md:grid-cols-2">
+                <FormField
+                  control={form.control}
+                  name="console"
+                  render={({ field }) => (
+                    <FormItem className="min-w-0">
+                      <FormLabel>控制台地址</FormLabel>
+                      <FormControl>
+                        <Input {...field} placeholder="https://example.com/console" />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
 
-              <FormField
-                control={form.control}
-                name="proxy_url"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>代理地址（可选）</FormLabel>
-                    <FormControl>
-                      <Input {...field} placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080" />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
+                <FormField
+                  control={form.control}
+                  name="proxy_url"
+                  render={({ field }) => (
+                    <FormItem className="min-w-0">
+                      <FormLabel>代理地址（可选）</FormLabel>
+                      <FormControl>
+                        <Input {...field} placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080" />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
 
               <FormField
                 control={form.control}

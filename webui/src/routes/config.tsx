@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { useForm } from 'react-hook-form';
+import { useForm, type FieldErrors } from 'react-hook-form';
 import { z } from 'zod';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -31,13 +31,14 @@ import {
   type Model,
   type TelegramBreakerAlertConfig,
   type TelegramAgentConfig,
+  type ProviderModel,
   type ModelPriceSyncConfig,
   type SystemLogCleanupConfig,
   type GitHubVersionCheckConfig,
   type LoadingUIConfig,
 } from '@/lib/api';
 import { toast } from 'sonner';
-import { Settings, Network, Coins, FileClock, Type, Send, Github, Sparkles, Bot, Maximize2 } from 'lucide-react';
+import { Settings, Network, Coins, FileClock, Type, Send, Github, Sparkles, Bot, Maximize2, Eye, EyeOff, RefreshCw } from 'lucide-react';
 import {
   applyLoadingUIStyleSetting,
   loadingUIValues,
@@ -88,11 +89,25 @@ const telegramAgentSchema = z.object({
   tool_confirmation_required: z.boolean(),
   skills_enabled: z.boolean(),
   skills_embedding_model: z.string().trim(),
+  base_url: z.string().trim(),
+  api_key: z.string().trim(),
   model: z.string().trim(),
   system_prompt: z.string().trim(),
   max_history_messages: z.number().min(1, { message: '上下文消息数必须大于 0' }),
   max_tokens: z.number().min(1, { message: '最大输出 Tokens 必须大于 0' }),
   edit_interval_ms: z.number().min(300, { message: '编辑间隔不能低于 300ms' }),
+}).refine((data) => !data.enabled || data.base_url.length > 0, {
+  message: '启用 Agent 时必须填写请求 URL',
+  path: ['base_url'],
+}).refine((data) => data.base_url.length === 0 || isValidURL(data.base_url), {
+  message: '请求 URL 格式不正确',
+  path: ['base_url'],
+}).refine((data) => !data.enabled || data.api_key.length > 0, {
+  message: '启用 Agent 时必须填写 API Key',
+  path: ['api_key'],
+}).refine((data) => !data.enabled || data.model.length > 0, {
+  message: '启用 Agent 时必须填写模型名',
+  path: ['model'],
 });
 
 const systemLogCleanupSchema = z.object({
@@ -130,6 +145,8 @@ const telegramAgentDefaultValues: TelegramAgentForm = {
   tool_confirmation_required: true,
   skills_enabled: false,
   skills_embedding_model: '',
+  base_url: '',
+  api_key: '',
   model: '',
   system_prompt: '你是 Orvion 的 Telegram 对话助手。请用简体中文回答，保持简洁、准确、友好。',
   max_history_messages: 20,
@@ -173,31 +190,21 @@ const applyUIFontSetting = (font: UIFontForm["font"]) => {
 export default function ConfigPage() {
   const [loading, setLoading] = useState(true);
   const [modelOptions, setModelOptions] = useState<Model[]>([]);
-  const [telegramAgentModelSearch, setTelegramAgentModelSearch] = useState('');
-  const [telegramAgentModelSelectOpen, setTelegramAgentModelSelectOpen] = useState(false);
   const [priceSyncing, setPriceSyncing] = useState(false);
   const [tgTesting, setTgTesting] = useState(false);
   const [telegramAgentSaving, setTelegramAgentSaving] = useState(false);
   const [telegramAgentPromptDialogOpen, setTelegramAgentPromptDialogOpen] = useState(false);
+  const [telegramAgentModelDialogOpen, setTelegramAgentModelDialogOpen] = useState(false);
+  const [telegramAgentAPIKeyVisible, setTelegramAgentAPIKeyVisible] = useState(false);
+  const [telegramAgentModelsLoading, setTelegramAgentModelsLoading] = useState(false);
+  const [telegramAgentModelOptions, setTelegramAgentModelOptions] = useState<ProviderModel[]>([]);
+  const [telegramAgentModelDropdownOpen, setTelegramAgentModelDropdownOpen] = useState(false);
   const [displayConfigSaving, setDisplayConfigSaving] = useState(false);
   const [coreConfigSaving, setCoreConfigSaving] = useState(false);
-  const telegramAgentModelSearchInputRef = useRef<HTMLInputElement | null>(null);
-  const filteredTelegramAgentModelOptions = useMemo(() => {
-    const keyword = telegramAgentModelSearch.trim().toLowerCase();
-    if (!keyword) return modelOptions;
-    return modelOptions.filter((model) => model.Name.toLowerCase().includes(keyword));
-  }, [modelOptions, telegramAgentModelSearch]);
   const embeddingModelOptions = useMemo(() => {
     const filtered = modelOptions.filter((model) => (model.Capabilities ?? []).includes('embedding'));
     return filtered.length > 0 ? filtered : modelOptions;
   }, [modelOptions]);
-  useEffect(() => {
-    if (!telegramAgentModelSelectOpen) return;
-    const frame = window.requestAnimationFrame(() => {
-      telegramAgentModelSearchInputRef.current?.focus();
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [filteredTelegramAgentModelOptions.length, telegramAgentModelSearch, telegramAgentModelSelectOpen]);
   const proxyForm = useForm<AnthropicProxyForm>({
     resolver: zodResolver(anthropicProxySchema),
     defaultValues: {
@@ -305,6 +312,8 @@ export default function ConfigPage() {
           tool_confirmation_required: agentCfg.tool_confirmation_required !== false,
           skills_enabled: agentCfg.skills_enabled === true,
           skills_embedding_model: agentCfg.skills_embedding_model || '',
+          base_url: agentCfg.base_url || '',
+          api_key: agentCfg.api_key || '',
           model: agentCfg.model || '',
           system_prompt: agentCfg.system_prompt || telegramAgentDefaultValues.system_prompt,
           max_history_messages: Number(agentCfg.max_history_messages || telegramAgentDefaultValues.max_history_messages),
@@ -428,6 +437,8 @@ export default function ConfigPage() {
     const payload: TelegramAgentConfig = {
       ...values,
       skills_embedding_model: values.skills_embedding_model.trim(),
+      base_url: values.base_url.trim(),
+      api_key: values.api_key.trim(),
       model: values.model.trim(),
       system_prompt: values.system_prompt.trim(),
     };
@@ -438,12 +449,62 @@ export default function ConfigPage() {
       window.dispatchEvent(new CustomEvent(TELEGRAM_AGENT_CONFIG_CHANGED_EVENT, {
         detail: { enabled: payload.enabled !== false },
       }));
+      setTelegramAgentModelDialogOpen(false);
       toast.success('TG Agent 配置已保存');
     } catch (error) {
       console.error('Failed to save telegram agent config:', error);
       toast.error('保存 TG Agent 配置失败');
     } finally {
       setTelegramAgentSaving(false);
+    }
+  };
+
+  const handleFetchTelegramAgentModels = async () => {
+    const baseURL = telegramAgentForm.getValues('base_url').trim();
+	const apiKey = telegramAgentForm.getValues('api_key').trim();
+	if (!baseURL) {
+		setTelegramAgentModelDialogOpen(true);
+		telegramAgentForm.clearErrors('base_url');
+		return;
+	}
+    if (!isValidURL(baseURL)) {
+      setTelegramAgentModelDialogOpen(true);
+      telegramAgentForm.setError('base_url', { message: '请求 URL 格式不正确' });
+      return;
+    }
+    if (!apiKey) {
+      setTelegramAgentModelDialogOpen(true);
+      telegramAgentForm.setError('api_key', { message: '请先填写 API Key' });
+      return;
+    }
+
+    try {
+      setTelegramAgentModelsLoading(true);
+      const models = await configAPI.getTelegramAgentModels({ base_url: baseURL, api_key: apiKey });
+      const sortedModels = [...models].sort((a, b) => a.id.localeCompare(b.id));
+      setTelegramAgentModelOptions(sortedModels);
+      setTelegramAgentModelDropdownOpen(sortedModels.length > 0);
+      toast.success(`已获取 ${sortedModels.length} 个模型`);
+    } catch (error) {
+      console.error('Failed to fetch telegram agent models:', error);
+      setTelegramAgentModelOptions([]);
+      setTelegramAgentModelDropdownOpen(false);
+      toast.error(error instanceof Error ? error.message : '获取模型列表失败');
+    } finally {
+      setTelegramAgentModelsLoading(false);
+    }
+  };
+
+  const onTelegramAgentSubmitInvalid = (errors: FieldErrors<TelegramAgentForm>) => {
+    if (
+      errors.base_url ||
+      errors.api_key ||
+      errors.model ||
+      errors.max_history_messages ||
+      errors.max_tokens ||
+      errors.edit_interval_ms
+    ) {
+      setTelegramAgentModelDialogOpen(true);
     }
   };
 
@@ -546,15 +607,6 @@ export default function ConfigPage() {
       <div className="flex-1 min-h-0 overflow-y-auto">
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 xl:grid-cols-3">
           <Card className="rounded-2xl border border-border/60 bg-card/90 shadow-[0_18px_45px_rgba(0,0,0,0.08)]">
-            <CardHeader className="pb-2">
-              <CardTitle className="flex items-center gap-2 text-sm font-semibold">
-                <Settings className="size-4 text-emerald-600" />
-                系统显示配置
-              </CardTitle>
-              <CardDescription className="text-xs">
-                控制后台版本检查、界面字体与加载动效样式
-              </CardDescription>
-            </CardHeader>
             <CardContent className="space-y-3">
               <div className="space-y-3">
                 <div className="space-y-1">
@@ -815,12 +867,12 @@ export default function ConfigPage() {
                 TG Agent 配置
               </CardTitle>
               <CardDescription className="text-xs">
-                配置 Telegram 对话助手使用的模型与上下文参数。
+                配置 Telegram 对话助手的开关、工具能力与系统提示词。
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <Form {...telegramAgentForm}>
-                <form id="telegram-agent-form" onSubmit={telegramAgentForm.handleSubmit(onTelegramAgentSubmit)} className="space-y-4">
+                <form id="telegram-agent-form" onSubmit={telegramAgentForm.handleSubmit(onTelegramAgentSubmit, onTelegramAgentSubmitInvalid)} className="space-y-4">
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <FormField
                       control={telegramAgentForm.control}
@@ -902,6 +954,16 @@ export default function ConfigPage() {
                     />
                   </div>
 
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="h-9 w-full justify-start gap-2 text-sm sm:w-auto"
+                    onClick={() => setTelegramAgentModelDialogOpen(true)}
+                  >
+                    <Settings className="size-4 text-emerald-600" />
+                    Agent 模型配置
+                  </Button>
+
                   <FormField
                     control={telegramAgentForm.control}
                     name="system_prompt"
@@ -926,123 +988,6 @@ export default function ConfigPage() {
                       </FormItem>
                     )}
                   />
-
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 2xl:grid-cols-[minmax(0,1.35fr)_minmax(7rem,0.7fr)_minmax(7.5rem,0.8fr)_minmax(7.5rem,0.8fr)]">
-                    <FormField
-                      control={telegramAgentForm.control}
-                      name="model"
-                      render={({ field }) => (
-                        <FormItem className="min-w-0 space-y-1">
-                          <FormLabel className="text-xs text-muted-foreground">对话模型</FormLabel>
-                          <FormControl>
-                            <Select
-                              value={field.value || TELEGRAM_AGENT_AUTO_MODEL_VALUE}
-                              onValueChange={(value) => {
-                                field.onChange(value === TELEGRAM_AGENT_AUTO_MODEL_VALUE ? '' : value);
-                                setTelegramAgentModelSearch('');
-                              }}
-                              onOpenChange={(isOpen) => {
-                                setTelegramAgentModelSelectOpen(isOpen);
-                                if (!isOpen) setTelegramAgentModelSearch('');
-                              }}
-                            >
-                              <SelectTrigger className="h-9 w-full min-w-0 bg-background [&>span]:truncate">
-                                <SelectValue placeholder="选择对话模型" />
-                              </SelectTrigger>
-                              <SelectContent className="max-h-72">
-                                <div className="sticky top-0 z-10 bg-popover p-1">
-                                  <Input
-                                    ref={telegramAgentModelSearchInputRef}
-                                    value={telegramAgentModelSearch}
-                                    onChange={(event) => setTelegramAgentModelSearch(event.target.value)}
-                                    onKeyDown={(event) => event.stopPropagation()}
-                                    onPointerDown={(event) => event.stopPropagation()}
-                                    placeholder="搜索模型"
-                                    className="h-8 text-xs"
-                                  />
-                                </div>
-                                <SelectItem value={TELEGRAM_AGENT_AUTO_MODEL_VALUE}>自动选择启用模型</SelectItem>
-                                {filteredTelegramAgentModelOptions.map((model) => (
-                                  <SelectItem key={`${model.ID}-${model.Name}`} value={model.Name}>
-                                    {model.Name}
-                                  </SelectItem>
-                                ))}
-                                {filteredTelegramAgentModelOptions.length === 0 ? (
-                                  <div className="px-2 py-2 text-xs text-muted-foreground">无匹配模型</div>
-                                ) : null}
-                              </SelectContent>
-                            </Select>
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-
-                    <FormField
-                      control={telegramAgentForm.control}
-                      name="max_history_messages"
-                      render={({ field }) => (
-                        <FormItem className="min-w-0 space-y-1">
-                          <FormLabel className="text-xs text-muted-foreground">上下文数</FormLabel>
-                          <FormControl>
-                            <Input
-                              className="h-9"
-                              type="number"
-                              min={1}
-                              value={field.value}
-                              onChange={(event) => field.onChange(Number(event.target.value))}
-                            />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-
-                    <FormField
-                      control={telegramAgentForm.control}
-                      name="max_tokens"
-                      render={({ field }) => (
-                        <FormItem className="min-w-0 space-y-1">
-                          <FormLabel className="text-xs text-muted-foreground">输出 Tokens</FormLabel>
-                          <FormControl>
-                            <Input
-                              className="h-9"
-                              type="number"
-                              min={1}
-                              value={field.value}
-                              onChange={(event) => field.onChange(Number(event.target.value))}
-                            />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-
-                    <FormField
-                      control={telegramAgentForm.control}
-                      name="edit_interval_ms"
-                      render={({ field }) => (
-                        <FormItem className="min-w-0 space-y-1">
-                          <FormLabel className="text-xs text-muted-foreground">刷新间隔</FormLabel>
-                          <FormControl>
-                            <div className="relative">
-                              <Input
-                                className="h-9 pr-9"
-                                type="number"
-                                min={300}
-                                value={field.value}
-                                onChange={(event) => field.onChange(Number(event.target.value))}
-                              />
-                              <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">
-                                ms
-                              </span>
-                            </div>
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                  </div>
                 </form>
               </Form>
             </CardContent>
@@ -1248,6 +1193,234 @@ export default function ConfigPage() {
           </Card>
         </div>
       </div>
+
+      <Dialog
+        open={telegramAgentModelDialogOpen}
+        onOpenChange={(open) => {
+          setTelegramAgentModelDialogOpen(open);
+          if (!open) {
+            setTelegramAgentModelDropdownOpen(false);
+          }
+        }}
+      >
+        <DialogContent className="w-[92vw] !max-w-3xl overflow-hidden p-0">
+          <DialogHeader className="border-b border-border/70 px-5 py-4 pr-12">
+            <DialogTitle className="flex items-center gap-2 text-base">
+              <Settings className="size-4 text-emerald-600" />
+              Agent 模型配置
+            </DialogTitle>
+          </DialogHeader>
+          <div className="px-5 py-4">
+            <Form {...telegramAgentForm}>
+              <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                <FormField
+                  control={telegramAgentForm.control}
+                  name="base_url"
+                  render={({ field }) => (
+                    <FormItem className="min-w-0 space-y-1">
+                      <FormLabel className="text-xs text-muted-foreground">请求 URL</FormLabel>
+                      <FormControl>
+                        <Input
+                          className="h-9"
+                          placeholder="https://api.example.com/v1"
+                          {...field}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={telegramAgentForm.control}
+                  name="api_key"
+                  render={({ field }) => (
+                    <FormItem className="min-w-0 space-y-1">
+                      <FormLabel className="text-xs text-muted-foreground">API Key</FormLabel>
+                      <FormControl>
+                        <div className="relative">
+                          <Input
+                            className="h-9 pr-10"
+                            type={telegramAgentAPIKeyVisible ? 'text' : 'password'}
+                            placeholder="sk-..."
+                            autoComplete="off"
+                            {...field}
+                          />
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            className="absolute right-1 top-1/2 h-7 w-7 -translate-y-1/2 p-0 text-muted-foreground hover:text-foreground"
+                            onClick={() => setTelegramAgentAPIKeyVisible((visible) => !visible)}
+                            aria-label={telegramAgentAPIKeyVisible ? '隐藏 API Key' : '显示 API Key'}
+                            title={telegramAgentAPIKeyVisible ? '隐藏 API Key' : '显示 API Key'}
+                          >
+                            {telegramAgentAPIKeyVisible ? (
+                              <EyeOff className="size-4" />
+                            ) : (
+                              <Eye className="size-4" />
+                            )}
+                          </Button>
+                        </div>
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
+
+              <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <FormField
+                  control={telegramAgentForm.control}
+                  name="model"
+                  render={({ field }) => {
+                    const keyword = String(field.value || '').trim().toLowerCase();
+                    const filteredModels = keyword
+                      ? telegramAgentModelOptions.filter((model) => model.id.toLowerCase().includes(keyword))
+                      : telegramAgentModelOptions;
+                    return (
+                      <FormItem className="min-w-0 space-y-1 sm:col-span-2 lg:col-span-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <FormLabel className="text-xs text-muted-foreground">对话模型</FormLabel>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="h-7 gap-1.5 px-2 text-xs"
+                            disabled={telegramAgentModelsLoading}
+                            onClick={() => void handleFetchTelegramAgentModels()}
+                          >
+                            <RefreshCw className={telegramAgentModelsLoading ? 'size-3.5 animate-spin' : 'size-3.5'} />
+                            {telegramAgentModelsLoading ? '获取中' : '获取模型'}
+                          </Button>
+                        </div>
+                        <FormControl>
+                          <div className="relative">
+                            <Input
+                              className="h-9"
+                              placeholder="gpt-5.5"
+                              {...field}
+                              onChange={(event) => {
+                                field.onChange(event.target.value);
+                                if (telegramAgentModelOptions.length > 0) {
+                                  setTelegramAgentModelDropdownOpen(true);
+                                }
+                              }}
+                              onFocus={() => {
+                                if (telegramAgentModelOptions.length > 0) {
+                                  setTelegramAgentModelDropdownOpen(true);
+                                }
+                              }}
+                              onBlur={() => {
+                                window.setTimeout(() => setTelegramAgentModelDropdownOpen(false), 120);
+                              }}
+                            />
+                            {telegramAgentModelDropdownOpen && telegramAgentModelOptions.length > 0 ? (
+                              <div className="absolute left-0 right-0 top-full z-50 mt-1 max-h-44 overflow-y-auto rounded-md border border-border/70 bg-popover p-1 text-popover-foreground shadow-lg">
+                                {filteredModels.length > 0 ? (
+                                  filteredModels.slice(0, 100).map((model) => (
+                                    <button
+                                      key={model.id}
+                                      type="button"
+                                      className="flex h-8 w-full items-center rounded-sm px-2 text-left text-xs hover:bg-accent hover:text-accent-foreground"
+                                      onMouseDown={(event) => {
+                                        event.preventDefault();
+                                        field.onChange(model.id);
+                                        setTelegramAgentModelDropdownOpen(false);
+                                      }}
+                                      title={model.id}
+                                    >
+                                      <span className="truncate">{model.id}</span>
+                                    </button>
+                                  ))
+                                ) : (
+                                  <div className="px-2 py-2 text-xs text-muted-foreground">无匹配模型</div>
+                                )}
+                              </div>
+                            ) : null}
+                          </div>
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    );
+                  }}
+                />
+
+                <FormField
+                  control={telegramAgentForm.control}
+                  name="max_history_messages"
+                  render={({ field }) => (
+                    <FormItem className="min-w-0 space-y-1">
+                      <FormLabel className="text-xs text-muted-foreground">上下文数</FormLabel>
+                      <FormControl>
+                        <Input
+                          className="h-9"
+                          type="number"
+                          min={1}
+                          value={field.value}
+                          onChange={(event) => field.onChange(Number(event.target.value))}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={telegramAgentForm.control}
+                  name="max_tokens"
+                  render={({ field }) => (
+                    <FormItem className="min-w-0 space-y-1">
+                      <FormLabel className="text-xs text-muted-foreground">输出 Tokens</FormLabel>
+                      <FormControl>
+                        <Input
+                          className="h-9"
+                          type="number"
+                          min={1}
+                          value={field.value}
+                          onChange={(event) => field.onChange(Number(event.target.value))}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={telegramAgentForm.control}
+                  name="edit_interval_ms"
+                  render={({ field }) => (
+                    <FormItem className="min-w-0 space-y-1">
+                      <FormLabel className="text-xs text-muted-foreground">刷新间隔</FormLabel>
+                      <FormControl>
+                        <div className="relative">
+                          <Input
+                            className="h-9 pr-9"
+                            type="number"
+                            min={300}
+                            value={field.value}
+                            onChange={(event) => field.onChange(Number(event.target.value))}
+                          />
+                          <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">
+                            ms
+                          </span>
+                        </div>
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
+            </Form>
+          </div>
+          <DialogFooter className="border-t border-border/70 px-5 py-4">
+            <Button type="button" variant="outline" onClick={() => setTelegramAgentModelDialogOpen(false)}>
+              完成
+            </Button>
+            <Button type="submit" form="telegram-agent-form" disabled={telegramAgentSaving}>
+              {telegramAgentSaving ? '保存中...' : '保存配置'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={telegramAgentPromptDialogOpen} onOpenChange={setTelegramAgentPromptDialogOpen}>
         <DialogContent className="flex h-[82vh] w-[92vw] !max-w-5xl flex-col overflow-hidden p-0">

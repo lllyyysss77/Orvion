@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -20,7 +21,6 @@ import (
 	"github.com/racio/orvion/consts"
 	"github.com/racio/orvion/models"
 	"github.com/racio/orvion/pkg"
-	"github.com/racio/orvion/providers"
 	"github.com/racio/orvion/service/ifacebridge"
 	runtimesvc "github.com/racio/orvion/service/runtime"
 	"github.com/tidwall/gjson"
@@ -30,6 +30,8 @@ import (
 
 const (
 	envTelegramAgentEnabled      = "TG_AGENT_ENABLED"
+	envTelegramAgentBaseURL      = "TG_AGENT_BASE_URL"
+	envTelegramAgentAPIKey       = "TG_AGENT_API_KEY"
 	envTelegramAgentModel        = "TG_AGENT_MODEL"
 	envTelegramAgentSystemPrompt = "TG_AGENT_SYSTEM_PROMPT"
 	envTelegramAgentMaxHistory   = "TG_AGENT_MAX_HISTORY"
@@ -87,7 +89,6 @@ type chatSession struct {
 }
 
 type selectedModelProvider struct {
-	ModelID         uint
 	ModelName       string
 	ProviderModel   string
 	ProviderName    string
@@ -104,14 +105,12 @@ type selectedModelProvider struct {
 }
 
 type telegramAgentModelProviderPool struct {
-	ModelID         uint
-	ModelName       string
-	FallbackModelID uint
-	Candidates      map[uint]selectedModelProvider
-	WeightItems     map[uint]int
-	MaxRetry        int
-	Strategy        string
-	Breaker         bool
+	ModelName   string
+	Candidates  map[uint]selectedModelProvider
+	WeightItems map[uint]int
+	MaxRetry    int
+	Strategy    string
+	Breaker     bool
 }
 
 type telegramAgentProviderAttempt struct {
@@ -332,7 +331,7 @@ func runTelegramAgentToolResultFollowup(ctx context.Context, client TelegramClie
 	if err != nil {
 		return err
 	}
-	pool, err := loadTelegramAgentModelProviderPool(ctx, cfg, 0, false)
+	pool, err := buildTelegramAgentDirectProviderPool(cfg, false)
 	if err != nil {
 		return err
 	}
@@ -531,7 +530,7 @@ func streamTelegramAgentReply(ctx context.Context, cfg models.TelegramAgentConfi
 		StartedAt: time.Now(),
 	}
 
-	pool, err := loadTelegramAgentModelProviderPool(ctx, cfg, 0, false)
+	pool, err := buildTelegramAgentDirectProviderPool(cfg, false)
 	if err != nil {
 		return result, err
 	}
@@ -540,7 +539,7 @@ func streamTelegramAgentReply(ctx context.Context, cfg models.TelegramAgentConfi
 		return streamTelegramAgentReplyWithFunctionTools(ctx, cfg, toolPool, history, prompt, attachments, chatID, onDelta, onStatus)
 	}
 
-	attempt, err := performTelegramAgentProviderRequestWithFallback(ctx, cfg, pool, false, true, result.StartedAt, func(requestCtx context.Context, selected selectedModelProvider) ([]byte, context.Context, error) {
+	attempt, err := performTelegramAgentProviderRequestWithRetry(ctx, pool, true, result.StartedAt, func(requestCtx context.Context, selected selectedModelProvider) ([]byte, context.Context, error) {
 		return buildTelegramAgentRequestBody(requestCtx, cfg, selected, history, prompt, attachments)
 	})
 	if err != nil {
@@ -562,149 +561,75 @@ func streamTelegramAgentReply(ctx context.Context, cfg models.TelegramAgentConfi
 	return result, err
 }
 
-func selectTelegramAgentModelProvider(ctx context.Context, cfg models.TelegramAgentConfig) (selectedModelProvider, error) {
-	pool, err := loadTelegramAgentModelProviderPool(ctx, cfg, 0, false)
+func buildTelegramAgentDirectProviderPool(cfg models.TelegramAgentConfig, requireFunctionTools bool) (telegramAgentModelProviderPool, error) {
+	baseURL, err := normalizeTelegramAgentDirectBaseURL(cfg.BaseURL)
 	if err != nil {
-		return selectedModelProvider{}, err
+		return telegramAgentModelProviderPool{}, err
 	}
-	balancer := runtimesvc.NewBalancer(pool.Strategy, pool.Breaker, cloneTelegramAgentWeightItems(pool.WeightItems))
-	id, err := balancer.Pop()
+	apiKey := strings.TrimSpace(cfg.APIKey)
+	modelName := strings.TrimSpace(cfg.Model)
+	if apiKey == "" {
+		return telegramAgentModelProviderPool{}, errors.New("TG Agent 直连 API Key 不能为空")
+	}
+	if modelName == "" {
+		return telegramAgentModelProviderPool{}, errors.New("TG Agent 直连模型名不能为空")
+	}
+
+	providerConfig, err := json.Marshal(map[string]string{
+		"base_url": baseURL,
+		"api_key":  apiKey,
+	})
 	if err != nil {
-		return selectedModelProvider{}, err
+		return telegramAgentModelProviderPool{}, err
 	}
-	selected, ok := pool.Candidates[id]
-	if !ok {
-		return selectedModelProvider{}, fmt.Errorf("TG Agent 模型 %s 的提供商候选不存在: %d", pool.ModelName, id)
+
+	selected := selectedModelProvider{
+		ModelName:       modelName,
+		ProviderModel:   modelName,
+		ProviderName:    "TG Agent 直连",
+		ProviderConfig:  string(providerConfig),
+		ProviderStyle:   consts.StyleOpenAI,
+		ClientStyle:     consts.StyleOpenAI,
+		TimeoutSeconds:  90,
+		CustomerHeaders: map[string]string{},
 	}
-	return selected, nil
+	if requireFunctionTools && !selected.supportsFunctionTools() {
+		return telegramAgentModelProviderPool{}, errors.New("TG Agent 直连模型不支持 function call")
+	}
+
+	const directProviderID uint = 1
+	return telegramAgentModelProviderPool{
+		ModelName:   modelName,
+		Candidates:  map[uint]selectedModelProvider{directProviderID: selected},
+		WeightItems: map[uint]int{directProviderID: 1},
+		MaxRetry:    2,
+		Strategy:    consts.BalancerRotor,
+		Breaker:     false,
+	}, nil
 }
 
-func loadTelegramAgentModelProviderPool(ctx context.Context, cfg models.TelegramAgentConfig, fallbackModelID uint, requireFunctionTools bool) (telegramAgentModelProviderPool, error) {
-	if models.DB == nil {
-		return telegramAgentModelProviderPool{}, errors.New("数据库未初始化")
+func normalizeTelegramAgentDirectBaseURL(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", errors.New("TG Agent 直连请求 URL 不能为空")
 	}
 
-	modelQuery := models.DB.WithContext(ctx).Where("status = ?", 1)
-	if fallbackModelID > 0 {
-		modelQuery = modelQuery.Where("id = ?", fallbackModelID)
-	} else if modelName := strings.TrimSpace(cfg.Model); modelName != "" {
-		modelQuery = modelQuery.Where("name = ?", modelName)
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return "", fmt.Errorf("TG Agent 直连请求 URL 无效: %w", err)
+	}
+	if strings.TrimSpace(parsed.Scheme) == "" || strings.TrimSpace(parsed.Host) == "" {
+		return "", errors.New("TG Agent 直连请求 URL 必须包含 scheme 和 host")
 	}
 
-	var model models.Model
-	if err := modelQuery.Order("id ASC").First(&model).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			if fallbackModelID > 0 {
-				return telegramAgentModelProviderPool{}, fmt.Errorf("未找到可用 TG Agent 回退模型：%d", fallbackModelID)
-			}
-			if strings.TrimSpace(cfg.Model) != "" {
-				return telegramAgentModelProviderPool{}, fmt.Errorf("未找到可用 TG Agent 模型：%s", cfg.Model)
-			}
-			return telegramAgentModelProviderPool{}, errors.New("未找到可用 TG Agent 模型")
-		}
-		return telegramAgentModelProviderPool{}, err
+	path := strings.TrimRight(parsed.Path, "/")
+	if strings.HasSuffix(path, "/chat/completions") {
+		path = strings.TrimSuffix(path, "/chat/completions")
 	}
-
-	var associations []models.ModelWithProvider
-	now := time.Now()
-	if err := models.DB.WithContext(ctx).
-		Where("model_id = ? AND status = ?", model.ID, 1).
-		Where("(auto_disabled_until IS NULL OR auto_disabled_until <= ?)", now).
-		Order("weight DESC, id ASC").
-		Find(&associations).Error; err != nil {
-		return telegramAgentModelProviderPool{}, err
-	}
-	if len(associations) == 0 {
-		return telegramAgentModelProviderPool{}, fmt.Errorf("模型 %s 没有可用提供商", model.Name)
-	}
-
-	providerIDs := make([]uint, 0, len(associations))
-	for _, item := range associations {
-		providerIDs = append(providerIDs, item.ProviderID)
-	}
-
-	var providerList []models.Provider
-	if err := models.DB.WithContext(ctx).Where("id IN ?", providerIDs).Find(&providerList).Error; err != nil {
-		return telegramAgentModelProviderPool{}, err
-	}
-	providerByID := make(map[uint]models.Provider, len(providerList))
-	for _, provider := range providerList {
-		providerByID[provider.ID] = provider
-	}
-
-	candidates := make(map[uint]selectedModelProvider, len(associations))
-	weightItems := make(map[uint]int, len(associations))
-	for _, association := range associations {
-		provider, ok := providerByID[association.ProviderID]
-		if !ok {
-			continue
-		}
-		providerStyle, clientStyle, bridgePlan, ok := resolveTelegramAgentProviderInterface(provider)
-		if !ok {
-			continue
-		}
-
-		customHeaders := map[string]string{}
-		if strings.TrimSpace(association.CustomerHeaders) != "" {
-			if err := json.Unmarshal([]byte(association.CustomerHeaders), &customHeaders); err != nil {
-				slog.Warn("解析 TG Agent 自定义请求头失败", "model_with_provider_id", association.ID, "error", err)
-				customHeaders = map[string]string{}
-			}
-		}
-
-		timeoutSeconds := model.TimeOut
-		if timeoutSeconds <= 0 {
-			timeoutSeconds = 90
-		}
-
-		selected := selectedModelProvider{
-			ModelID:         model.ID,
-			ModelName:       model.Name,
-			ProviderModel:   association.ProviderModel,
-			ProviderName:    provider.Name,
-			ModelProviderID: association.ID,
-			ProviderConfig:  provider.Config,
-			ProviderProxy:   provider.ProxyURL,
-			ProviderStyle:   providerStyle,
-			ClientStyle:     clientStyle,
-			BridgePlan:      bridgePlan,
-			WithHeader:      association.WithHeader == 1,
-			CustomerHeaders: customHeaders,
-			TimeoutSeconds:  timeoutSeconds,
-			IOLog:           model.IOLog == 1,
-		}
-		if requireFunctionTools && !selected.supportsFunctionTools() {
-			continue
-		}
-		weight := association.Weight
-		if weight <= 0 {
-			weight = 1
-		}
-		candidates[association.ID] = selected
-		weightItems[association.ID] = weight
-	}
-
-	if len(candidates) == 0 {
-		if requireFunctionTools {
-			return telegramAgentModelProviderPool{}, fmt.Errorf("模型 %s 没有支持 function call 的可用提供商", model.Name)
-		}
-		return telegramAgentModelProviderPool{}, fmt.Errorf("模型 %s 没有支持对话接口的可用提供商", model.Name)
-	}
-
-	maxRetry := model.MaxRetry
-	if maxRetry <= 0 {
-		maxRetry = 1
-	}
-	return telegramAgentModelProviderPool{
-		ModelID:         model.ID,
-		ModelName:       model.Name,
-		FallbackModelID: model.FallbackModelID,
-		Candidates:      candidates,
-		WeightItems:     weightItems,
-		MaxRetry:        maxRetry,
-		Strategy:        model.Strategy,
-		Breaker:         model.Breaker == 1,
-	}, nil
+	parsed.Path = path
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return strings.TrimRight(parsed.String(), "/"), nil
 }
 
 func (pool telegramAgentModelProviderPool) functionToolPool() (telegramAgentModelProviderPool, bool) {
@@ -732,55 +657,6 @@ func cloneTelegramAgentWeightItems(items map[uint]int) map[uint]int {
 		cloned[key] = value
 	}
 	return cloned
-}
-
-func performTelegramAgentProviderRequestWithFallback(
-	ctx context.Context,
-	cfg models.TelegramAgentConfig,
-	pool telegramAgentModelProviderPool,
-	requireFunctionTools bool,
-	stream bool,
-	startedAt time.Time,
-	buildBody func(context.Context, selectedModelProvider) ([]byte, context.Context, error),
-) (telegramAgentProviderAttempt, error) {
-	return performTelegramAgentProviderRequestWithFallbackVisited(ctx, cfg, pool, requireFunctionTools, stream, startedAt, buildBody, map[uint]struct{}{})
-}
-
-func performTelegramAgentProviderRequestWithFallbackVisited(
-	ctx context.Context,
-	cfg models.TelegramAgentConfig,
-	pool telegramAgentModelProviderPool,
-	requireFunctionTools bool,
-	stream bool,
-	startedAt time.Time,
-	buildBody func(context.Context, selectedModelProvider) ([]byte, context.Context, error),
-	visited map[uint]struct{},
-) (telegramAgentProviderAttempt, error) {
-	if pool.ModelID > 0 {
-		visited[pool.ModelID] = struct{}{}
-	}
-
-	attempt, err := performTelegramAgentProviderRequestWithRetry(ctx, pool, stream, startedAt, buildBody)
-	if err == nil {
-		return attempt, nil
-	}
-	if pool.FallbackModelID == 0 {
-		return telegramAgentProviderAttempt{}, err
-	}
-	if _, ok := visited[pool.FallbackModelID]; ok {
-		return telegramAgentProviderAttempt{}, fmt.Errorf("%w; TG Agent 回退模型存在循环配置", err)
-	}
-
-	fallbackPool, fallbackErr := loadTelegramAgentModelProviderPool(ctx, cfg, pool.FallbackModelID, requireFunctionTools)
-	if fallbackErr != nil {
-		return telegramAgentProviderAttempt{}, fmt.Errorf("%w; TG Agent 回退模型不可用: %v", err, fallbackErr)
-	}
-	slog.Warn("TG Agent 模型全部提供商失败，尝试回退模型",
-		"model", pool.ModelName,
-		"fallback_model", fallbackPool.ModelName,
-		"fallback_model_id", fallbackPool.ModelID,
-	)
-	return performTelegramAgentProviderRequestWithFallbackVisited(ctx, cfg, fallbackPool, requireFunctionTools, stream, startedAt, buildBody, visited)
 }
 
 func performTelegramAgentProviderRequestWithRetry(
@@ -903,46 +779,6 @@ func recordTelegramAgentRetryLog(ctx context.Context, selected selectedModelProv
 		result.StartedAt = time.Now()
 	}
 	recordTelegramAgentLog(ctx, result, "", err)
-}
-
-func resolveTelegramAgentProviderInterface(provider models.Provider) (string, string, ifacebridge.Plan, bool) {
-	providerStyle := providers.ResolveStyle("", provider.Config)
-	if providerStyle == "" {
-		providerStyle = consts.StyleOpenAI
-	}
-
-	if models.ProviderSupportsEndpoint(provider.Capabilities, "chat") {
-		return providerStyle, providerStyle, ifacebridge.Plan{}, true
-	}
-
-	if plan, ok := ifacebridge.ResolvePlan(provider, "chat"); ok {
-		upstreamStyle := plan.UpstreamStyle()
-		if strings.TrimSpace(upstreamStyle) == "" {
-			return "", "", ifacebridge.Plan{}, false
-		}
-		return upstreamStyle, consts.StyleOpenAI, plan, true
-	}
-
-	nativeEndpoint := telegramAgentNativeEndpointForStyle(providerStyle)
-	if nativeEndpoint == "" || !models.ProviderSupportsEndpoint(provider.Capabilities, nativeEndpoint) {
-		return "", "", ifacebridge.Plan{}, false
-	}
-	return providerStyle, providerStyle, ifacebridge.Plan{}, true
-}
-
-func telegramAgentNativeEndpointForStyle(style string) string {
-	switch style {
-	case consts.StyleOpenAI:
-		return "chat"
-	case consts.StyleOpenAIRes:
-		return "responses"
-	case consts.StyleAnthropic:
-		return "messages"
-	case consts.StyleGemini:
-		return "chat"
-	default:
-		return ""
-	}
 }
 
 func buildTelegramAgentRequestBody(ctx context.Context, cfg models.TelegramAgentConfig, selected selectedModelProvider, history []chatMessage, prompt string, attachments []TelegramInputAttachment) ([]byte, context.Context, error) {
@@ -1676,6 +1512,12 @@ func loadTelegramAgentConfig(ctx context.Context) (models.TelegramAgentConfig, e
 		SkillsDir:          telegramAgentDefaultSkillsDir,
 	}
 
+	if baseURL := strings.TrimSpace(os.Getenv(envTelegramAgentBaseURL)); baseURL != "" {
+		cfg.BaseURL = baseURL
+	}
+	if apiKey := strings.TrimSpace(os.Getenv(envTelegramAgentAPIKey)); apiKey != "" {
+		cfg.APIKey = apiKey
+	}
 	if modelName := strings.TrimSpace(os.Getenv(envTelegramAgentModel)); modelName != "" {
 		cfg.Model = modelName
 	}
@@ -1730,6 +1572,12 @@ func LoadTelegramAgentConfig(ctx context.Context) (models.TelegramAgentConfig, e
 func mergeTelegramAgentConfig(base models.TelegramAgentConfig, override models.TelegramAgentConfig) models.TelegramAgentConfig {
 	if override.Enabled != nil {
 		base.Enabled = override.Enabled
+	}
+	if strings.TrimSpace(override.BaseURL) != "" {
+		base.BaseURL = strings.TrimSpace(override.BaseURL)
+	}
+	if strings.TrimSpace(override.APIKey) != "" {
+		base.APIKey = strings.TrimSpace(override.APIKey)
 	}
 	if strings.TrimSpace(override.Model) != "" {
 		base.Model = strings.TrimSpace(override.Model)

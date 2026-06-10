@@ -114,6 +114,11 @@ type ConfigValueRequest struct {
 	Value string `json:"value" binding:"required"`
 }
 
+type TelegramAgentModelsRequest struct {
+	BaseURL string `json:"base_url"`
+	APIKey  string `json:"api_key"`
+}
+
 // GetProviders 获取所有提供商列表（支持名称搜索）
 func GetProviders(c *gin.Context) {
 	name := c.Query("name")
@@ -218,6 +223,67 @@ func GetProviderModels(c *gin.Context) {
 		return
 	}
 	common.Success(c, modelList)
+}
+
+func GetTelegramAgentDirectModels(c *gin.Context) {
+	var req TelegramAgentModelsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.BadRequest(c, err.Error())
+		return
+	}
+
+	baseURL, err := normalizeTelegramAgentDirectModelsBaseURL(req.BaseURL)
+	if err != nil {
+		common.BadRequest(c, err.Error())
+		return
+	}
+	apiKey := strings.TrimSpace(req.APIKey)
+	if apiKey == "" {
+		common.BadRequest(c, "API Key 不能为空")
+		return
+	}
+
+	configRaw, err := json.Marshal(map[string]string{
+		"base_url": baseURL,
+		"api_key":  apiKey,
+	})
+	if err != nil {
+		common.InternalServerError(c, err.Error())
+		return
+	}
+	provider, err := providers.NewForStyle(consts.StyleOpenAI, string(configRaw))
+	if err != nil {
+		common.InternalServerError(c, err.Error())
+		return
+	}
+	modelList, err := provider.Models(c.Request.Context())
+	if err != nil {
+		common.NotFound(c, "Failed to get models: "+err.Error())
+		return
+	}
+	common.Success(c, modelList)
+}
+
+func normalizeTelegramAgentDirectModelsBaseURL(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", errors.New("请求 URL 不能为空")
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return "", fmt.Errorf("请求 URL 无效: %w", err)
+	}
+	if strings.TrimSpace(parsed.Scheme) == "" || strings.TrimSpace(parsed.Host) == "" {
+		return "", errors.New("请求 URL 必须包含 scheme 和 host")
+	}
+	path := strings.TrimRight(parsed.Path, "/")
+	if strings.HasSuffix(path, "/chat/completions") {
+		path = strings.TrimSuffix(path, "/chat/completions")
+	}
+	parsed.Path = path
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return strings.TrimRight(parsed.String(), "/"), nil
 }
 
 func normalizeModelsFetchMode(raw string) string {

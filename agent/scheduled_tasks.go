@@ -258,7 +258,7 @@ func FinishTelegramAgentScheduledTask(ctx context.Context, task models.TelegramA
 }
 
 func runTelegramAgentScheduledTaskSilently(ctx context.Context, cfg models.TelegramAgentConfig, prompt string) (string, error) {
-	pool, err := loadTelegramAgentModelProviderPool(ctx, cfg, 0, false)
+	pool, err := buildTelegramAgentDirectProviderPool(cfg, false)
 	if err != nil {
 		return "", err
 	}
