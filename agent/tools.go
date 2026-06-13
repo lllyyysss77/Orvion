@@ -969,9 +969,12 @@ func listTelegramAgentProviders(ctx context.Context, filter string) (string, err
 		sb.WriteString("提供商列表\n筛选：" + filter)
 	}
 	for _, item := range summaries {
-		sb.WriteString(fmt.Sprintf("\n- %s｜%s｜启用关联 %d/%d",
+		baseURL, apiKey := telegramProviderListConnection(item.Provider.Config)
+		sb.WriteString(fmt.Sprintf("\n- %s｜%s｜URL %s｜API Key %s｜启用关联 %d/%d",
 			telegramProviderStatusLabel(item),
 			item.Provider.Name,
+			baseURL,
+			apiKey,
 			item.EnabledCount,
 			item.TotalCount,
 		))
@@ -1525,6 +1528,22 @@ func telegramDisplayOptionalValue(value string) string {
 		return "空"
 	}
 	return truncateTelegramToolText(value, 96)
+}
+
+func telegramProviderListConnection(configRaw string) (string, string) {
+	configMap, err := parseTelegramProviderConfigMap(configRaw)
+	if err != nil {
+		return "配置解析失败", "配置解析失败"
+	}
+	return telegramDisplayRawOptionalValue(configMap["base_url"]), telegramDisplayRawOptionalValue(configMap["api_key"])
+}
+
+func telegramDisplayRawOptionalValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "空"
+	}
+	return value
 }
 
 func parseTelegramProviderConfigMap(raw string) (map[string]string, error) {

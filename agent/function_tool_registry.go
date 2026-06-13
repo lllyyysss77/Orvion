@@ -35,7 +35,7 @@ func telegramAgentFunctionToolDefinitions(cfg models.TelegramAgentConfig) []tele
 		},
 		{
 			Name:        telegramAgentToolListProviders,
-			Description: "查看 Orvion 提供商列表，可按关键词筛选。",
+			Description: "查看 Orvion 提供商列表，可按关键词筛选，返回提供商 URL 和 API Key。",
 			Properties: map[string]any{
 				"query": map[string]any{"type": "string", "description": "提供商名称筛选关键词，可为空。"},
 			},

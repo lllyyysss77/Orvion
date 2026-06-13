@@ -264,19 +264,17 @@ func runTelegramAgentScheduledTaskSilently(ctx context.Context, cfg models.Teleg
 	}
 
 	var answer strings.Builder
-	replyResult, err := streamTelegramAgentPlainReplyWithPool(ctx, cfg, pool, nil, prompt, func(delta string) error {
+	_, err = streamTelegramAgentPlainReplyWithPool(ctx, cfg, pool, nil, prompt, func(delta string) error {
 		answer.WriteString(delta)
 		return nil
 	})
 	finalAnswer := strings.TrimSpace(answer.String())
 	if err != nil {
-		recordTelegramAgentLog(ctx, replyResult, "", err)
 		return finalAnswer, err
 	}
 	if finalAnswer == "" {
 		finalAnswer = "上游返回了空响应。"
 	}
-	recordTelegramAgentLog(ctx, replyResult, finalAnswer, nil)
 	return finalAnswer, nil
 }
 

@@ -196,6 +196,9 @@ func TestBuildTelegramAgentDirectProviderPoolUsesDirectConfig(t *testing.T) {
 	if !ok {
 		t.Fatalf("期望直连候选提供商存在: %+v", pool.Candidates)
 	}
+	if pool.MaxRetry != 3 {
+		t.Fatalf("直连最大尝试次数应为 3，实际为 %d", pool.MaxRetry)
+	}
 	if selected.ProviderName != "TG Agent 直连" || selected.ProviderModel != "gpt-direct" {
 		t.Fatalf("直连提供商信息不正确: %+v", selected)
 	}
@@ -931,7 +934,10 @@ func TestTelegramAgentToolListOutputsHideIDs(t *testing.T) {
 	ctx := context.Background()
 
 	model := models.Model{Name: "list-output-model", Status: 1}
-	provider := models.Provider{Name: "ListOutputProvider"}
+	provider := models.Provider{
+		Name:   "ListOutputProvider",
+		Config: `{"base_url":"https://list.example.com/v1","api_key":"sk-list-secret"}`,
+	}
 	if err := db.Create(&model).Error; err != nil {
 		t.Fatalf("创建模型失败: %v", err)
 	}
@@ -952,7 +958,7 @@ func TestTelegramAgentToolListOutputsHideIDs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读取提供商列表失败: %v", err)
 	}
-	if !strings.Contains(providerText, "未关联｜ListOutputProvider｜启用关联 0/0") {
+	if !strings.Contains(providerText, "未关联｜ListOutputProvider｜URL https://list.example.com/v1｜API Key sk-list-secret｜启用关联 0/0") {
 		t.Fatalf("提供商列表结构不符合预期: %s", providerText)
 	}
 	assertTelegramToolTextHasNoVisibleID(t, providerText)

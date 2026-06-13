@@ -615,17 +615,16 @@ export default function Layout() {
               </Button>
             ) : null}
 
-            {isAuthKeyToken ? (
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-8"
-                onClick={handleLogout}
-                aria-label="退出登录"
-              >
-                <LogOut className="h-4 w-4" />
-              </Button>
-            ) : null}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-8"
+              onClick={handleLogout}
+              aria-label="退出登录"
+              title="退出登录"
+            >
+              <LogOut className="h-4 w-4" />
+            </Button>
           </div>
         </div>
       </header>

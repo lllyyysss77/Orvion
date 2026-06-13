@@ -695,14 +695,12 @@ func selectTelegramAgentEmbeddingModelProvider(ctx context.Context, modelName st
 			ModelName:       model.Name,
 			ProviderModel:   association.ProviderModel,
 			ProviderName:    provider.Name,
-			ModelProviderID: association.ID,
 			ProviderConfig:  provider.Config,
 			ProviderProxy:   provider.ProxyURL,
 			ProviderStyle:   style,
 			WithHeader:      association.WithHeader == 1,
 			CustomerHeaders: customHeaders,
 			TimeoutSeconds:  timeoutSeconds,
-			IOLog:           model.IOLog == 1,
 		}, nil
 	}
 	return selectedModelProvider{}, fmt.Errorf("向量模型 %s 没有支持 embeddings 的可用提供商", model.Name)

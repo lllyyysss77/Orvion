@@ -46,8 +46,6 @@ const (
 	telegramAgentMessageSoftLimit           = 3600
 	telegramAgentSSEMaxLineBytes            = 1024 * 1024
 	telegramAgentToolResultFollowupMaxBytes = 30 * 1024
-	telegramAgentAuthKeyName                = "telegarm"
-	telegramAgentRequestPath                = "/telegram/agent"
 )
 
 // TelegramClient 是 TG Agent 需要的最小 Telegram 能力。
@@ -92,7 +90,6 @@ type selectedModelProvider struct {
 	ModelName       string
 	ProviderModel   string
 	ProviderName    string
-	ModelProviderID uint
 	ProviderConfig  string
 	ProviderProxy   string
 	ProviderStyle   string
@@ -101,7 +98,6 @@ type selectedModelProvider struct {
 	WithHeader      bool
 	CustomerHeaders map[string]string
 	TimeoutSeconds  int
-	IOLog           bool
 }
 
 type telegramAgentModelProviderPool struct {
@@ -138,7 +134,6 @@ type streamStatusHandler func(status string) error
 type telegramAgentReplyResult struct {
 	Selected         selectedModelProvider
 	RequestBody      []byte
-	RequestPath      string
 	Usage            models.Usage
 	StartedAt        time.Time
 	ProxyTimeMs      int
@@ -148,10 +143,7 @@ type telegramAgentReplyResult struct {
 	Retry            int
 }
 
-var (
-	telegramSessions  sync.Map
-	telegramAuthKeyMu sync.Mutex
-)
+var telegramSessions sync.Map
 
 // HandleTelegramMessage 处理普通 TG 文本消息，并用消息编辑模拟流式回复。
 func HandleTelegramMessage(ctx context.Context, client TelegramClient, message TelegramMessage) (bool, error) {
@@ -264,7 +256,7 @@ func runTelegramAgentConversation(ctx context.Context, client TelegramClient, ch
 	}
 
 	attachments = normalizeTelegramAgentInputAttachments(attachments)
-	result, err := streamTelegramAgentReply(ctx, cfg, history, prompt, attachments, chatID, func(delta string) error {
+	_, err = streamTelegramAgentReply(ctx, cfg, history, prompt, attachments, chatID, func(delta string) error {
 		if delta == "" {
 			return nil
 		}
@@ -272,7 +264,6 @@ func runTelegramAgentConversation(ctx context.Context, client TelegramClient, ch
 		return edit(false)
 	}, updateStatus)
 	if err != nil {
-		recordTelegramAgentLog(ctx, result, "", err)
 		errorText := "对话失败：" + err.Error()
 		if editErr := client.EditMessage(ctx, chatID, placeholderID, trimTelegramMessage(errorText)); editErr != nil {
 			return fmt.Errorf("%v; 编辑失败消息也失败: %w", err, editErr)
@@ -318,7 +309,6 @@ func runTelegramAgentConversation(ctx context.Context, client TelegramClient, ch
 	if err := saveTelegramSessionMessages(ctx, chatID, nextHistory); err != nil {
 		slog.Warn("保存 TG Agent 上下文失败", "chat_id", chatID, "error", err)
 	}
-	recordTelegramAgentLog(ctx, result, finalAnswer, nil)
 	return nil
 }
 
@@ -370,7 +360,7 @@ func runTelegramAgentToolResultFollowup(ctx context.Context, client TelegramClie
 		return nil
 	}
 
-	replyResult, err := streamTelegramAgentToolResultPlainReplyWithPool(ctx, cfg, pool, history, prompt, func(delta string) error {
+	_, err = streamTelegramAgentToolResultPlainReplyWithPool(ctx, cfg, pool, history, prompt, func(delta string) error {
 		if delta == "" {
 			return nil
 		}
@@ -378,7 +368,6 @@ func runTelegramAgentToolResultFollowup(ctx context.Context, client TelegramClie
 		return edit(false)
 	})
 	if err != nil {
-		recordTelegramAgentLog(ctx, replyResult, "", err)
 		if fallbackErr := editTelegramAgentToolResultFallback(ctx, client, chatID, placeholderID, toolResult); fallbackErr != nil {
 			return fmt.Errorf("%w；回退发送原始结果失败: %v", err, fallbackErr)
 		}
@@ -421,7 +410,6 @@ func runTelegramAgentToolResultFollowup(ctx context.Context, client TelegramClie
 	if err := saveTelegramSessionMessages(ctx, chatID, nextHistory); err != nil {
 		slog.Warn("保存 TG Agent 工具整理上下文失败", "chat_id", chatID, "error", err)
 	}
-	recordTelegramAgentLog(ctx, replyResult, finalAnswer, nil)
 	return nil
 }
 
@@ -602,7 +590,7 @@ func buildTelegramAgentDirectProviderPool(cfg models.TelegramAgentConfig, requir
 		ModelName:   modelName,
 		Candidates:  map[uint]selectedModelProvider{directProviderID: selected},
 		WeightItems: map[uint]int{directProviderID: 1},
-		MaxRetry:    2,
+		MaxRetry:    3,
 		Strategy:    consts.BalancerRotor,
 		Breaker:     false,
 	}, nil
@@ -704,7 +692,6 @@ func performTelegramAgentProviderRequestWithRetry(
 			body, endpointCtx, err := buildBody(ctx, selected)
 			if err != nil {
 				lastErr = fmt.Errorf("%s/%s 构建请求失败: %w", selected.ProviderName, selected.ProviderModel, err)
-				recordTelegramAgentRetryLog(ctx, selected, body, startedAt, retry, 0, 0, lastErr)
 				lastStatus = 0
 				lastWas429 = false
 				break
@@ -713,7 +700,6 @@ func performTelegramAgentProviderRequestWithRetry(
 			res, proxyMs, err := telegramAgentProviderRequestExecutor(endpointCtx, selected, body, stream, startedAt)
 			if err != nil {
 				lastErr = fmt.Errorf("%s/%s 请求失败: %w", selected.ProviderName, selected.ProviderModel, err)
-				recordTelegramAgentRetryLog(ctx, selected, body, startedAt, retry, proxyMs, 0, lastErr)
 				lastStatus = 0
 				lastWas429 = false
 				continue
@@ -726,7 +712,6 @@ func performTelegramAgentProviderRequestWithRetry(
 				_, _ = io.Copy(io.Discard, res.Body)
 				_ = res.Body.Close()
 				lastErr = fmt.Errorf("%s/%s 返回状态 %d: %s", selected.ProviderName, selected.ProviderModel, res.StatusCode, strings.TrimSpace(runtimesvc.SafeBodyTextForLog(res, limitedBody)))
-				recordTelegramAgentRetryLog(ctx, selected, body, startedAt, retry, proxyMs, len(limitedBody), lastErr)
 				if !runtimesvc.IsRetryableStatus(res.StatusCode) {
 					break
 				}
@@ -736,7 +721,6 @@ func performTelegramAgentProviderRequestWithRetry(
 			if err := runtimesvc.ValidateSuccessfulResponseBody(res, stream); err != nil {
 				_ = res.Body.Close()
 				lastErr = fmt.Errorf("%s/%s 响应无效: %w", selected.ProviderName, selected.ProviderModel, err)
-				recordTelegramAgentRetryLog(ctx, selected, body, startedAt, retry, proxyMs, 0, lastErr)
 				lastStatus = 0
 				lastWas429 = false
 				continue
@@ -764,21 +748,6 @@ func performTelegramAgentProviderRequestWithRetry(
 		return telegramAgentProviderAttempt{}, fmt.Errorf("TG Agent 模型 %s 所有可用提供商重试失败: %w", pool.ModelName, lastErr)
 	}
 	return telegramAgentProviderAttempt{}, fmt.Errorf("TG Agent 模型 %s 没有可用提供商完成请求", pool.ModelName)
-}
-
-func recordTelegramAgentRetryLog(ctx context.Context, selected selectedModelProvider, body []byte, startedAt time.Time, retry int, proxyMs int, size int, err error) {
-	result := telegramAgentReplyResult{
-		Selected:    selected,
-		RequestBody: append([]byte(nil), body...),
-		StartedAt:   startedAt,
-		ProxyTimeMs: proxyMs,
-		Retry:       retry,
-		Size:        size,
-	}
-	if result.StartedAt.IsZero() {
-		result.StartedAt = time.Now()
-	}
-	recordTelegramAgentLog(ctx, result, "", err)
 }
 
 func buildTelegramAgentRequestBody(ctx context.Context, cfg models.TelegramAgentConfig, selected selectedModelProvider, history []chatMessage, prompt string, attachments []TelegramInputAttachment) ([]byte, context.Context, error) {
@@ -958,218 +927,6 @@ func extractTelegramAgentDelta(style string, raw string) []string {
 			return true
 		})
 		return compactStrings(parts)
-	}
-}
-
-func recordTelegramAgentLog(ctx context.Context, result telegramAgentReplyResult, answer string, logErr error) {
-	if models.DB == nil {
-		return
-	}
-	if result.Selected.ModelName == "" && len(result.RequestBody) == 0 {
-		return
-	}
-
-	authKeyID, err := ensureTelegramAgentAuthKey(ctx)
-	if err != nil {
-		slog.Warn("准备 TG Agent 内部 AuthKey 失败", "error", err)
-	}
-
-	usage := result.Usage
-	if logErr == nil && usage.PromptTokens == 0 && usage.CompletionTokens == 0 && usage.TotalTokens == 0 {
-		usage = estimateTelegramAgentUsage(result.Selected, result.RequestBody, answer)
-	}
-	normalizeTelegramAgentUsage(&usage)
-
-	totalCost := 0.0
-	if logErr == nil {
-		totalCost = runtimesvc.CalculateTotalCost(ctx, result.Selected.ModelName, usage)
-	}
-
-	status := "success"
-	errorText := ""
-	if logErr != nil {
-		status = "error"
-		errorText = logErr.Error()
-	}
-	createdAt := result.StartedAt
-	if createdAt.IsZero() {
-		createdAt = time.Now()
-	}
-
-	tps := 0.0
-	if result.ChunkTimeMs > 0 && usage.TotalTokens > 0 {
-		tps = float64(usage.TotalTokens) / (float64(result.ChunkTimeMs) / 1000)
-	}
-
-	chatIO := 0
-	if result.Selected.IOLog {
-		chatIO = 1
-	}
-	size := result.Size
-	if size <= 0 {
-		size = len(answer)
-	}
-
-	log := models.ChatLog{
-		CreatedAt:           createdAt,
-		Name:                result.Selected.ModelName,
-		ProviderModel:       result.Selected.ProviderModel,
-		ProviderName:        result.Selected.ProviderName,
-		ModelWithProviderID: result.Selected.ModelProviderID,
-		Status:              status,
-		Style:               result.Selected.ProviderStyle,
-		RequestPath:         resolveTelegramAgentRequestPath(result),
-		UserAgent:           "telegram-agent",
-		RemoteIP:            "telegram",
-		AuthKeyID:           authKeyID,
-		ChatIO:              chatIO,
-		Error:               errorText,
-		Retry:               result.Retry,
-		ProxyTimeMs:         result.ProxyTimeMs,
-		FirstChunkTimeMs:    result.FirstChunkTimeMs,
-		ChunkTimeMs:         result.ChunkTimeMs,
-		Tps:                 tps,
-		Size:                size,
-		Usage:               usage,
-	}
-
-	ref, err := saveTelegramAgentChatLog(ctx, log)
-	if err != nil {
-		slog.Warn("保存 TG Agent 请求日志失败", "error", err)
-		return
-	}
-	if chatIO == 1 {
-		output := answer
-		if output == "" && logErr != nil {
-			output = logErr.Error()
-		}
-		if err := models.DB.WithContext(ctx).Create(&models.ChatIO{
-			Input:        maskTelegramAgentVisionDataForLog(string(result.RequestBody)),
-			OutputString: output,
-			LogId:        ref.ID,
-			LogUUID:      ref.UUID,
-		}).Error; err != nil {
-			slog.Warn("保存 TG Agent IO 日志失败", "error", err, "log_uuid", ref.UUID)
-		}
-	}
-	updateTelegramAgentAuthKeyStats(ctx, authKeyID, totalCost, time.Now())
-	addTelegramAgentTotalConsumedAmount(ctx, totalCost)
-}
-
-func resolveTelegramAgentRequestPath(result telegramAgentReplyResult) string {
-	if strings.TrimSpace(result.RequestPath) != "" {
-		return strings.TrimSpace(result.RequestPath)
-	}
-	return telegramAgentRequestPath
-}
-
-func saveTelegramAgentChatLog(ctx context.Context, log models.ChatLog) (models.ChatLogRef, error) {
-	if log.UUID == "" {
-		uuid, err := pkg.GenerateRandomCharsKey(36)
-		if err != nil {
-			return models.ChatLogRef{}, err
-		}
-		log.UUID = uuid
-	}
-
-	for attempt := 0; attempt < 3; attempt++ {
-		ref, err := models.CreateMonthlyChatLog(ctx, log)
-		if err != nil {
-			if strings.Contains(err.Error(), "SQLSTATE 23505") || strings.Contains(err.Error(), "UNIQUE constraint failed") {
-				uuid, genErr := pkg.GenerateRandomCharsKey(36)
-				if genErr != nil {
-					return models.ChatLogRef{}, genErr
-				}
-				log.UUID = uuid
-				continue
-			}
-			return models.ChatLogRef{}, err
-		}
-		return ref, nil
-	}
-	return models.ChatLogRef{}, errors.New("failed to generate unique telegram agent chat log uuid")
-}
-
-func ensureTelegramAgentAuthKey(ctx context.Context) (uint, error) {
-	telegramAuthKeyMu.Lock()
-	defer telegramAuthKeyMu.Unlock()
-
-	var existing models.AuthKey
-	err := models.DB.WithContext(ctx).
-		Where("name = ?", telegramAgentAuthKeyName).
-		Order("id ASC").
-		First(&existing).Error
-	if err == nil {
-		return existing.ID, nil
-	}
-	if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return 0, err
-	}
-
-	randomKey, err := pkg.GenerateRandomCharsKey(36)
-	if err != nil {
-		return 0, err
-	}
-	authKey := models.AuthKey{
-		Name:     telegramAgentAuthKeyName,
-		Key:      consts.KeyPrefix + randomKey,
-		Status:   1,
-		AllowAll: 1,
-		Models:   "[]",
-	}
-	if err := models.DB.WithContext(ctx).Create(&authKey).Error; err != nil {
-		return 0, err
-	}
-	return authKey.ID, nil
-}
-
-func updateTelegramAgentAuthKeyStats(ctx context.Context, authKeyID uint, cost float64, usedAt time.Time) {
-	if authKeyID == 0 {
-		return
-	}
-	updates := map[string]any{
-		"usage_count":  gorm.Expr("COALESCE(usage_count, 0) + ?", 1),
-		"last_used_at": usedAt,
-	}
-	if cost > 0 {
-		updates["total_cost"] = gorm.Expr("COALESCE(total_cost, 0) + ?", cost)
-	}
-	if err := models.DB.WithContext(ctx).Model(&models.AuthKey{}).Where("id = ?", authKeyID).Updates(updates).Error; err != nil {
-		slog.Warn("更新 TG Agent 内部 AuthKey 统计失败", "error", err, "auth_key_id", authKeyID)
-	}
-}
-
-func addTelegramAgentTotalConsumedAmount(ctx context.Context, delta float64) {
-	if delta <= 0 || models.DB == nil {
-		return
-	}
-
-	var cfg models.Config
-	err := models.DB.WithContext(ctx).Where("key = ?", models.KeyTotalConsumedAmount).First(&cfg).Error
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			if createErr := models.DB.WithContext(ctx).Create(&models.Config{
-				Key:   models.KeyTotalConsumedAmount,
-				Value: strconv.FormatFloat(delta, 'f', 8, 64),
-			}).Error; createErr != nil {
-				slog.Warn("创建 TG Agent 总消耗配置失败", "error", createErr)
-			}
-			return
-		}
-		slog.Warn("读取 TG Agent 总消耗配置失败", "error", err)
-		return
-	}
-
-	current, parseErr := strconv.ParseFloat(strings.TrimSpace(cfg.Value), 64)
-	if parseErr != nil || current < 0 {
-		current = 0
-	}
-	next := current + delta
-	if err := models.DB.WithContext(ctx).
-		Model(&models.Config{}).
-		Where("id = ?", cfg.ID).
-		Update("value", strconv.FormatFloat(next, 'f', 8, 64)).Error; err != nil {
-		slog.Warn("更新 TG Agent 总消耗配置失败", "error", err)
 	}
 }
 
@@ -1388,82 +1145,6 @@ func normalizeTelegramAgentUsage(usage *models.Usage) {
 	if usage.PromptTokensDetails == "" {
 		usage.PromptTokensDetails = buildTelegramAgentPromptTokensDetailsJSON(usage.CachedTokens, 0, false)
 	}
-}
-
-func estimateTelegramAgentUsage(selected selectedModelProvider, requestBody []byte, answer string) models.Usage {
-	inputText := extractTelegramAgentInputText(selected.responseStyle(), requestBody)
-	if strings.TrimSpace(inputText) == "" {
-		inputText = string(requestBody)
-	}
-	usage := models.Usage{
-		PromptTokens:     estimateTelegramAgentTokens(inputText),
-		CompletionTokens: estimateTelegramAgentTokens(answer),
-	}
-	normalizeTelegramAgentUsage(&usage)
-	return usage
-}
-
-func extractTelegramAgentInputText(style string, raw []byte) string {
-	var sb strings.Builder
-	switch style {
-	case consts.StyleOpenAIRes:
-		appendTelegramAgentTextFromAny(&sb, gjson.GetBytes(raw, "instructions"))
-		appendTelegramAgentTextFromAny(&sb, gjson.GetBytes(raw, "input"))
-	case consts.StyleAnthropic:
-		appendTelegramAgentTextFromAny(&sb, gjson.GetBytes(raw, "system"))
-		appendTelegramAgentTextFromAny(&sb, gjson.GetBytes(raw, "messages"))
-	case consts.StyleGemini:
-		appendTelegramAgentTextFromAny(&sb, gjson.GetBytes(raw, "system_instruction"))
-		appendTelegramAgentTextFromAny(&sb, gjson.GetBytes(raw, "contents"))
-	default:
-		appendTelegramAgentTextFromAny(&sb, gjson.GetBytes(raw, "messages"))
-		appendTelegramAgentTextFromAny(&sb, gjson.GetBytes(raw, "input"))
-	}
-	return sb.String()
-}
-
-func appendTelegramAgentTextFromAny(sb *strings.Builder, value gjson.Result) {
-	if !value.Exists() {
-		return
-	}
-	if value.Type == gjson.String {
-		appendTelegramAgentText(sb, value.String())
-		return
-	}
-	if value.IsArray() || value.IsObject() {
-		value.ForEach(func(_, item gjson.Result) bool {
-			appendTelegramAgentTextFromAny(sb, item)
-			return true
-		})
-	}
-}
-
-func appendTelegramAgentText(sb *strings.Builder, text string) {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return
-	}
-	if sb.Len() > 0 {
-		sb.WriteByte('\n')
-	}
-	sb.WriteString(text)
-}
-
-func estimateTelegramAgentTokens(text string) int64 {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return 0
-	}
-	asciiBytes := 0
-	nonASCII := 0
-	for _, r := range text {
-		if r <= 0x7f {
-			asciiBytes++
-		} else {
-			nonASCII++
-		}
-	}
-	return int64((asciiBytes+3)/4 + nonASCII)
 }
 
 func normalizeTelegramAgentCachedTokens(value int64) int64 {
