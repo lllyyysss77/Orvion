@@ -662,7 +662,10 @@ func selectTelegramAgentEmbeddingModelProvider(ctx context.Context, modelName st
 		providerIDs = append(providerIDs, item.ProviderID)
 	}
 	var providerList []models.Provider
-	if err := models.DB.WithContext(ctx).Where("id IN ?", providerIDs).Find(&providerList).Error; err != nil {
+	if err := models.DB.WithContext(ctx).
+		Where("id IN ?", providerIDs).
+		Where("status = ?", 1).
+		Find(&providerList).Error; err != nil {
 		return selectedModelProvider{}, err
 	}
 	providerByID := make(map[uint]models.Provider, len(providerList))

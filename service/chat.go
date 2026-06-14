@@ -556,7 +556,8 @@ func providersWithMetaByModel(ctx context.Context, endpoint string, model models
 	modelWithProviderMap := lo.KeyBy(modelWithProviders, func(mp models.ModelWithProvider) uint { return mp.ID })
 
 	providerQuery := gorm.G[models.Provider](models.DB).
-		Where("id IN ?", lo.Map(modelWithProviders, func(mp models.ModelWithProvider, _ int) uint { return mp.ProviderID }))
+		Where("id IN ?", lo.Map(modelWithProviders, func(mp models.ModelWithProvider, _ int) uint { return mp.ProviderID })).
+		Where("status = ?", 1)
 	providers, err := providerQuery.Find(ctx)
 	if err != nil {
 		return nil, err

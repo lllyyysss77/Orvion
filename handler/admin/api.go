@@ -201,7 +201,7 @@ func buildProviderListItems(ctx context.Context, providers []models.Provider) []
 		stats := statsByProviderID[provider.ID]
 		items = append(items, ProviderListItem{
 			Provider:                  provider,
-			ProviderEnabled:           stats.EnabledCount > 0,
+			ProviderEnabled:           provider.Status != 0,
 			ProviderModelCount:        stats.TotalCount,
 			EnabledProviderModelCount: stats.EnabledCount,
 		})
@@ -296,6 +296,13 @@ func normalizeModelsFetchMode(raw string) string {
 	default:
 		return modelsFetchModeV1Models
 	}
+}
+
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func normalizeProviderCapabilities(values []string) models.ProviderCapabilities {
@@ -494,6 +501,7 @@ func CreateProvider(c *gin.Context) {
 		ProxyURL:                   proxyURL,
 		ModelsFetchMode:            normalizeModelsFetchMode(req.ModelsFetchMode),
 		Capabilities:               normalizedCapabilities,
+		Status:                     1,
 		InterfaceConversionEnabled: conversionEnabled,
 		InterfaceConversionTarget:  conversionTarget,
 	}
@@ -584,7 +592,7 @@ func UpdateProvider(c *gin.Context) {
 	common.Success(c, updatedProvider)
 }
 
-// UpdateProviderStatus 批量切换提供商下所有模型关联状态，不在 providers 表新增状态字段。
+// UpdateProviderStatus 切换提供商整体启用状态，不修改模型关联自身状态。
 func UpdateProviderStatus(c *gin.Context) {
 	idStr := c.Param("id")
 	id, err := strconv.ParseUint(idStr, 10, 64)
@@ -610,110 +618,22 @@ func UpdateProviderStatus(c *gin.Context) {
 		return
 	}
 
-	status := 0
-	if req.Status {
-		status = 1
-	}
-
-	err = models.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if status == 1 {
-			return restoreProviderEnabledAssociations(ctx, tx, uint(id))
-		}
-		return snapshotAndDisableProviderAssociations(ctx, tx, uint(id))
-	})
-	if err != nil {
-		if errors.Is(err, errProviderStatusSnapshotNotFound) {
-			common.BadRequest(c, "没有可恢复的启用关联快照，请到提供商与模型中手动启用需要的关联")
-			return
-		}
+	status := boolToInt(req.Status)
+	if err := models.DB.WithContext(ctx).
+		Model(&models.Provider{}).
+		Where("id = ?", id).
+		Update("status", status).Error; err != nil {
 		common.InternalServerError(c, "Failed to update provider status: "+err.Error())
 		return
 	}
 
+	provider.Status = status
 	items := buildProviderListItems(ctx, []models.Provider{provider})
 	if len(items) == 0 {
 		common.Success(c, provider)
 		return
 	}
 	common.Success(c, items[0])
-}
-
-var errProviderStatusSnapshotNotFound = errors.New("provider status snapshot not found")
-
-func providerStatusSnapshotKey(providerID uint) string {
-	return models.KeyProviderStatusSnapshotPrefix + strconv.FormatUint(uint64(providerID), 10)
-}
-
-func snapshotAndDisableProviderAssociations(ctx context.Context, tx *gorm.DB, providerID uint) error {
-	var enabledIDs []uint
-	if err := tx.WithContext(ctx).
-		Model(&models.ModelWithProvider{}).
-		Where("provider_id = ? AND status = ?", providerID, 1).
-		Pluck("id", &enabledIDs).Error; err != nil {
-		return err
-	}
-	if err := saveProviderStatusSnapshot(ctx, tx, providerID, enabledIDs); err != nil {
-		return err
-	}
-	if len(enabledIDs) == 0 {
-		return nil
-	}
-	return tx.WithContext(ctx).
-		Model(&models.ModelWithProvider{}).
-		Where("provider_id = ? AND id IN ?", providerID, enabledIDs).
-		Update("status", 0).Error
-}
-
-func restoreProviderEnabledAssociations(ctx context.Context, tx *gorm.DB, providerID uint) error {
-	enabledIDs, err := loadProviderStatusSnapshot(ctx, tx, providerID)
-	if err != nil {
-		return err
-	}
-	if len(enabledIDs) > 0 {
-		if err := tx.WithContext(ctx).
-			Model(&models.ModelWithProvider{}).
-			Where("provider_id = ? AND id IN ?", providerID, enabledIDs).
-			Update("status", 1).Error; err != nil {
-			return err
-		}
-	}
-	return tx.WithContext(ctx).
-		Where("key = ?", providerStatusSnapshotKey(providerID)).
-		Delete(&models.Config{}).Error
-}
-
-func saveProviderStatusSnapshot(ctx context.Context, tx *gorm.DB, providerID uint, enabledIDs []uint) error {
-	raw, err := json.Marshal(enabledIDs)
-	if err != nil {
-		return err
-	}
-	key := providerStatusSnapshotKey(providerID)
-	var existing models.Config
-	if err := tx.WithContext(ctx).Where("key = ?", key).First(&existing).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return tx.WithContext(ctx).Create(&models.Config{Key: key, Value: string(raw)}).Error
-		}
-		return err
-	}
-	return tx.WithContext(ctx).
-		Model(&models.Config{}).
-		Where("id = ?", existing.ID).
-		Update("value", string(raw)).Error
-}
-
-func loadProviderStatusSnapshot(ctx context.Context, tx *gorm.DB, providerID uint) ([]uint, error) {
-	var cfg models.Config
-	if err := tx.WithContext(ctx).Where("key = ?", providerStatusSnapshotKey(providerID)).First(&cfg).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, errProviderStatusSnapshotNotFound
-		}
-		return nil, err
-	}
-	var enabledIDs []uint
-	if err := json.Unmarshal([]byte(cfg.Value), &enabledIDs); err != nil {
-		return nil, err
-	}
-	return enabledIDs, nil
 }
 
 // DeleteProvider 删除提供商

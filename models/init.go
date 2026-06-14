@@ -65,10 +65,20 @@ func Init(_ context.Context, dsn string) {
 	); err != nil {
 		panic(err)
 	}
+	if err := cleanupProviderStatusSnapshots(); err != nil {
+		log.Printf("清理旧提供商状态快照失败: %v", err)
+	}
 
 	if _, err := EnsureChatLogMonthlyTable(time.Now()); err != nil {
 		panic(err)
 	}
+}
+
+func cleanupProviderStatusSnapshots() error {
+	if DB == nil {
+		return nil
+	}
+	return DB.Where("key LIKE ?", "provider_status_snapshot:%").Delete(&Config{}).Error
 }
 
 func newGormLogger() gormlogger.Interface {

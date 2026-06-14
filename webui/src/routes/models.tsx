@@ -273,6 +273,8 @@ const formatPrice = (value?: number | null) => {
 
 const isModelEnabled = (model: Model) => (model.Status == null ? true : Number(model.Status) === 1);
 
+const DEFAULT_MODEL_MAX_RETRY = 2;
+
 const isValidNonNegativePrice = (value: string) => {
   const trimmed = value.trim();
   if (trimmed === "") return false;
@@ -343,7 +345,7 @@ export default function ModelsPage() {
     defaultValues: {
       name: "",
       remark: "",
-      max_retry: 10,
+      max_retry: DEFAULT_MODEL_MAX_RETRY,
       time_out: 60,
       io_log: false,
       strategy: "lottery",
@@ -599,7 +601,7 @@ export default function ModelsPage() {
       form.reset({
         name: "",
         remark: "",
-        max_retry: 10,
+        max_retry: DEFAULT_MODEL_MAX_RETRY,
         time_out: 60,
         io_log: false,
         strategy: "lottery",
@@ -648,7 +650,7 @@ export default function ModelsPage() {
       form.reset({
         name: "",
         remark: "",
-        max_retry: 10,
+        max_retry: DEFAULT_MODEL_MAX_RETRY,
         time_out: 60,
         io_log: false,
         strategy: "lottery",
@@ -722,7 +724,7 @@ export default function ModelsPage() {
     form.reset({
       name: "",
       remark: "",
-      max_retry: 10,
+      max_retry: DEFAULT_MODEL_MAX_RETRY,
       time_out: 60,
       io_log: false,
       strategy: "lottery",

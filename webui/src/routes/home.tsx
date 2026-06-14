@@ -187,19 +187,6 @@ const SummaryCard = memo(({ title, icon: TitleIcon, items }: SummaryCardProps) =
   );
 });
 
-const buildCurvePoints = (data: number[], width: number, height: number) => {
-  if (data.length < 2) return [];
-  const min = Math.min(...data);
-  const max = Math.max(...data);
-  const range = max - min || 1;
-  const step = width / (data.length - 1);
-  return data.map((value, index) => {
-    const x = step * index;
-    const y = height - ((value - min) / range) * height;
-    return { x, y };
-  });
-};
-
 type TodayAmountTrendCardProps = {
   totalRequests: number;
   totalAmount: number;
@@ -212,14 +199,6 @@ type RequestAmountPointView = {
   hour: number;
   requests: number;
   amount: number;
-};
-
-const buildAreaCurve = (data: number[], width: number, height: number) => {
-  const points = buildCurvePoints(data, width, height);
-  if (points.length === 0) return { line: "", area: "" };
-  const line = buildSmoothLine(points);
-  const area = `${line} L ${points[points.length - 1].x.toFixed(2)} ${height} L ${points[0].x.toFixed(2)} ${height} Z`;
-  return { line, area };
 };
 
 const buildSmoothLine = (points: { x: number; y: number }[]) => {
@@ -322,62 +301,130 @@ const TodayAmountTrendCard = memo(({
   rangeValue,
   curvePoints,
 }: TodayAmountTrendCardProps) => {
-  const chartWidth = 520;
-  const chartHeight = 120;
+  const chartWidth = 640;
+  const chartHeight = 260;
+  const margin = { top: 24, right: 24, bottom: 34, left: 44 };
+  const plotWidth = chartWidth - margin.left - margin.right;
+  const plotHeight = chartHeight - margin.top - margin.bottom;
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
-  const curveData = useMemo(
+
+  const requestData = useMemo(
+    () => curvePoints.map((point) => point.requests),
+    [curvePoints]
+  );
+  const amountData = useMemo(
     () => curvePoints.map((point) => point.amount),
     [curvePoints]
   );
-  const chartPoints = useMemo(
-    () => buildCurvePoints(curveData, chartWidth, chartHeight),
-    [curveData, chartWidth, chartHeight]
+  const maxRequests = Math.max(1, ...requestData);
+  const maxAmount = Math.max(0, ...amountData);
+  const pointStep = plotWidth / Math.max(1, curvePoints.length - 1);
+  const currentHour = new Date().getHours();
+  const currentIndex = curvePoints.findIndex((point) => point.hour === currentHour);
+  const peakIndex = requestData.reduce((bestIndex, value, index) => (
+    value > requestData[bestIndex] ? index : bestIndex
+  ), 0);
+  const requestTicks = useMemo(() => {
+    const middle = Math.ceil(maxRequests / 2);
+    return Array.from(new Set([0, middle, maxRequests])).sort((left, right) => left - right);
+  }, [maxRequests]);
+
+  const requestLinePoints = useMemo(
+    () => requestData.map((value, index) => {
+      const x = margin.left + (curvePoints.length <= 1 ? plotWidth / 2 : pointStep * index);
+      const y = margin.top + plotHeight - (value / maxRequests) * plotHeight;
+      return { x, y };
+    }),
+    [curvePoints.length, margin.left, margin.top, maxRequests, plotHeight, plotWidth, pointStep, requestData]
   );
-  const chart = useMemo(
-    () => buildAreaCurve(curveData, chartWidth, chartHeight),
-    [curveData, chartWidth, chartHeight]
+  const amountLinePoints = useMemo(
+    () => amountData.map((value, index) => {
+      const x = margin.left + (curvePoints.length <= 1 ? plotWidth / 2 : pointStep * index);
+      const y = margin.top + plotHeight - (maxAmount <= 0 ? 0 : (value / maxAmount) * plotHeight);
+      return { x, y };
+    }),
+    [amountData, curvePoints.length, margin.left, margin.top, maxAmount, plotHeight, plotWidth, pointStep]
   );
-  const safeHoveredIndex = hoveredIndex == null || chartPoints.length === 0
+  const requestLine = useMemo(
+    () => buildSmoothLine(requestLinePoints),
+    [requestLinePoints]
+  );
+  const requestArea = requestLine && requestLinePoints.length > 0
+    ? `${requestLine} L ${requestLinePoints[requestLinePoints.length - 1].x.toFixed(2)} ${margin.top + plotHeight} L ${requestLinePoints[0].x.toFixed(2)} ${margin.top + plotHeight} Z`
+    : "";
+  const amountLine = useMemo(
+    () => (maxAmount > 0 ? buildSmoothLine(amountLinePoints) : ""),
+    [amountLinePoints, maxAmount]
+  );
+  const safeHoveredIndex = hoveredIndex == null || curvePoints.length === 0
     ? null
-    : Math.max(0, Math.min(hoveredIndex, chartPoints.length - 1));
-  const hoveredPoint = safeHoveredIndex == null ? null : chartPoints[safeHoveredIndex];
+    : Math.max(0, Math.min(hoveredIndex, curvePoints.length - 1));
+  const hoveredRequestPoint = safeHoveredIndex == null ? null : requestLinePoints[safeHoveredIndex];
+  const hoveredAmountPoint = safeHoveredIndex == null ? null : amountLinePoints[safeHoveredIndex];
   const hoveredData = safeHoveredIndex == null ? null : curvePoints[safeHoveredIndex];
-  const tooltipLeft = hoveredPoint ? `${(hoveredPoint.x / chartWidth) * 100}%` : "0%";
+  const tooltipLeft = hoveredRequestPoint ? `${(hoveredRequestPoint.x / chartWidth) * 100}%` : "0%";
+  const tooltipTranslate = safeHoveredIndex == null
+    ? "-50%"
+    : safeHoveredIndex <= 3
+      ? "0"
+      : safeHoveredIndex >= curvePoints.length - 4
+        ? "-100%"
+        : "-50%";
+  const peakPoint = totalRequests > 0 ? curvePoints[peakIndex] : null;
+  const currentPoint = currentIndex >= 0 ? curvePoints[currentIndex] : null;
 
   return (
     <Card className={`${cardHoverClass} gap-3 h-full min-h-[460px]`}>
       <CardHeader className="pb-2">
         <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="flex flex-wrap items-center gap-6 text-xs text-muted-foreground">
-            <div className="flex flex-col gap-1">
-              <span>今日消耗金额</span>
-              <span className="text-lg font-semibold text-foreground">{formatMoney(totalAmount)}</span>
-            </div>
-            <div className="flex flex-col gap-1">
-              <span>请求次数</span>
-              <span className="text-lg font-semibold text-foreground">{formatCompactValue(totalRequests)}</span>
+          <div className="min-w-0">
+            <div className="text-xs text-muted-foreground">24 小时请求分布</div>
+            <div className="mt-1 flex items-baseline gap-2">
+              <span className="text-2xl font-semibold leading-none text-foreground">{formatCompactValue(totalRequests)}</span>
+              <span className="text-xs text-muted-foreground">次请求</span>
             </div>
           </div>
-          <div className="text-xs text-muted-foreground">
-            <span className="mr-1">{rangeLabel}</span>
-            <span className="text-foreground">{rangeValue}</span>
+          <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
+            <div className="rounded-lg border border-border/60 bg-muted/30 px-2.5 py-1.5">
+              <div className="text-muted-foreground">今日消耗</div>
+              <div className="font-semibold text-foreground">{formatMoney(totalAmount)}</div>
+            </div>
+            <div className="rounded-lg border border-border/60 bg-muted/30 px-2.5 py-1.5">
+              <div className="text-muted-foreground">峰值时段</div>
+              <div className="font-semibold text-foreground">
+                {peakPoint ? `${peakPoint.hour.toString().padStart(2, "0")}:00` : "--"}
+              </div>
+            </div>
+            <div className="rounded-lg border border-border/60 bg-muted/30 px-2.5 py-1.5">
+              <div className="text-muted-foreground">{rangeLabel}</div>
+              <div className="font-semibold text-foreground">{rangeValue}</div>
+            </div>
           </div>
         </div>
       </CardHeader>
       <CardContent className="pt-0 flex-1">
         <div className="relative flex h-full flex-col overflow-hidden rounded-2xl border border-border/40 bg-card/60 px-4 py-3">
-          <div className="pointer-events-none absolute inset-0 opacity-30" style={{ backgroundImage: "radial-gradient(circle at 10% 20%, rgba(34,197,94,0.28), transparent 55%)" }} />
-          <div className="flex items-center justify-between text-[10px] text-muted-foreground">
-            <span>0:00</span>
-            <span>6:00</span>
-            <span>12:00</span>
-            <span>18:00</span>
-            <span>23:00</span>
+          <div className="relative z-10 flex items-center justify-between gap-3 text-[11px] text-muted-foreground">
+            <div className="flex items-center gap-3">
+              <span className="inline-flex items-center gap-1.5">
+                <span className="h-2 w-2 rounded-full bg-emerald-500" />
+                请求量
+              </span>
+              <span className="inline-flex items-center gap-1.5">
+                <span className="h-0.5 w-4 rounded-full bg-amber-500" />
+                金额趋势
+              </span>
+            </div>
+            {currentPoint && (
+              <span>
+                当前 {currentPoint.hour.toString().padStart(2, "0")}:00 · {currentPoint.requests.toLocaleString()}
+              </span>
+            )}
           </div>
           <div className="mt-2 flex-1">
             <svg
               viewBox={`0 0 ${chartWidth} ${chartHeight}`}
-              className="h-full min-h-[210px] w-full"
+              className="h-full min-h-[270px] w-full"
               onMouseLeave={() => setHoveredIndex(null)}
               onMouseMove={(event) => {
                 if (curvePoints.length <= 1) return;
@@ -388,37 +435,163 @@ const TodayAmountTrendCard = memo(({
                 setHoveredIndex(index);
               }}
             >
-              <path d={chart.area} className="fill-cyan-200/60" />
-              <path d={chart.line} className="stroke-cyan-600" fill="none" strokeWidth="2" />
-              {hoveredPoint && (
+              <defs>
+                <linearGradient id="requestCurveFill" x1="0" x2="0" y1="0" y2="1">
+                  <stop offset="0%" stopColor="#10b981" stopOpacity="0.22" />
+                  <stop offset="70%" stopColor="#38bdf8" stopOpacity="0.08" />
+                  <stop offset="100%" stopColor="#38bdf8" stopOpacity="0" />
+                </linearGradient>
+                <linearGradient id="requestCurveStroke" x1="0" x2="1" y1="0" y2="0">
+                  <stop offset="0%" stopColor="#10b981" />
+                  <stop offset="100%" stopColor="#0ea5e9" />
+                </linearGradient>
+              </defs>
+              {requestTicks.map((tick) => {
+                const y = margin.top + plotHeight - (tick / maxRequests) * plotHeight;
+                return (
+                  <g key={`request-tick-${tick}`}>
+                    <line
+                      x1={margin.left}
+                      y1={y}
+                      x2={margin.left + plotWidth}
+                      y2={y}
+                      className="stroke-border/45"
+                      strokeDasharray={tick === 0 ? "0" : "4 6"}
+                    />
+                    <text
+                      x={margin.left - 10}
+                      y={y + 4}
+                      textAnchor="end"
+                      className="fill-muted-foreground text-[11px]"
+                    >
+                      {formatCompactValue(tick)}
+                    </text>
+                  </g>
+                );
+              })}
+
+              {currentIndex >= 0 && requestLinePoints[currentIndex] && (
+                <rect
+                  x={requestLinePoints[currentIndex].x - Math.max(6, pointStep / 2)}
+                  y={margin.top}
+                  width={Math.max(12, pointStep)}
+                  height={plotHeight}
+                  className="fill-sky-500/10"
+                />
+              )}
+
+              {safeHoveredIndex != null && hoveredRequestPoint && (
+                <rect
+                  x={hoveredRequestPoint.x - Math.max(6, pointStep / 2)}
+                  y={margin.top}
+                  width={Math.max(12, pointStep)}
+                  height={plotHeight}
+                  className="fill-emerald-500/10"
+                />
+              )}
+
+              {requestArea && (
+                <path d={requestArea} fill="url(#requestCurveFill)" />
+              )}
+
+              {requestLine && (
+                <path
+                  d={requestLine}
+                  stroke="url(#requestCurveStroke)"
+                  fill="none"
+                  strokeWidth="3"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              )}
+
+              {amountLine && (
+                <path
+                  d={amountLine}
+                  className="stroke-amber-500"
+                  fill="none"
+                  strokeWidth="2"
+                  strokeDasharray="6 6"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  opacity="0.82"
+                />
+              )}
+
+              {totalRequests > 0 && requestLinePoints[peakIndex] && (
+                <circle
+                  cx={requestLinePoints[peakIndex].x}
+                  cy={requestLinePoints[peakIndex].y}
+                  r="4"
+                  className="fill-background stroke-emerald-500"
+                  strokeWidth="2.5"
+                />
+              )}
+
+              {currentIndex >= 0 && requestLinePoints[currentIndex] && (
+                <circle
+                  cx={requestLinePoints[currentIndex].x}
+                  cy={requestLinePoints[currentIndex].y}
+                  r="3.5"
+                  className="fill-sky-500 stroke-card"
+                  strokeWidth="2"
+                />
+              )}
+
+              {hoveredRequestPoint && (
                 <>
                   <line
-                    x1={hoveredPoint.x}
-                    y1={0}
-                    x2={hoveredPoint.x}
-                    y2={chartHeight}
-                    className="stroke-cyan-500/50"
+                    x1={hoveredRequestPoint.x}
+                    y1={margin.top}
+                    x2={hoveredRequestPoint.x}
+                    y2={margin.top + plotHeight}
+                    className="stroke-emerald-500/45"
                     strokeDasharray="4 4"
                   />
                   <circle
-                    cx={hoveredPoint.x}
-                    cy={hoveredPoint.y}
-                    r="4"
-                    className="fill-cyan-600 stroke-card"
+                    cx={hoveredRequestPoint.x}
+                    cy={hoveredRequestPoint.y}
+                    r="4.6"
+                    className="fill-emerald-500 stroke-card"
                     strokeWidth="2"
                   />
+                  {hoveredAmountPoint && amountLine && (
+                    <circle
+                      cx={hoveredAmountPoint.x}
+                      cy={hoveredAmountPoint.y}
+                      r="3.2"
+                      className="fill-amber-500 stroke-card"
+                      strokeWidth="2"
+                    />
+                  )}
                 </>
               )}
+
+              {[0, 6, 12, 18, 23].map((hour) => {
+                const index = Math.min(curvePoints.length - 1, Math.max(0, hour));
+                const x = margin.left + (curvePoints.length <= 1 ? plotWidth / 2 : pointStep * index);
+                return (
+                  <text
+                    key={`hour-label-${hour}`}
+                    x={x}
+                    y={chartHeight - 8}
+                    textAnchor="middle"
+                    className="fill-muted-foreground text-[11px]"
+                  >
+                    {hour}
+                  </text>
+                );
+              })}
             </svg>
           </div>
           {hoveredData && (
             <div
-              className="pointer-events-none absolute top-7 z-10 -translate-x-1/2 rounded-lg border border-border/70 bg-card px-2 py-1 text-[11px] shadow"
-              style={{ left: tooltipLeft }}
+              className="pointer-events-none absolute top-20 z-10 rounded-lg border border-border/70 bg-card/95 px-2.5 py-2 text-[11px] shadow-lg backdrop-blur"
+              style={{ left: tooltipLeft, transform: `translateX(${tooltipTranslate})` }}
             >
-              <div className="text-muted-foreground">{hoveredData.hour.toString().padStart(2, "0")}:00</div>
-              <div className="font-semibold text-foreground">金额 ${formatAmountValue(hoveredData.amount)}</div>
-              <div className="font-semibold text-foreground">请求 {hoveredData.requests}</div>
+              <div className="font-semibold text-foreground">{hoveredData.hour.toString().padStart(2, "0")}:00</div>
+              <div className="mt-1 text-muted-foreground">请求 {hoveredData.requests.toLocaleString()}</div>
+              <div className="text-muted-foreground">金额 ${formatAmountValue(hoveredData.amount)}</div>
             </div>
           )}
         </div>

@@ -6,7 +6,7 @@ type ModelIconAsset = {
   alt: string;
 };
 
-const iconModules = import.meta.glob("../assets/modelIcon/*.{svg,png,jpg,jpeg,webp,avif,gif}", {
+const iconModules = import.meta.glob("../assets/modelIcon/*.{svg,png,jpg,jpeg,webp,avif,gif,ico}", {
   eager: true,
   import: "default",
 }) as Record<string, string>;
@@ -96,4 +96,3 @@ export const resolveModelIcon = (modelName: string): ResolvedModelIcon | null =>
     key: best.key,
   };
 };
-

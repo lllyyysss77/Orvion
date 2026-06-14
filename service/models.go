@@ -11,7 +11,7 @@ import (
 )
 
 func ModelsByTypes(ctx context.Context, modelTypes ...string) ([]models.Model, error) {
-	llmproviders, err := gorm.G[models.Provider](models.DB).Find(ctx)
+	llmproviders, err := gorm.G[models.Provider](models.DB).Where("status = ?", 1).Find(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -41,7 +41,10 @@ func ModelsByTypes(ctx context.Context, modelTypes ...string) ([]models.Model, e
 		return []models.Model{}, nil
 	}
 
-	modelWithProviders, err := gorm.G[models.ModelWithProvider](models.DB).Where("provider_id IN ?", lo.Map(llmproviders, func(p models.Provider, _ int) uint { return p.ID })).Find(ctx)
+	modelWithProviders, err := gorm.G[models.ModelWithProvider](models.DB).
+		Where("provider_id IN ?", lo.Map(llmproviders, func(p models.Provider, _ int) uint { return p.ID })).
+		Where("status = ?", 1).
+		Find(ctx)
 	if err != nil {
 		return nil, err
 	}

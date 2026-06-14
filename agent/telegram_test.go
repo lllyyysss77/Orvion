@@ -507,7 +507,7 @@ func TestTelegramAgentToolLooseConfirmWithoutPendingFallsThrough(t *testing.T) {
 	}
 }
 
-func TestTelegramAgentToolProviderStatusRestoresSnapshotOnly(t *testing.T) {
+func TestTelegramAgentToolProviderStatusKeepsAssociationStatus(t *testing.T) {
 	db := setupTelegramAgentToolTestDB(t, "tg_agent_tool_provider_restore")
 	ctx := context.Background()
 	chatID := int64(6801293689)
@@ -515,7 +515,7 @@ func TestTelegramAgentToolProviderStatusRestoresSnapshotOnly(t *testing.T) {
 
 	modelA := models.Model{Name: "model-a", Status: 1}
 	modelB := models.Model{Name: "model-b", Status: 1}
-	provider := models.Provider{Name: "ToolProvider"}
+	provider := models.Provider{Name: "ToolProvider", Status: 1}
 	if err := db.Create(&modelA).Error; err != nil {
 		t.Fatalf("创建模型 A 失败: %v", err)
 	}
@@ -549,7 +549,8 @@ func TestTelegramAgentToolProviderStatusRestoresSnapshotOnly(t *testing.T) {
 	if handled, err := HandleTelegramMessage(ctx, client, TelegramMessage{ChatID: chatID, Text: "确认"}); err != nil || !handled {
 		t.Fatalf("期望确认关闭被处理，handled=%v err=%v", handled, err)
 	}
-	assertTelegramModelProviderStatus(t, db, enabledAssoc.ID, 0)
+	assertTelegramProviderStatus(t, db, provider.ID, 0)
+	assertTelegramModelProviderStatus(t, db, enabledAssoc.ID, 1)
 	assertTelegramModelProviderStatus(t, db, disabledAssoc.ID, 0)
 
 	enableAction, err := buildTelegramSetProviderStatusAction(ctx, chatID, "ToolProvider", true)
@@ -562,16 +563,9 @@ func TestTelegramAgentToolProviderStatusRestoresSnapshotOnly(t *testing.T) {
 	if handled, err := HandleTelegramMessage(ctx, client, TelegramMessage{ChatID: chatID, Text: "确认"}); err != nil || !handled {
 		t.Fatalf("期望确认开启被处理，handled=%v err=%v", handled, err)
 	}
+	assertTelegramProviderStatus(t, db, provider.ID, 1)
 	assertTelegramModelProviderStatus(t, db, enabledAssoc.ID, 1)
 	assertTelegramModelProviderStatus(t, db, disabledAssoc.ID, 0)
-
-	var snapshotCount int64
-	if err := db.Model(&models.Config{}).Where("key = ?", telegramProviderStatusSnapshotKey(provider.ID)).Count(&snapshotCount).Error; err != nil {
-		t.Fatalf("统计快照失败: %v", err)
-	}
-	if snapshotCount != 0 {
-		t.Fatalf("恢复后应删除提供商快照，实际剩余 %d 条", snapshotCount)
-	}
 }
 
 func TestTelegramAgentToolBulkModelStatusCleansRelatedExpression(t *testing.T) {
@@ -2009,6 +2003,17 @@ func assertTelegramModelProviderStatus(t *testing.T, db *gorm.DB, id uint, expec
 	}
 	if association.Status != expected {
 		t.Fatalf("关联 ID %d 期望 status=%d，实际 status=%d", id, expected, association.Status)
+	}
+}
+
+func assertTelegramProviderStatus(t *testing.T, db *gorm.DB, id uint, expected int) {
+	t.Helper()
+	var provider models.Provider
+	if err := db.First(&provider, id).Error; err != nil {
+		t.Fatalf("读取提供商失败: %v", err)
+	}
+	if provider.Status != expected {
+		t.Fatalf("提供商 ID %d 期望 status=%d，实际 status=%d", id, expected, provider.Status)
 	}
 }
 

@@ -30,8 +30,6 @@ const (
 	KeyTotalConsumedAmount = "total_consumed_amount"
 	// KeyTelegramDailyUsageReportLastSentDate TG 每日使用日报最近一次发送的自然日（本地时区 yyyy-mm-dd）。
 	KeyTelegramDailyUsageReportLastSentDate = "tg_daily_usage_report_last_sent_date"
-	// KeyProviderStatusSnapshotPrefix 提供商整体关闭前的启用关联快照前缀。
-	KeyProviderStatusSnapshotPrefix = "provider_status_snapshot:"
 	// KeyTelegramAgent TG 流式对话 Agent 配置。
 	KeyTelegramAgent = "telegram_agent"
 )

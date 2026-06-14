@@ -384,7 +384,8 @@ export default function ProvidersPage() {
   };
 
   const handleToggleProviderStatus = async (provider: Provider) => {
-    const nextStatus = !provider.ProviderEnabled;
+    const currentStatus = provider.ProviderEnabled ?? provider.Status !== 0;
+    const nextStatus = !currentStatus;
     setProviderStatusLoadingId(provider.ID);
     setProviders((prev) =>
       prev.map((item) =>
@@ -392,7 +393,7 @@ export default function ProvidersPage() {
           ? {
             ...item,
             ProviderEnabled: nextStatus,
-            EnabledProviderModelCount: nextStatus ? item.ProviderModelCount : 0,
+            Status: nextStatus ? 1 : 0,
           }
           : item
       )
@@ -507,7 +508,7 @@ export default function ProvidersPage() {
                     {(() => {
                       const hasProxy = Boolean(provider.ProxyURL && provider.ProxyURL.trim() !== "");
                       const proxyStatusLabel = hasProxy ? "代理" : "直连";
-                      const providerEnabled = Boolean(provider.ProviderEnabled);
+                      const providerEnabled = provider.ProviderEnabled ?? provider.Status !== 0;
                       const statusLoading = providerStatusLoadingId === provider.ID;
                       return (
                     <div className="mb-3 flex items-start justify-between gap-3">

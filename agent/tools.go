@@ -88,8 +88,7 @@ type telegramScheduledTaskPatch struct {
 }
 
 var (
-	telegramPendingToolActions       sync.Map
-	errTelegramProviderSnapshotEmpty = errors.New("telegram provider status snapshot not found")
+	telegramPendingToolActions sync.Map
 )
 
 func handleTelegramAgentToolMessage(ctx context.Context, client TelegramClient, chatID int64, raw string, cfg models.TelegramAgentConfig) (bool, error) {
@@ -573,27 +572,14 @@ func setTelegramAgentProviderStatus(ctx context.Context, providerID uint, enable
 		return "", err
 	}
 
-	err = models.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if enabled {
-			return restoreTelegramProviderEnabledAssociations(ctx, tx, providerID)
-		}
-		return snapshotAndDisableTelegramProviderAssociations(ctx, tx, providerID)
-	})
-	if err != nil {
-		if errors.Is(err, errTelegramProviderSnapshotEmpty) {
-			summary, summaryErr := loadTelegramProviderSummary(ctx, providerID)
-			if summaryErr != nil {
-				return "", err
-			}
-			if summary.EnabledCount > 0 {
-				return strings.Join([]string{
-					"提供商无需恢复",
-					"目标：" + provider.Name,
-					fmt.Sprintf("当前启用关联：%d", summary.EnabledCount),
-				}, "\n"), nil
-			}
-			return "", errors.New("没有可恢复的启用关联快照，请到提供商与模型中手动启用需要的关联")
-		}
+	status := 0
+	if enabled {
+		status = 1
+	}
+	if err := models.DB.WithContext(ctx).
+		Model(&models.Provider{}).
+		Where("id = ?", providerID).
+		Update("status", status).Error; err != nil {
 		return "", err
 	}
 
@@ -601,6 +587,7 @@ func setTelegramAgentProviderStatus(ctx context.Context, providerID uint, enable
 	if err != nil {
 		return "", err
 	}
+	summary.Provider.Status = status
 	return strings.Join([]string{
 		fmt.Sprintf("已%s提供商", telegramStatusVerb(enabled)),
 		"目标：" + provider.Name,
@@ -1185,82 +1172,6 @@ func loadTelegramProviderSummaries(ctx context.Context, providers []models.Provi
 	return result, nil
 }
 
-func snapshotAndDisableTelegramProviderAssociations(ctx context.Context, tx *gorm.DB, providerID uint) error {
-	var enabledIDs []uint
-	if err := tx.WithContext(ctx).
-		Model(&models.ModelWithProvider{}).
-		Where("provider_id = ? AND status = ?", providerID, 1).
-		Pluck("id", &enabledIDs).Error; err != nil {
-		return err
-	}
-	if err := saveTelegramProviderStatusSnapshot(ctx, tx, providerID, enabledIDs); err != nil {
-		return err
-	}
-	if len(enabledIDs) == 0 {
-		return nil
-	}
-	return tx.WithContext(ctx).
-		Model(&models.ModelWithProvider{}).
-		Where("provider_id = ? AND id IN ?", providerID, enabledIDs).
-		Update("status", 0).Error
-}
-
-func restoreTelegramProviderEnabledAssociations(ctx context.Context, tx *gorm.DB, providerID uint) error {
-	enabledIDs, err := loadTelegramProviderStatusSnapshot(ctx, tx, providerID)
-	if err != nil {
-		return err
-	}
-	if len(enabledIDs) > 0 {
-		if err := tx.WithContext(ctx).
-			Model(&models.ModelWithProvider{}).
-			Where("provider_id = ? AND id IN ?", providerID, enabledIDs).
-			Update("status", 1).Error; err != nil {
-			return err
-		}
-	}
-	return tx.WithContext(ctx).
-		Where("key = ?", telegramProviderStatusSnapshotKey(providerID)).
-		Delete(&models.Config{}).Error
-}
-
-func saveTelegramProviderStatusSnapshot(ctx context.Context, tx *gorm.DB, providerID uint, enabledIDs []uint) error {
-	raw, err := json.Marshal(enabledIDs)
-	if err != nil {
-		return err
-	}
-	key := telegramProviderStatusSnapshotKey(providerID)
-	var existing models.Config
-	if err := tx.WithContext(ctx).Where("key = ?", key).First(&existing).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return tx.WithContext(ctx).Create(&models.Config{Key: key, Value: string(raw)}).Error
-		}
-		return err
-	}
-	return tx.WithContext(ctx).
-		Model(&models.Config{}).
-		Where("id = ?", existing.ID).
-		Update("value", string(raw)).Error
-}
-
-func loadTelegramProviderStatusSnapshot(ctx context.Context, tx *gorm.DB, providerID uint) ([]uint, error) {
-	var cfg models.Config
-	if err := tx.WithContext(ctx).Where("key = ?", telegramProviderStatusSnapshotKey(providerID)).First(&cfg).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, errTelegramProviderSnapshotEmpty
-		}
-		return nil, err
-	}
-	var enabledIDs []uint
-	if err := json.Unmarshal([]byte(cfg.Value), &enabledIDs); err != nil {
-		return nil, err
-	}
-	return enabledIDs, nil
-}
-
-func telegramProviderStatusSnapshotKey(providerID uint) string {
-	return models.KeyProviderStatusSnapshotPrefix + strconv.FormatUint(uint64(providerID), 10)
-}
-
 func sendTelegramToolText(ctx context.Context, client TelegramClient, chatID int64, text string) error {
 	return sendTelegramAgentTextWithAttachments(ctx, client, chatID, text)
 }
@@ -1403,13 +1314,13 @@ func telegramStatusLabel(status int) string {
 }
 
 func telegramProviderStatusLabel(summary telegramProviderSummary) string {
-	if summary.EnabledCount > 0 {
-		return "启用"
+	if summary.Provider.Status == 0 {
+		return "禁用"
 	}
 	if summary.TotalCount == 0 {
 		return "未关联"
 	}
-	return "禁用"
+	return "启用"
 }
 
 func ambiguousTelegramToolTargetError(kind string, names []string) error {

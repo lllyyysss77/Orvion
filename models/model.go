@@ -15,6 +15,7 @@ type Provider struct {
 	ProxyURL        string `gorm:"column:proxy_url"`         // 访问上游时使用的代理地址（可选）
 	ModelsFetchMode string `gorm:"column:models_fetch_mode"` // 模型获取方式：v1_models/api_pricing
 	Capabilities    ProviderCapabilities
+	Status          int `gorm:"default:1"` // 是否启用 (0/1)
 	// 接口转换配置：enabled=1 时，客户端不支持的接口会转换到 target 对应接口。
 	InterfaceConversionEnabled int    `gorm:"column:interface_conversion_enabled"` // 0/1
 	InterfaceConversionTarget  string `gorm:"column:interface_conversion_target"`  // chat/responses/messages

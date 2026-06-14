@@ -11,6 +11,7 @@ export interface Provider {
   ProxyURL?: string | null;
   ModelsFetchMode?: "v1_models" | "api_pricing" | string;
   Capabilities?: string[] | null;
+  Status?: number | boolean | null;
   InterfaceConversionEnabled?: number | boolean | null;
   InterfaceConversionTarget?: "chat" | "responses" | "messages" | string | null;
   ProviderEnabled?: boolean;
