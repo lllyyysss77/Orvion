@@ -96,11 +96,11 @@ func listTelegramAgentSkills(ctx context.Context, cfg models.TelegramAgentConfig
 	return strings.Join(lines, "\n"), nil
 }
 
-func readTelegramAgentSkill(_ context.Context, cfg models.TelegramAgentConfig, args telegramAgentToolCallArgs) (string, error) {
+func readTelegramAgentSkill(ctx context.Context, cfg models.TelegramAgentConfig, args telegramAgentToolCallArgs) (string, error) {
 	if !telegramAgentSkillsEnabled(cfg) {
 		return "Skills 未启用。请先在 TG Agent 配置中启用 Skills 并设置本地目录。", nil
 	}
-	skill, err := findTelegramAgentSkill(cfg, args.Skill)
+	skill, err := findTelegramAgentSkill(ctx, cfg, args.Skill)
 	if err != nil {
 		return "", err
 	}
@@ -154,12 +154,16 @@ func telegramAgentSkillScriptConfirmationText(cfg models.TelegramAgentConfig, sc
 	return "可直接执行"
 }
 
-func scanTelegramAgentSkills(cfg models.TelegramAgentConfig) ([]telegramAgentSkill, error) {
+func scanTelegramAgentSkills(ctx context.Context, cfg models.TelegramAgentConfig) ([]telegramAgentSkill, error) {
 	root, err := resolveTelegramAgentSkillsRoot(cfg)
 	if err != nil {
 		return nil, err
 	}
-	return scanTelegramAgentSkillsFromRoot(root)
+	skills, err := scanTelegramAgentSkillsFromRoot(root)
+	if err != nil {
+		return nil, err
+	}
+	return syncTelegramAgentSkills(ctx, root, skills)
 }
 
 func resolveTelegramAgentSkillsRoot(cfg models.TelegramAgentConfig) (string, error) {
@@ -177,12 +181,12 @@ func resolveTelegramAgentSkillsRoot(cfg models.TelegramAgentConfig) (string, err
 	return filepath.Clean(root), nil
 }
 
-func findTelegramAgentSkill(cfg models.TelegramAgentConfig, name string) (telegramAgentSkill, error) {
+func findTelegramAgentSkill(ctx context.Context, cfg models.TelegramAgentConfig, name string) (telegramAgentSkill, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return telegramAgentSkill{}, errors.New("请写明 Skill 名称")
 	}
-	skills, err := scanTelegramAgentSkills(cfg)
+	skills, err := scanTelegramAgentSkills(ctx, cfg)
 	if err != nil {
 		return telegramAgentSkill{}, err
 	}
@@ -330,8 +334,6 @@ func parseTelegramSkillKV(line string, skill *telegramAgentSkill) {
 		skill.Name = value
 	case "description":
 		skill.Description = value
-	case "enabled":
-		skill.Enabled = parseTelegramSkillBool(value, true)
 	case "triggers":
 		skill.Triggers = parseTelegramSkillStringList(value)
 	}

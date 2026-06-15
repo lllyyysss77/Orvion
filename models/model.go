@@ -223,6 +223,26 @@ func (TelegramAgentScheduledTask) TableName() string {
 	return "telegram_agent_scheduled_tasks"
 }
 
+type TelegramAgentSkill struct {
+	ID           uint `gorm:"primaryKey"`
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+	Name         string    `gorm:"column:name;size:160;uniqueIndex"`
+	Dir          string    `gorm:"column:dir;index"`
+	File         string    `gorm:"column:file"`
+	Description  string    `gorm:"column:description"`
+	Instructions string    `gorm:"column:instructions"`
+	Triggers     string    `gorm:"column:triggers"` // JSON 字符串
+	Scripts      string    `gorm:"column:scripts"`  // JSON 字符串
+	SearchText   string    `gorm:"column:search_text"`
+	Enabled      int       `gorm:"column:enabled;default:1;index"` // 是否启用 (0/1)
+	ScannedAt    time.Time `gorm:"column:scanned_at;index"`
+}
+
+func (TelegramAgentSkill) TableName() string {
+	return "telegram_agent_skills"
+}
+
 type OutputUnion struct {
 	OfString      string
 	OfStringArray []string `gorm:"serializer:json"`

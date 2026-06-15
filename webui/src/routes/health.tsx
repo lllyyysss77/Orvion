@@ -386,10 +386,14 @@ const HealthModelRow = ({
   const startTime = model.requestBlocks.length > 0 ? formatShortTime(model.requestBlocks[0].timestamp) : "-";
   const endTime = model.requestBlocks.length > 0 ? formatShortTime(model.requestBlocks[model.requestBlocks.length - 1].timestamp) : "-";
   const rateClass = pickSuccessRateClass(model.successRate);
+  const isUnused = model.totalRequests <= 0;
 
   return (
     <div
-      className="cursor-pointer rounded-2xl border border-border/60 bg-card/70 px-4 py-2.5 transition-colors hover:bg-card"
+      className={cn(
+        "relative cursor-pointer overflow-hidden rounded-2xl border border-border/60 bg-card/70 px-4 py-2.5 transition-colors hover:bg-card",
+        isUnused && "border-border/50 bg-muted/25 shadow-inner dark:bg-muted/10"
+      )}
       role="button"
       tabIndex={0}
       aria-expanded={expanded}
@@ -401,7 +405,13 @@ const HealthModelRow = ({
         }
       }}
     >
-      <div className="flex flex-col gap-2.5 lg:flex-row lg:items-start">
+      {isUnused ? (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 rounded-2xl bg-muted/30 shadow-[inset_0_0_28px_rgba(15,23,42,0.14)] dark:bg-black/15 dark:shadow-[inset_0_0_32px_rgba(0,0,0,0.38)]"
+        />
+      ) : null}
+      <div className="relative z-10 flex flex-col gap-2.5 lg:flex-row lg:items-start">
         <div className="w-full lg:w-56 shrink-0">
           <div className="flex items-center justify-between gap-2">
             <div className="min-w-0">
@@ -425,7 +435,7 @@ const HealthModelRow = ({
         </div>
       </div>
       {expanded ? (
-        <div className="mt-3 grid gap-2 border-t border-border/50 pt-3 md:grid-cols-2 xl:grid-cols-3" onClick={(event) => event.stopPropagation()}>
+        <div className="relative z-10 mt-3 grid gap-2 border-t border-border/50 pt-3 md:grid-cols-2 xl:grid-cols-3" onClick={(event) => event.stopPropagation()}>
           {model.providers.length > 0 ? (
             model.providers.map((item) => {
               const itemRate = item.totalRequests > 0 && typeof item.successRate === "number" ? item.successRate : 100;
@@ -467,7 +477,7 @@ const HealthModelRow = ({
 export default function HealthPage() {
   const [loading, setLoading] = useState(true);
   const [health, setHealth] = useState<SystemHealth | null>(null);
-  const [monitorView, setMonitorView] = useState<MonitorView>("providers");
+  const [monitorView, setMonitorView] = useState<MonitorView>("models");
   const [providerConsoleMap, setProviderConsoleMap] = useState<Record<number, string>>({});
   const [consoleLatencyMap, setConsoleLatencyMap] = useState<Record<number, ConsoleLatencyState>>({});
   const [expandedProviders, setExpandedProviders] = useState<Record<number, boolean>>({});
@@ -659,20 +669,20 @@ export default function HealthPage() {
             <Button
               type="button"
               size="sm"
-              variant={monitorView === "providers" ? "default" : "ghost"}
-              className="h-8 px-3 text-xs"
-              onClick={() => setMonitorView("providers")}
-            >
-              提供商监控
-            </Button>
-            <Button
-              type="button"
-              size="sm"
               variant={monitorView === "models" ? "default" : "ghost"}
               className="h-8 px-3 text-xs"
               onClick={() => setMonitorView("models")}
             >
               模型监控
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant={monitorView === "providers" ? "default" : "ghost"}
+              className="h-8 px-3 text-xs"
+              onClick={() => setMonitorView("providers")}
+            >
+              提供商监控
             </Button>
           </div>
         </div>

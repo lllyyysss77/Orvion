@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
+	"io/fs"
 	"math"
 	"net/http"
 	"os"
@@ -29,9 +30,10 @@ const (
 	TelegramAgentSkillSearchKeyword   = "keyword"
 	TelegramAgentSkillSearchEmbedding = "embedding"
 
-	telegramAgentSkillEmbeddingDims = 256
-	telegramAgentSkillFileMaxBytes  = 1024 * 1024
-	telegramAgentSkillMaxFileNodes  = 2000
+	telegramAgentSkillEmbeddingDims       = 256
+	telegramAgentSkillFileMaxBytes        = 1024 * 1024
+	telegramAgentSkillMaxFileNodes        = 2000
+	telegramAgentDynamicSkillContextLimit = 5
 )
 
 type TelegramAgentSkillScriptView struct {
@@ -110,8 +112,7 @@ type TelegramAgentSkillDeleteResult struct {
 }
 
 func ListTelegramAgentSkillsForManagement(ctx context.Context, cfg models.TelegramAgentConfig, query string, searchMode string) (TelegramAgentSkillListResult, error) {
-	_ = ctx
-	skills, err := scanTelegramAgentSkills(cfg)
+	skills, err := scanTelegramAgentSkills(ctx, cfg)
 	if err != nil {
 		return TelegramAgentSkillListResult{}, err
 	}
@@ -140,9 +141,273 @@ func ReloadTelegramAgentSkillsForManagement(ctx context.Context, cfg models.Tele
 	}, nil
 }
 
+func syncTelegramAgentSkills(ctx context.Context, root string, scanned []telegramAgentSkill) ([]telegramAgentSkill, error) {
+	if models.DB == nil {
+		return scanned, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	activeNames := make(map[string]struct{}, len(scanned))
+	result := make([]telegramAgentSkill, 0, len(scanned))
+	for _, skill := range scanned {
+		if strings.TrimSpace(skill.Name) == "" {
+			continue
+		}
+		activeNames[skill.Name] = struct{}{}
+		record, err := upsertTelegramAgentSkillRecord(ctx, skill)
+		if err != nil {
+			return nil, err
+		}
+		skill.Enabled = record.Enabled != 0
+		result = append(result, skill)
+	}
+	if err := cleanupMissingTelegramAgentSkillRecords(ctx, root, activeNames); err != nil {
+		return nil, err
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		return strings.ToLower(result[i].Name) < strings.ToLower(result[j].Name)
+	})
+	return result, nil
+}
+
+func upsertTelegramAgentSkillRecord(ctx context.Context, skill telegramAgentSkill) (models.TelegramAgentSkill, error) {
+	now := time.Now()
+	triggersJSON, err := json.Marshal(skill.Triggers)
+	if err != nil {
+		return models.TelegramAgentSkill{}, err
+	}
+	scriptsJSON, err := json.Marshal(telegramAgentSkillScriptViews(skill.Scripts))
+	if err != nil {
+		return models.TelegramAgentSkill{}, err
+	}
+
+	var record models.TelegramAgentSkill
+	err = models.DB.WithContext(ctx).Where("name = ?", skill.Name).First(&record).Error
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return models.TelegramAgentSkill{}, err
+	}
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		record = models.TelegramAgentSkill{
+			Name:    skill.Name,
+			Enabled: 1,
+		}
+	}
+
+	record.Dir = filepath.Clean(skill.Dir)
+	record.File = filepath.Clean(skill.File)
+	record.Description = skill.Description
+	record.Instructions = skill.Instructions
+	record.Triggers = string(triggersJSON)
+	record.Scripts = string(scriptsJSON)
+	record.SearchText = telegramAgentSkillSearchText(skill)
+	record.ScannedAt = now
+
+	if record.ID == 0 {
+		if err := models.DB.WithContext(ctx).Create(&record).Error; err != nil {
+			return models.TelegramAgentSkill{}, err
+		}
+		return record, nil
+	}
+	if err := models.DB.WithContext(ctx).Save(&record).Error; err != nil {
+		return models.TelegramAgentSkill{}, err
+	}
+	return record, nil
+}
+
+func cleanupMissingTelegramAgentSkillRecords(ctx context.Context, root string, activeNames map[string]struct{}) error {
+	var records []models.TelegramAgentSkill
+	if err := models.DB.WithContext(ctx).Find(&records).Error; err != nil {
+		return err
+	}
+	for _, record := range records {
+		if !telegramAgentSkillRecordInsideRoot(root, record) {
+			continue
+		}
+		if _, ok := activeNames[record.Name]; ok {
+			continue
+		}
+		if err := models.DB.WithContext(ctx).Delete(&record).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func telegramAgentSkillRecordInsideRoot(root string, record models.TelegramAgentSkill) bool {
+	dir := strings.TrimSpace(record.Dir)
+	if dir == "" {
+		return false
+	}
+	return ensureTelegramSkillPathInside(root, dir) == nil
+}
+
+func telegramAgentSkillScriptViews(scripts []telegramAgentSkillScript) []TelegramAgentSkillScriptView {
+	result := make([]TelegramAgentSkillScriptView, 0, len(scripts))
+	for _, script := range scripts {
+		result = append(result, TelegramAgentSkillScriptView{
+			Name:        script.Name,
+			Path:        filepath.ToSlash(script.Path),
+			Description: script.Description,
+			Confirm:     script.Confirm,
+			TimeoutMs:   script.TimeoutMs,
+		})
+	}
+	return result
+}
+
+func loadTelegramAgentSkillsFromDatabase(ctx context.Context, cfg models.TelegramAgentConfig, enabledOnly bool) ([]telegramAgentSkill, error) {
+	records, err := loadTelegramAgentSkillRecords(ctx, cfg, enabledOnly)
+	if err != nil {
+		return nil, err
+	}
+	skills := make([]telegramAgentSkill, 0, len(records))
+	for _, record := range records {
+		skills = append(skills, telegramAgentSkillFromRecord(record))
+	}
+	return skills, nil
+}
+
+func loadTelegramAgentSkillRecords(ctx context.Context, cfg models.TelegramAgentConfig, enabledOnly bool) ([]models.TelegramAgentSkill, error) {
+	if models.DB == nil {
+		return nil, nil
+	}
+	root, err := resolveTelegramAgentSkillsRoot(cfg)
+	if err != nil {
+		return nil, err
+	}
+	query := models.DB.WithContext(ctx).Order("LOWER(name) ASC")
+	if enabledOnly {
+		query = query.Where("enabled = ?", 1)
+	}
+	var records []models.TelegramAgentSkill
+	if err := query.Find(&records).Error; err != nil {
+		return nil, err
+	}
+	filtered := make([]models.TelegramAgentSkill, 0, len(records))
+	for _, record := range records {
+		if telegramAgentSkillRecordInsideRoot(root, record) {
+			filtered = append(filtered, record)
+		}
+	}
+	return filtered, nil
+}
+
+func telegramAgentSkillFromRecord(record models.TelegramAgentSkill) telegramAgentSkill {
+	var triggers []string
+	_ = json.Unmarshal([]byte(record.Triggers), &triggers)
+	var scriptViews []TelegramAgentSkillScriptView
+	_ = json.Unmarshal([]byte(record.Scripts), &scriptViews)
+
+	skill := telegramAgentSkill{
+		Name:         record.Name,
+		Description:  record.Description,
+		Enabled:      record.Enabled != 0,
+		Dir:          filepath.Clean(record.Dir),
+		File:         filepath.Clean(record.File),
+		Instructions: record.Instructions,
+		Triggers:     orderedUniqueStrings(triggers),
+	}
+	scripts := make([]telegramAgentSkillScript, 0, len(scriptViews))
+	for _, script := range scriptViews {
+		scripts = append(scripts, telegramAgentSkillScript{
+			Name:        script.Name,
+			Path:        script.Path,
+			Description: script.Description,
+			Confirm:     script.Confirm,
+			TimeoutMs:   script.TimeoutMs,
+		})
+	}
+	skill.Scripts = normalizeTelegramSkillScripts(skill, scripts)
+	return skill
+}
+
+func selectTelegramAgentSkillsForToolContext(ctx context.Context, cfg models.TelegramAgentConfig, query string, limit int) ([]telegramAgentSkill, error) {
+	if limit <= 0 {
+		limit = telegramAgentDynamicSkillContextLimit
+	}
+	scanned, err := scanTelegramAgentSkills(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	skills := filterEnabledTelegramAgentSkills(scanned)
+	if models.DB != nil {
+		skills, err = loadTelegramAgentSkillsFromDatabase(ctx, cfg, true)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(skills) == 0 {
+		return []telegramAgentSkill{}, nil
+	}
+	query = strings.TrimSpace(query)
+	if query == "" {
+		if len(skills) > limit {
+			return skills[:limit], nil
+		}
+		return skills, nil
+	}
+
+	ranked, err := rankTelegramAgentSkillsBySimilarity(ctx, cfg, skills, query)
+	if err != nil {
+		return nil, err
+	}
+	if len(ranked) == 0 {
+		return []telegramAgentSkill{}, nil
+	}
+	if len(ranked) > limit {
+		return ranked[:limit], nil
+	}
+	return ranked, nil
+}
+
+func filterEnabledTelegramAgentSkills(skills []telegramAgentSkill) []telegramAgentSkill {
+	result := make([]telegramAgentSkill, 0, len(skills))
+	for _, skill := range skills {
+		if skill.Enabled {
+			result = append(result, skill)
+		}
+	}
+	return result
+}
+
+func rankTelegramAgentSkillsBySimilarity(ctx context.Context, cfg models.TelegramAgentConfig, skills []telegramAgentSkill, query string) ([]telegramAgentSkill, error) {
+	queryVector, err := buildTelegramAgentSkillEmbedding(ctx, cfg, query)
+	if err != nil {
+		return nil, err
+	}
+	type scoredSkill struct {
+		skill telegramAgentSkill
+		score float64
+	}
+	scored := make([]scoredSkill, 0, len(skills))
+	for _, skill := range skills {
+		skillVector, err := buildTelegramAgentSkillEmbedding(ctx, cfg, telegramAgentSkillSearchText(skill))
+		if err != nil {
+			return nil, err
+		}
+		score := telegramAgentSkillCosine(queryVector, skillVector)
+		if score <= 0 {
+			continue
+		}
+		scored = append(scored, scoredSkill{skill: skill, score: score})
+	}
+	sort.SliceStable(scored, func(i, j int) bool {
+		if scored[i].score == scored[j].score {
+			return strings.ToLower(scored[i].skill.Name) < strings.ToLower(scored[j].skill.Name)
+		}
+		return scored[i].score > scored[j].score
+	})
+	result := make([]telegramAgentSkill, 0, len(scored))
+	for _, item := range scored {
+		result = append(result, item.skill)
+	}
+	return result, nil
+}
+
 func ReadTelegramAgentSkillForManagement(ctx context.Context, cfg models.TelegramAgentConfig, name string) (TelegramAgentSkillView, error) {
-	_ = ctx
-	skill, err := findTelegramAgentSkill(cfg, name)
+	skill, err := findTelegramAgentSkill(ctx, cfg, name)
 	if err != nil {
 		return TelegramAgentSkillView{}, err
 	}
@@ -150,8 +415,7 @@ func ReadTelegramAgentSkillForManagement(ctx context.Context, cfg models.Telegra
 }
 
 func ListTelegramAgentSkillFilesForManagement(ctx context.Context, cfg models.TelegramAgentConfig, name string) (TelegramAgentSkillFileTreeResult, error) {
-	_ = ctx
-	skill, err := findTelegramAgentSkill(cfg, name)
+	skill, err := findTelegramAgentSkill(ctx, cfg, name)
 	if err != nil {
 		return TelegramAgentSkillFileTreeResult{}, err
 	}
@@ -168,8 +432,7 @@ func ListTelegramAgentSkillFilesForManagement(ctx context.Context, cfg models.Te
 }
 
 func ReadTelegramAgentSkillFileForManagement(ctx context.Context, cfg models.TelegramAgentConfig, name string, relPath string) (TelegramAgentSkillFileContentResult, error) {
-	_ = ctx
-	skill, err := findTelegramAgentSkill(cfg, name)
+	skill, err := findTelegramAgentSkill(ctx, cfg, name)
 	if err != nil {
 		return TelegramAgentSkillFileContentResult{}, err
 	}
@@ -205,8 +468,7 @@ func ReadTelegramAgentSkillFileForManagement(ctx context.Context, cfg models.Tel
 }
 
 func WriteTelegramAgentSkillFileForManagement(ctx context.Context, cfg models.TelegramAgentConfig, name string, req TelegramAgentSkillFileContentRequest) (TelegramAgentSkillFileContentResult, error) {
-	_ = ctx
-	skill, err := findTelegramAgentSkill(cfg, name)
+	skill, err := findTelegramAgentSkill(ctx, cfg, name)
 	if err != nil {
 		return TelegramAgentSkillFileContentResult{}, err
 	}
@@ -246,12 +508,11 @@ func WriteTelegramAgentSkillFileForManagement(ctx context.Context, cfg models.Te
 }
 
 func DeleteTelegramAgentSkillForManagement(ctx context.Context, cfg models.TelegramAgentConfig, name string) (TelegramAgentSkillDeleteResult, error) {
-	_ = ctx
 	root, err := resolveTelegramAgentSkillsRoot(cfg)
 	if err != nil {
 		return TelegramAgentSkillDeleteResult{}, err
 	}
-	skill, err := findTelegramAgentSkill(cfg, name)
+	skill, err := findTelegramAgentSkill(ctx, cfg, name)
 	if err != nil {
 		return TelegramAgentSkillDeleteResult{}, err
 	}
@@ -269,6 +530,11 @@ func DeleteTelegramAgentSkillForManagement(ctx context.Context, cfg models.Teleg
 	if err := os.RemoveAll(skill.Dir); err != nil {
 		return TelegramAgentSkillDeleteResult{}, err
 	}
+	if models.DB != nil {
+		if err := models.DB.WithContext(ctx).Where("name = ?", skill.Name).Delete(&models.TelegramAgentSkill{}).Error; err != nil {
+			return TelegramAgentSkillDeleteResult{}, err
+		}
+	}
 	return TelegramAgentSkillDeleteResult{
 		Name:    skill.Name,
 		Dir:     skill.Dir,
@@ -277,23 +543,34 @@ func DeleteTelegramAgentSkillForManagement(ctx context.Context, cfg models.Teleg
 }
 
 func SetTelegramAgentSkillEnabled(ctx context.Context, cfg models.TelegramAgentConfig, name string, enabled bool) (TelegramAgentSkillView, error) {
-	_ = ctx
-	skill, err := findTelegramAgentSkill(cfg, name)
+	skill, err := findTelegramAgentSkill(ctx, cfg, name)
 	if err != nil {
 		return TelegramAgentSkillView{}, err
 	}
-	if err := writeTelegramAgentSkillEnabled(skill.File, skill.Name, enabled); err != nil {
+	if models.DB == nil {
+		skill.Enabled = enabled
+		return toTelegramAgentSkillView(skill, 0), nil
+	}
+	if err := models.DB.WithContext(ctx).Model(&models.TelegramAgentSkill{}).
+		Where("name = ?", skill.Name).
+		Update("enabled", boolToTelegramSkillEnabledInt(enabled)).Error; err != nil {
 		return TelegramAgentSkillView{}, err
 	}
-	skill, err = findTelegramAgentSkill(cfg, name)
+	skill, err = findTelegramAgentSkill(ctx, cfg, name)
 	if err != nil {
 		return TelegramAgentSkillView{}, err
 	}
 	return toTelegramAgentSkillView(skill, 0), nil
 }
 
+func boolToTelegramSkillEnabledInt(enabled bool) int {
+	if enabled {
+		return 1
+	}
+	return 0
+}
+
 func ImportTelegramAgentSkill(ctx context.Context, cfg models.TelegramAgentConfig, req TelegramAgentSkillImportRequest) (TelegramAgentSkillView, error) {
-	_ = ctx
 	source, err := normalizeTelegramAgentSkillImportSource(req.SourcePath)
 	if err != nil {
 		return TelegramAgentSkillView{}, err
@@ -356,6 +633,13 @@ func ImportTelegramAgentSkill(ctx context.Context, cfg models.TelegramAgentConfi
 	if err != nil {
 		return TelegramAgentSkillView{}, err
 	}
+	if models.DB != nil {
+		record, err := upsertTelegramAgentSkillRecord(ctx, skill)
+		if err != nil {
+			return TelegramAgentSkillView{}, err
+		}
+		skill.Enabled = record.Enabled != 0
+	}
 	return toTelegramAgentSkillView(skill, 0), nil
 }
 
@@ -382,17 +666,23 @@ func scanTelegramAgentSkillsFromRoot(root string) ([]telegramAgentSkill, error) 
 	}
 
 	dirs := []string{}
-	if hasTelegramSkillFile(root) {
-		dirs = append(dirs, root)
-	}
-	entries, err := os.ReadDir(root)
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !entry.IsDir() {
+			return nil
+		}
+		if hasTelegramSkillFile(path) {
+			dirs = append(dirs, path)
+			if path != root {
+				return filepath.SkipDir
+			}
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, err
-	}
-	for _, entry := range entries {
-		if entry.IsDir() {
-			dirs = append(dirs, filepath.Join(root, entry.Name()))
-		}
 	}
 
 	skills := make([]telegramAgentSkill, 0, len(dirs))
@@ -850,53 +1140,6 @@ func telegramAgentSkillCosine(left []float64, right []float64) float64 {
 		score += left[i] * right[i]
 	}
 	return score
-}
-
-func writeTelegramAgentSkillEnabled(file string, skillName string, enabled bool) error {
-	raw, err := os.ReadFile(file)
-	if err != nil {
-		return err
-	}
-	content := strings.ReplaceAll(string(raw), "\r\n", "\n")
-	enabledLine := fmt.Sprintf("enabled: %t", enabled)
-	if !strings.HasPrefix(content, "---\n") {
-		return os.WriteFile(file, []byte(strings.Join([]string{
-			"---",
-			"name: " + skillName,
-			enabledLine,
-			"---",
-			content,
-		}, "\n")), 0o644)
-	}
-	end := strings.Index(content[4:], "\n---")
-	if end < 0 {
-		return os.WriteFile(file, []byte(strings.Join([]string{
-			"---",
-			"name: " + skillName,
-			enabledLine,
-			"---",
-			content,
-		}, "\n")), 0o644)
-	}
-	metaEnd := 4 + end
-	meta := content[4:metaEnd]
-	rest := content[metaEnd:]
-	lines := strings.Split(meta, "\n")
-	replaced := false
-	for index, line := range lines {
-		key, _, ok := splitTelegramSkillKV(strings.TrimSpace(line))
-		if ok && key == "enabled" {
-			prefix := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
-			lines[index] = prefix + enabledLine
-			replaced = true
-			break
-		}
-	}
-	if !replaced {
-		lines = append(lines, enabledLine)
-	}
-	next := "---\n" + strings.Join(lines, "\n") + rest
-	return os.WriteFile(file, []byte(next), 0o644)
 }
 
 func normalizeTelegramAgentSkillImportSource(source string) (string, error) {

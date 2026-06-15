@@ -1489,7 +1489,6 @@ func TestTelegramAgentSkillToolsListReadAndRun(t *testing.T) {
 		"---",
 		"name: demo",
 		"description: Demo skill",
-		"enabled: true",
 		"triggers: [demo, echo]",
 		"scripts:",
 		"  - name: echo",
@@ -1518,7 +1517,6 @@ func TestTelegramAgentSkillToolsListReadAndRun(t *testing.T) {
 		"---",
 		"name: disabled",
 		"description: Disabled skill",
-		"enabled: false",
 		"---",
 		"Disabled instructions.",
 	}, "\n")), 0o644); err != nil {
@@ -1531,6 +1529,9 @@ func TestTelegramAgentSkillToolsListReadAndRun(t *testing.T) {
 		ToolConfirmationRequired: &requireConfirm,
 		SkillsEnabled:            &skillsEnabled,
 		SkillsDir:                root,
+	}
+	if _, err := SetTelegramAgentSkillEnabled(ctx, cfg, "disabled", false); err != nil {
+		t.Fatalf("写入禁用 Skill 状态失败: %v", err)
 	}
 
 	listResult := executeTelegramAgentFunctionToolCall(ctx, chatID, cfg, telegramAgentOpenAIToolCall{
@@ -1617,7 +1618,6 @@ func TestTelegramAgentSkillScriptRequiresConfirmation(t *testing.T) {
 		"---",
 		"name: confirm",
 		"description: Confirm skill",
-		"enabled: true",
 		"scripts:",
 		"  - name: dangerous",
 		"    path: scripts/dangerous.sh",
@@ -1697,7 +1697,6 @@ func TestTelegramAgentSkillScriptSkipsConfirmationWhenGlobalDisabled(t *testing.
 		"---",
 		"name: confirm-disabled",
 		"description: Confirm disabled skill",
-		"enabled: true",
 		"scripts:",
 		"  - name: search",
 		"    path: scripts/search.sh",
@@ -1766,12 +1765,13 @@ func TestTelegramAgentSkillScriptSkipsConfirmationWhenGlobalDisabled(t *testing.
 }
 
 func TestTelegramAgentSkillManagementListToggleAndImport(t *testing.T) {
+	db := setupTelegramAgentToolTestDB(t, "tg_agent_skill_management")
 	ctx := context.Background()
 	root := t.TempDir()
 	sourceRoot := t.TempDir()
 
-	writeTelegramAgentTestSkill(t, root, "deploy", "skills.md", true, "Deploy project pipeline", "run")
-	sourceSkillDir := writeTelegramAgentTestSkill(t, sourceRoot, "docs", "SKILL.md", true, "Generate project docs", "build")
+	writeTelegramAgentTestSkill(t, root, "deploy", "skills.md", "Deploy project pipeline", "run")
+	sourceSkillDir := writeTelegramAgentTestSkill(t, sourceRoot, "docs", "SKILL.md", "Generate project docs", "build")
 
 	skillsEnabled := true
 	cfg := models.TelegramAgentConfig{
@@ -1794,12 +1794,19 @@ func TestTelegramAgentSkillManagementListToggleAndImport(t *testing.T) {
 	if updated.Enabled {
 		t.Fatalf("期望 Skill 已禁用: %+v", updated)
 	}
+	var skillRecord models.TelegramAgentSkill
+	if err := db.Where("name = ?", "deploy").First(&skillRecord).Error; err != nil {
+		t.Fatalf("应写入 Skill 状态表: %v", err)
+	}
+	if skillRecord.Enabled != 0 {
+		t.Fatalf("Skill 状态表应记录禁用，实际为: %+v", skillRecord)
+	}
 	raw, err := os.ReadFile(filepath.Join(root, "deploy", "skills.md"))
 	if err != nil {
 		t.Fatalf("读取 Skill 文件失败: %v", err)
 	}
-	if !strings.Contains(string(raw), "enabled: false") {
-		t.Fatalf("Skill 文件未写入禁用状态: %s", raw)
+	if strings.Contains(string(raw), "enabled: false") {
+		t.Fatalf("Skill 文件不应写入禁用状态: %s", raw)
 	}
 
 	imported, err := ImportTelegramAgentSkill(ctx, cfg, TelegramAgentSkillImportRequest{
@@ -1815,7 +1822,7 @@ func TestTelegramAgentSkillManagementListToggleAndImport(t *testing.T) {
 		t.Fatalf("导入后的 Skill 文件不存在: %v", err)
 	}
 
-	mismatchDir := writeTelegramAgentTestSkillWithMetaName(t, sourceRoot, "UltimateSearchSkill-main", "ultimate-search", "SKILL.md", true, "Search skill", "search")
+	mismatchDir := writeTelegramAgentTestSkillWithMetaName(t, sourceRoot, "UltimateSearchSkill-main", "ultimate-search", "SKILL.md", "Search skill", "search")
 	importedMismatch, err := ImportTelegramAgentSkill(ctx, cfg, TelegramAgentSkillImportRequest{
 		SourcePath: mismatchDir,
 	})
@@ -1841,23 +1848,31 @@ func TestTelegramAgentSkillManagementListToggleAndImport(t *testing.T) {
 }
 
 func TestTelegramAgentSkillFunctionDefinitionsAreDynamic(t *testing.T) {
+	ctx := context.Background()
+	setupTelegramAgentToolTestDB(t, "tg_agent_skill_dynamic_definitions")
 	root := t.TempDir()
-	writeTelegramAgentTestSkill(t, root, "writer", "SKILL.md", true, "Write release notes", "compose")
+	writeTelegramAgentTestSkill(t, root, "writer", "SKILL.md", "Write release notes", "compose")
+	writeTelegramAgentTestSkill(t, root, "weather", "SKILL.md", "Weather forecast rainfall temperature", "forecast")
 
 	skillsEnabled := true
 	disabled := false
-	withoutSkills := telegramAgentFunctionToolDefinitions(models.TelegramAgentConfig{
+	withoutSkills := telegramAgentFunctionToolDefinitions(ctx, models.TelegramAgentConfig{
 		SkillsEnabled: &disabled,
 		SkillsDir:     root,
-	})
+	}, "")
 	if _, ok := findTelegramAgentFunctionDefinitionForTest(withoutSkills, telegramAgentToolListSkills); ok {
 		t.Fatalf("Skills 未启用时不应暴露 Skills 工具")
 	}
 
-	withSkills := telegramAgentFunctionToolDefinitions(models.TelegramAgentConfig{
+	cfg := models.TelegramAgentConfig{
 		SkillsEnabled: &skillsEnabled,
 		SkillsDir:     root,
-	})
+	}
+	if _, err := SetTelegramAgentSkillEnabled(ctx, cfg, "weather", false); err != nil {
+		t.Fatalf("禁用非目标 Skill 失败: %v", err)
+	}
+
+	withSkills := telegramAgentFunctionToolDefinitions(ctx, cfg, "release notes")
 	if _, ok := findTelegramAgentFunctionDefinitionForTest(withSkills, telegramAgentToolListSkills); !ok {
 		t.Fatalf("Skills 启用时应暴露 list_skills")
 	}
@@ -1874,7 +1889,15 @@ func TestTelegramAgentSkillFunctionDefinitionsAreDynamic(t *testing.T) {
 	}
 	enumValues, ok := skillProp["enum"].([]string)
 	if !ok || len(enumValues) != 1 || enumValues[0] != "writer" {
-		t.Fatalf("Skill enum 未按本地扫描动态生成: %+v", skillProp["enum"])
+		t.Fatalf("Skill enum 未按启用状态动态生成: %+v", skillProp["enum"])
+	}
+
+	ranked, err := selectTelegramAgentSkillsForToolContext(ctx, cfg, "release notes", 1)
+	if err != nil {
+		t.Fatalf("动态检索 Skill 失败: %v", err)
+	}
+	if len(ranked) != 1 || ranked[0].Name != "writer" {
+		t.Fatalf("动态检索应优先返回匹配 Skill，实际为: %+v", ranked)
 	}
 }
 
@@ -1924,11 +1947,11 @@ func TestMergeTelegramAgentConfigIgnoresStoredSkillsDir(t *testing.T) {
 	}
 }
 
-func writeTelegramAgentTestSkill(t *testing.T, root string, name string, fileName string, enabled bool, description string, scriptName string) string {
-	return writeTelegramAgentTestSkillWithMetaName(t, root, name, name, fileName, enabled, description, scriptName)
+func writeTelegramAgentTestSkill(t *testing.T, root string, name string, fileName string, description string, scriptName string) string {
+	return writeTelegramAgentTestSkillWithMetaName(t, root, name, name, fileName, description, scriptName)
 }
 
-func writeTelegramAgentTestSkillWithMetaName(t *testing.T, root string, dirName string, metaName string, fileName string, enabled bool, description string, scriptName string) string {
+func writeTelegramAgentTestSkillWithMetaName(t *testing.T, root string, dirName string, metaName string, fileName string, description string, scriptName string) string {
 	t.Helper()
 	dir := filepath.Join(root, dirName)
 	scriptDir := filepath.Join(dir, "scripts")
@@ -1939,7 +1962,6 @@ func writeTelegramAgentTestSkillWithMetaName(t *testing.T, root string, dirName 
 		"---",
 		"name: " + metaName,
 		"description: " + description,
-		fmt.Sprintf("enabled: %t", enabled),
 		"triggers: [" + metaName + "]",
 		"scripts:",
 		"  - name: " + scriptName,
@@ -1989,6 +2011,7 @@ func setupTelegramAgentToolTestDB(t *testing.T, name string) *gorm.DB {
 		&models.TelegramAgentPendingAction{},
 		&models.TelegramAgentToolCallLog{},
 		&models.TelegramAgentScheduledTask{},
+		&models.TelegramAgentSkill{},
 	); err != nil {
 		t.Fatalf("迁移测试表失败: %v", err)
 	}

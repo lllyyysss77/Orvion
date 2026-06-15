@@ -206,6 +206,7 @@ const buildSmoothLine = (points: { x: number; y: number }[]) => {
   if (points.length === 2) {
     return `M${points[0].x.toFixed(2)} ${points[0].y.toFixed(2)} L${points[1].x.toFixed(2)} ${points[1].y.toFixed(2)}`;
   }
+  const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
   const tension = 1;
   const path: string[] = [`M${points[0].x.toFixed(2)} ${points[0].y.toFixed(2)}`];
   for (let i = 0; i < points.length - 1; i += 1) {
@@ -213,11 +214,13 @@ const buildSmoothLine = (points: { x: number; y: number }[]) => {
     const p1 = points[i];
     const p2 = points[i + 1];
     const p3 = points[i + 2] ?? p2;
+    const minY = Math.min(p1.y, p2.y);
+    const maxY = Math.max(p1.y, p2.y);
 
     const cp1x = p1.x + (p2.x - p0.x) / 6 * tension;
-    const cp1y = p1.y + (p2.y - p0.y) / 6 * tension;
+    const cp1y = clamp(p1.y + (p2.y - p0.y) / 6 * tension, minY, maxY);
     const cp2x = p2.x - (p3.x - p1.x) / 6 * tension;
-    const cp2y = p2.y - (p3.y - p1.y) / 6 * tension;
+    const cp2y = clamp(p2.y - (p3.y - p1.y) / 6 * tension, minY, maxY);
 
     path.push(
       `C${cp1x.toFixed(2)} ${cp1y.toFixed(2)} ${cp2x.toFixed(2)} ${cp2y.toFixed(2)} ${p2.x.toFixed(2)} ${p2.y.toFixed(2)}`
@@ -312,12 +315,7 @@ const TodayAmountTrendCard = memo(({
     () => curvePoints.map((point) => point.requests),
     [curvePoints]
   );
-  const amountData = useMemo(
-    () => curvePoints.map((point) => point.amount),
-    [curvePoints]
-  );
   const maxRequests = Math.max(1, ...requestData);
-  const maxAmount = Math.max(0, ...amountData);
   const pointStep = plotWidth / Math.max(1, curvePoints.length - 1);
   const currentHour = new Date().getHours();
   const currentIndex = curvePoints.findIndex((point) => point.hour === currentHour);
@@ -337,14 +335,6 @@ const TodayAmountTrendCard = memo(({
     }),
     [curvePoints.length, margin.left, margin.top, maxRequests, plotHeight, plotWidth, pointStep, requestData]
   );
-  const amountLinePoints = useMemo(
-    () => amountData.map((value, index) => {
-      const x = margin.left + (curvePoints.length <= 1 ? plotWidth / 2 : pointStep * index);
-      const y = margin.top + plotHeight - (maxAmount <= 0 ? 0 : (value / maxAmount) * plotHeight);
-      return { x, y };
-    }),
-    [amountData, curvePoints.length, margin.left, margin.top, maxAmount, plotHeight, plotWidth, pointStep]
-  );
   const requestLine = useMemo(
     () => buildSmoothLine(requestLinePoints),
     [requestLinePoints]
@@ -352,15 +342,10 @@ const TodayAmountTrendCard = memo(({
   const requestArea = requestLine && requestLinePoints.length > 0
     ? `${requestLine} L ${requestLinePoints[requestLinePoints.length - 1].x.toFixed(2)} ${margin.top + plotHeight} L ${requestLinePoints[0].x.toFixed(2)} ${margin.top + plotHeight} Z`
     : "";
-  const amountLine = useMemo(
-    () => (maxAmount > 0 ? buildSmoothLine(amountLinePoints) : ""),
-    [amountLinePoints, maxAmount]
-  );
   const safeHoveredIndex = hoveredIndex == null || curvePoints.length === 0
     ? null
     : Math.max(0, Math.min(hoveredIndex, curvePoints.length - 1));
   const hoveredRequestPoint = safeHoveredIndex == null ? null : requestLinePoints[safeHoveredIndex];
-  const hoveredAmountPoint = safeHoveredIndex == null ? null : amountLinePoints[safeHoveredIndex];
   const hoveredData = safeHoveredIndex == null ? null : curvePoints[safeHoveredIndex];
   const tooltipLeft = hoveredRequestPoint ? `${(hoveredRequestPoint.x / chartWidth) * 100}%` : "0%";
   const tooltipTranslate = safeHoveredIndex == null
@@ -409,10 +394,6 @@ const TodayAmountTrendCard = memo(({
               <span className="inline-flex items-center gap-1.5">
                 <span className="h-2 w-2 rounded-full bg-emerald-500" />
                 请求量
-              </span>
-              <span className="inline-flex items-center gap-1.5">
-                <span className="h-0.5 w-4 rounded-full bg-amber-500" />
-                金额趋势
               </span>
             </div>
             {currentPoint && (
@@ -470,26 +451,6 @@ const TodayAmountTrendCard = memo(({
                 );
               })}
 
-              {currentIndex >= 0 && requestLinePoints[currentIndex] && (
-                <rect
-                  x={requestLinePoints[currentIndex].x - Math.max(6, pointStep / 2)}
-                  y={margin.top}
-                  width={Math.max(12, pointStep)}
-                  height={plotHeight}
-                  className="fill-sky-500/10"
-                />
-              )}
-
-              {safeHoveredIndex != null && hoveredRequestPoint && (
-                <rect
-                  x={hoveredRequestPoint.x - Math.max(6, pointStep / 2)}
-                  y={margin.top}
-                  width={Math.max(12, pointStep)}
-                  height={plotHeight}
-                  className="fill-emerald-500/10"
-                />
-              )}
-
               {requestArea && (
                 <path d={requestArea} fill="url(#requestCurveFill)" />
               )}
@@ -502,19 +463,6 @@ const TodayAmountTrendCard = memo(({
                   strokeWidth="3"
                   strokeLinecap="round"
                   strokeLinejoin="round"
-                />
-              )}
-
-              {amountLine && (
-                <path
-                  d={amountLine}
-                  className="stroke-amber-500"
-                  fill="none"
-                  strokeWidth="2"
-                  strokeDasharray="6 6"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  opacity="0.82"
                 />
               )}
 
@@ -555,15 +503,6 @@ const TodayAmountTrendCard = memo(({
                     className="fill-emerald-500 stroke-card"
                     strokeWidth="2"
                   />
-                  {hoveredAmountPoint && amountLine && (
-                    <circle
-                      cx={hoveredAmountPoint.x}
-                      cy={hoveredAmountPoint.y}
-                      r="3.2"
-                      className="fill-amber-500 stroke-card"
-                      strokeWidth="2"
-                    />
-                  )}
                 </>
               )}
 
@@ -591,7 +530,6 @@ const TodayAmountTrendCard = memo(({
             >
               <div className="font-semibold text-foreground">{hoveredData.hour.toString().padStart(2, "0")}:00</div>
               <div className="mt-1 text-muted-foreground">请求 {hoveredData.requests.toLocaleString()}</div>
-              <div className="text-muted-foreground">金额 ${formatAmountValue(hoveredData.amount)}</div>
             </div>
           )}
         </div>

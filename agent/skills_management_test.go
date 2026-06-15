@@ -10,6 +10,8 @@ import (
 )
 
 func TestTelegramAgentSkillFileManagement(t *testing.T) {
+	useNilTelegramAgentSkillTestDB(t)
+
 	root := t.TempDir()
 	skillDir := filepath.Join(root, "demo")
 	if err := os.MkdirAll(filepath.Join(skillDir, "scripts"), 0o755); err != nil {
@@ -63,6 +65,8 @@ func TestTelegramAgentSkillFileManagement(t *testing.T) {
 }
 
 func TestTelegramAgentSkillFilePathRejectsTraversal(t *testing.T) {
+	useNilTelegramAgentSkillTestDB(t)
+
 	root := t.TempDir()
 	skillDir := filepath.Join(root, "demo")
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
@@ -85,4 +89,13 @@ func TestTelegramAgentSkillFilePathRejectsTraversal(t *testing.T) {
 	}); err == nil {
 		t.Fatalf("越权保存路径应该被拒绝")
 	}
+}
+
+func useNilTelegramAgentSkillTestDB(t *testing.T) {
+	t.Helper()
+	previousDB := models.DB
+	t.Cleanup(func() {
+		models.DB = previousDB
+	})
+	models.DB = nil
 }

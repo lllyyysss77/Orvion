@@ -18,7 +18,7 @@ type telegramAgentFunctionToolDefinition struct {
 	Handler     telegramAgentFunctionToolHandler
 }
 
-func telegramAgentFunctionToolDefinitions(cfg models.TelegramAgentConfig) []telegramAgentFunctionToolDefinition {
+func telegramAgentFunctionToolDefinitions(ctx context.Context, cfg models.TelegramAgentConfig, skillQuery string) []telegramAgentFunctionToolDefinition {
 	mutationDescriptionSuffix := "该工具不会立即修改，而是创建一个需要用户确认的待执行操作。"
 	if !telegramAgentRequiresToolConfirmation(cfg) {
 		mutationDescriptionSuffix = "该工具会直接执行修改，不需要用户再次确认。"
@@ -295,15 +295,15 @@ func telegramAgentFunctionToolDefinitions(cfg models.TelegramAgentConfig) []tele
 		},
 	}
 
-	return append(definitions, telegramAgentSkillFunctionToolDefinitions(cfg)...)
+	return append(definitions, telegramAgentSkillFunctionToolDefinitions(ctx, cfg, skillQuery)...)
 }
 
-func telegramAgentSkillFunctionToolDefinitions(cfg models.TelegramAgentConfig) []telegramAgentFunctionToolDefinition {
+func telegramAgentSkillFunctionToolDefinitions(ctx context.Context, cfg models.TelegramAgentConfig, skillQuery string) []telegramAgentFunctionToolDefinition {
 	if !telegramAgentSkillsEnabled(cfg) {
 		return nil
 	}
 
-	skills, err := scanTelegramAgentSkills(cfg)
+	skills, err := selectTelegramAgentSkillsForToolContext(ctx, cfg, skillQuery, telegramAgentDynamicSkillContextLimit)
 	catalogText := "当前 Skill 目录尚未扫描到可用 Skill。"
 	skillNames := []string{}
 	if err == nil {
@@ -401,9 +401,9 @@ func summarizeTelegramAgentSkillToolCatalog(skills []telegramAgentSkill) string 
 	return "当前启用 Skill：" + strings.Join(parts, "；") + "。"
 }
 
-func findTelegramAgentFunctionToolDefinition(cfg models.TelegramAgentConfig, name string) (telegramAgentFunctionToolDefinition, bool) {
+func findTelegramAgentFunctionToolDefinition(ctx context.Context, cfg models.TelegramAgentConfig, name string) (telegramAgentFunctionToolDefinition, bool) {
 	name = strings.TrimSpace(name)
-	for _, tool := range telegramAgentFunctionToolDefinitions(cfg) {
+	for _, tool := range telegramAgentFunctionToolDefinitions(ctx, cfg, "") {
 		if tool.Name == name {
 			return tool, true
 		}

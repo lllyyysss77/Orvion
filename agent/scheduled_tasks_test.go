@@ -36,6 +36,11 @@ func TestTelegramAgentScheduledTaskDailyNextRunAt(t *testing.T) {
 }
 
 func TestTelegramAgentScheduledTaskClaimAndFinish(t *testing.T) {
+	previousDB := models.DB
+	t.Cleanup(func() {
+		models.DB = previousDB
+	})
+
 	db, err := gorm.Open(sqlite.Open("file:tg_agent_scheduled_task_claim?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {
 		t.Fatalf("打开测试数据库失败: %v", err)

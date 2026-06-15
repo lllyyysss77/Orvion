@@ -188,11 +188,11 @@ func executeTelegramCommandAction(ctx context.Context, run telegramCommandRun) (
 	return formatTelegramCommandResult(run, exitCode, stdoutText, stderrText), nil
 }
 
-func matchTelegramCommandSkillScript(_ context.Context, cfg models.TelegramAgentConfig, run telegramCommandRun) (telegramAgentSkill, telegramAgentSkillScript, bool, error) {
+func matchTelegramCommandSkillScript(ctx context.Context, cfg models.TelegramAgentConfig, run telegramCommandRun) (telegramAgentSkill, telegramAgentSkillScript, bool, error) {
 	if !telegramAgentSkillsEnabled(cfg) {
 		return telegramAgentSkill{}, telegramAgentSkillScript{}, false, nil
 	}
-	skills, err := scanTelegramAgentSkills(cfg)
+	skills, err := scanTelegramAgentSkills(ctx, cfg)
 	if err != nil {
 		return telegramAgentSkill{}, telegramAgentSkillScript{}, false, err
 	}
