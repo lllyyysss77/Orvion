@@ -37,7 +37,6 @@ type telegramAgentSkillScript struct {
 	Path        string
 	AbsPath     string
 	Description string
-	Confirm     bool
 	TimeoutMs   int
 }
 
@@ -116,9 +115,8 @@ func readTelegramAgentSkill(ctx context.Context, cfg models.TelegramAgentConfig,
 	if len(skill.Scripts) > 0 {
 		lines = append(lines, "脚本：")
 		for _, script := range skill.Scripts {
-			confirmText := telegramAgentSkillScriptConfirmationText(cfg, script)
 			lines = append(lines,
-				fmt.Sprintf("- %s：%s（%s，超时 %dms）", script.Name, emptyTextFallback(script.Description, "无描述"), confirmText, script.TimeoutMs),
+				fmt.Sprintf("- %s：%s（超时 %dms）", script.Name, emptyTextFallback(script.Description, "无描述"), script.TimeoutMs),
 				"  相对路径："+filepath.ToSlash(script.Path),
 				"  绝对路径："+script.AbsPath,
 			)
@@ -138,20 +136,6 @@ func readTelegramAgentSkill(ctx context.Context, cfg models.TelegramAgentConfig,
 		"4. 如果脚本明确要求 stdin JSON，可通过 stdin 传入；否则优先使用命令行参数。",
 	)
 	return strings.Join(lines, "\n"), nil
-}
-
-func telegramAgentSkillScriptRequiresConfirmation(cfg models.TelegramAgentConfig, script telegramAgentSkillScript) bool {
-	return telegramAgentRequiresToolConfirmation(cfg) && script.Confirm
-}
-
-func telegramAgentSkillScriptConfirmationText(cfg models.TelegramAgentConfig, script telegramAgentSkillScript) string {
-	if !telegramAgentRequiresToolConfirmation(cfg) {
-		return "全局确认已关闭，将直接执行"
-	}
-	if script.Confirm {
-		return "需要确认"
-	}
-	return "可直接执行"
 }
 
 func scanTelegramAgentSkills(ctx context.Context, cfg models.TelegramAgentConfig) ([]telegramAgentSkill, error) {
@@ -308,7 +292,7 @@ func parseTelegramSkillMeta(meta string, skill *telegramAgentSkill) {
 		if inScripts {
 			if strings.HasPrefix(trimmed, "- ") {
 				flushScript()
-				current = &telegramAgentSkillScript{Confirm: true, TimeoutMs: telegramAgentSkillDefaultTimeoutMs}
+				current = &telegramAgentSkillScript{TimeoutMs: telegramAgentSkillDefaultTimeoutMs}
 				parseTelegramSkillScriptKV(strings.TrimSpace(strings.TrimPrefix(trimmed, "- ")), current)
 				continue
 			}
@@ -351,8 +335,6 @@ func parseTelegramSkillScriptKV(line string, script *telegramAgentSkillScript) {
 		script.Path = value
 	case "description":
 		script.Description = value
-	case "confirm":
-		script.Confirm = parseTelegramSkillBool(value, true)
 	case "timeout_ms":
 		if parsed, err := strconv.Atoi(value); err == nil {
 			script.TimeoutMs = normalizeTelegramSkillTimeoutMs(parsed)
@@ -381,17 +363,6 @@ func unquoteTelegramSkillValue(value string) string {
 		}
 	}
 	return value
-}
-
-func parseTelegramSkillBool(value string, fallback bool) bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "1", "true", "yes", "y", "on", "启用":
-		return true
-	case "0", "false", "no", "n", "off", "禁用":
-		return false
-	default:
-		return fallback
-	}
 }
 
 func parseTelegramSkillStringList(value string) []string {
@@ -459,7 +430,6 @@ func discoverTelegramSkillScripts(skill telegramAgentSkill) []telegramAgentSkill
 			Name:      strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name())),
 			Path:      filepath.ToSlash(filepath.Join("scripts", entry.Name())),
 			AbsPath:   filepath.Clean(path),
-			Confirm:   true,
 			TimeoutMs: telegramAgentSkillDefaultTimeoutMs,
 		})
 	}

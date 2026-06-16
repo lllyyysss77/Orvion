@@ -34,23 +34,21 @@ type telegramCommandRun struct {
 	ScriptPath string   `json:"script_path,omitempty"`
 }
 
-func buildTelegramRunCommandAction(ctx context.Context, chatID int64, cfg models.TelegramAgentConfig, args telegramAgentToolCallArgs) (telegramToolAction, bool, error) {
+func buildTelegramRunCommandAction(ctx context.Context, chatID int64, cfg models.TelegramAgentConfig, args telegramAgentToolCallArgs) (telegramToolAction, error) {
 	run, err := normalizeTelegramCommandRun(args)
 	if err != nil {
-		return telegramToolAction{}, false, err
+		return telegramToolAction{}, err
 	}
 
-	requireConfirmation := telegramAgentRequiresToolConfirmation(cfg)
 	if skill, script, ok, err := matchTelegramCommandSkillScript(ctx, cfg, run); err != nil {
-		return telegramToolAction{}, false, err
+		return telegramToolAction{}, err
 	} else if ok {
 		if !skill.Enabled {
-			return telegramToolAction{}, false, fmt.Errorf("Skill 已禁用：%s", skill.Name)
+			return telegramToolAction{}, fmt.Errorf("Skill 已禁用：%s", skill.Name)
 		}
 		run.SkillName = skill.Name
 		run.ScriptName = script.Name
 		run.ScriptPath = script.AbsPath
-		requireConfirmation = telegramAgentSkillScriptRequiresConfirmation(cfg, script)
 	}
 
 	summary := fmt.Sprintf("执行命令：%s\n工作目录：%s\n超时：%dms", formatTelegramCommandLine(run.Command, run.Args), run.WorkingDir, run.TimeoutMs)
@@ -67,7 +65,7 @@ func buildTelegramRunCommandAction(ctx context.Context, chatID int64, cfg models
 		CommandRun: run,
 		Summary:    summary,
 		CreatedAt:  time.Now(),
-	}, requireConfirmation, nil
+	}, nil
 }
 
 func normalizeTelegramCommandRun(args telegramAgentToolCallArgs) (telegramCommandRun, error) {

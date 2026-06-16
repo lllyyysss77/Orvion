@@ -108,7 +108,10 @@ func TestCreateAttachmentFileToolStopsLoopWithAttachmentMarker(t *testing.T) {
 			},
 		},
 	}
-	messages, directFinalText := appendTelegramAgentToolResults(context.Background(), 123, models.TelegramAgentConfig{}, toolCalls, nil)
+	messages, directFinalText, err := appendTelegramAgentToolResults(context.Background(), 123, models.TelegramAgentConfig{}, toolCalls, nil, nil)
+	if err != nil {
+		t.Fatalf("执行附件工具失败: %v", err)
+	}
 	if len(messages) != 1 {
 		t.Fatalf("期望写入 1 条 tool message，实际为 %d", len(messages))
 	}

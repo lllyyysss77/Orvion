@@ -5,12 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/url"
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/racio/orvion/models"
@@ -18,8 +16,7 @@ import (
 )
 
 const (
-	telegramAgentToolConfirmTTL = 5 * time.Minute
-	telegramAgentToolListLimit  = 20
+	telegramAgentToolListLimit = 20
 )
 
 type telegramToolActionKind string
@@ -87,114 +84,6 @@ type telegramScheduledTaskPatch struct {
 	ClearChatID        bool
 }
 
-var (
-	telegramPendingToolActions sync.Map
-)
-
-func handleTelegramAgentToolMessage(ctx context.Context, client TelegramClient, chatID int64, raw string, cfg models.TelegramAgentConfig) (bool, error) {
-	hasPendingAction := hasPendingTelegramToolAction(chatID)
-	if isTelegramToolConfirm(raw) && (hasPendingAction || isStrictTelegramToolConfirm(raw)) {
-		return true, confirmTelegramToolAction(ctx, client, chatID, cfg)
-	}
-	if isTelegramToolCancel(raw) && (hasPendingAction || isStrictTelegramToolCancel(raw)) {
-		return true, cancelTelegramToolAction(ctx, client, chatID)
-	}
-	return false, nil
-}
-
-func confirmTelegramToolAction(ctx context.Context, client TelegramClient, chatID int64, cfg models.TelegramAgentConfig) error {
-	action, ok, err := loadTelegramPendingToolAction(ctx, chatID)
-	if err != nil {
-		return sendTelegramToolText(ctx, client, chatID, "读取待确认操作失败："+err.Error())
-	}
-	if !ok {
-		return sendTelegramToolText(ctx, client, chatID, "当前没有待确认的项目操作。")
-	}
-
-	if action.ChatID != chatID {
-		deleteTelegramPendingToolAction(ctx, chatID)
-		return sendTelegramToolText(ctx, client, chatID, "待确认操作已失效，请重新发起。")
-	}
-	if time.Since(action.CreatedAt) > telegramAgentToolConfirmTTL {
-		deleteTelegramPendingToolAction(ctx, chatID)
-		return sendTelegramToolText(ctx, client, chatID, "待确认操作已超过 5 分钟，请重新发起。")
-	}
-
-	deleteTelegramPendingToolAction(ctx, chatID)
-	logID := recordTelegramAgentConfirmationExecutingLog(ctx, action)
-	result, err := executeTelegramToolAction(ctx, action)
-	if err != nil {
-		finishTelegramAgentConfirmationLog(ctx, logID, action, telegramAgentToolLogStatusFailed, "", err)
-		return sendTelegramToolText(ctx, client, chatID, "执行失败："+err.Error())
-	}
-	finishTelegramAgentConfirmationLog(ctx, logID, action, telegramAgentToolLogStatusExecuted, result, nil)
-	if shouldSummarizeTelegramToolActionResult(action) {
-		if err := runTelegramAgentToolResultFollowup(ctx, client, chatID, cfg, action, result); err == nil {
-			return nil
-		} else {
-			slog.Warn("TG Agent 工具结果整理失败，回退原始结果", "chat_id", chatID, "action", action.Kind, "error", err)
-		}
-	}
-	return sendTelegramToolText(ctx, client, chatID, result)
-}
-
-func cancelTelegramToolAction(ctx context.Context, client TelegramClient, chatID int64) error {
-	action, ok, err := loadTelegramPendingToolAction(ctx, chatID)
-	if err != nil {
-		return sendTelegramToolText(ctx, client, chatID, "读取待取消操作失败："+err.Error())
-	}
-	if ok {
-		deleteTelegramPendingToolAction(ctx, chatID)
-		recordTelegramAgentConfirmationLog(ctx, action, telegramAgentToolLogStatusCancelled, "已取消待确认操作。", nil)
-		return sendTelegramToolText(ctx, client, chatID, "已取消待确认操作。")
-	}
-	return sendTelegramToolText(ctx, client, chatID, "当前没有待取消的项目操作。")
-}
-
-func storeTelegramPendingToolAction(ctx context.Context, action telegramToolAction) telegramToolAction {
-	existing, ok, err := loadTelegramPendingToolAction(ctx, action.ChatID)
-	if err != nil {
-		telegramPendingToolActions.Store(action.ChatID, action)
-		return action
-	}
-
-	if !ok {
-		if err := saveTelegramPendingToolAction(ctx, action); err != nil {
-			telegramPendingToolActions.Store(action.ChatID, action)
-		}
-		return action
-	}
-
-	merged := mergeTelegramPendingToolActions(ctx, existing, action)
-	if err := saveTelegramPendingToolAction(ctx, merged); err != nil {
-		telegramPendingToolActions.Store(action.ChatID, merged)
-	}
-	return merged
-}
-
-func mergeTelegramPendingToolActions(ctx context.Context, existing telegramToolAction, incoming telegramToolAction) telegramToolAction {
-	items := flattenTelegramToolActions(existing)
-	for _, item := range flattenTelegramToolActions(incoming) {
-		merged := false
-		for index := range items {
-			if canMergeTelegramToolActions(items[index], item) {
-				items[index] = mergeTelegramModelStatusActions(ctx, items[index], item)
-				merged = true
-				break
-			}
-		}
-		if !merged {
-			items = append(items, item)
-		}
-	}
-
-	createdAt := existing.CreatedAt
-	if createdAt.IsZero() {
-		createdAt = time.Now()
-	}
-	return buildTelegramToolActionBatch(existing.ChatID, createdAt, items)
-}
-
 func flattenTelegramToolActions(action telegramToolAction) []telegramToolAction {
 	if action.Kind != telegramToolActionBatch {
 		return []telegramToolAction{action}
@@ -244,45 +133,6 @@ func buildTelegramToolActionBatch(chatID int64, createdAt time.Time, items []tel
 	}
 }
 
-func canMergeTelegramToolActions(left telegramToolAction, right telegramToolAction) bool {
-	return left.ChatID == right.ChatID &&
-		left.Kind == telegramToolActionSetModelStatus &&
-		right.Kind == telegramToolActionSetModelStatus &&
-		left.Enabled == right.Enabled
-}
-
-func mergeTelegramModelStatusActions(ctx context.Context, left telegramToolAction, right telegramToolAction) telegramToolAction {
-	ids := orderedUniqueTelegramModelIDs(append(telegramToolActionModelIDs(left), telegramToolActionModelIDs(right)...))
-	merged := telegramToolAction{
-		ChatID:         left.ChatID,
-		ConversationID: left.ConversationID,
-		Kind:           telegramToolActionSetModelStatus,
-		TargetIDs:      ids,
-		Enabled:        left.Enabled,
-		CreatedAt:      left.CreatedAt,
-	}
-	if merged.CreatedAt.IsZero() {
-		merged.CreatedAt = time.Now()
-	}
-
-	rows, err := loadTelegramAgentModelsByIDs(ctx, ids)
-	if err != nil || len(rows) == 0 {
-		merged.Summary = fmt.Sprintf("%s模型（共 %d 个）", telegramStatusVerb(merged.Enabled), len(ids))
-		return merged
-	}
-	merged.Summary = fmt.Sprintf("%s模型（共 %d 个）：%s", telegramStatusVerb(merged.Enabled), len(rows), summarizeTelegramToolModelNames(rows))
-	return merged
-}
-
-func telegramToolActionModelIDs(action telegramToolAction) []uint {
-	ids := make([]uint, 0, len(action.TargetIDs)+1)
-	if action.TargetID > 0 {
-		ids = append(ids, action.TargetID)
-	}
-	ids = append(ids, action.TargetIDs...)
-	return ids
-}
-
 func orderedUniqueTelegramModelIDs(ids []uint) []uint {
 	seen := make(map[uint]struct{}, len(ids))
 	result := make([]uint, 0, len(ids))
@@ -299,31 +149,15 @@ func orderedUniqueTelegramModelIDs(ids []uint) []uint {
 	return result
 }
 
-func telegramToolConfirmationText(action telegramToolAction) string {
-	return strings.Join([]string{
-		"待确认操作",
-		"操作：" + action.Summary,
-		"",
-		"回复“确认”执行，或回复“取消”放弃。",
-		"有效期：5 分钟。",
-	}, "\n")
-}
-
-func prepareOrExecuteTelegramToolAction(ctx context.Context, action telegramToolAction, requireConfirmation bool) (string, error) {
+func prepareOrExecuteTelegramToolAction(ctx context.Context, action telegramToolAction) (string, error) {
 	action = attachTelegramToolActionConversationID(ctx, action)
-	if requireConfirmation {
-		action = storeTelegramPendingToolAction(ctx, action)
-		text := telegramToolConfirmationText(action)
-		recordTelegramAgentPreparedActionLog(ctx, action, text, true)
-		return text, nil
-	}
-	logID := recordTelegramAgentToolActionExecutingLog(ctx, action, telegramAgentToolLogSourceToolAction, false)
+	logID := recordTelegramAgentToolActionExecutingLog(ctx, action, telegramAgentToolLogSourceToolAction)
 	result, err := executeTelegramToolAction(ctx, action)
 	if err != nil {
-		finishTelegramAgentToolActionFailureLog(ctx, logID, action, err, false)
+		finishTelegramAgentToolActionFailureLog(ctx, logID, action, err)
 		return "", err
 	}
-	finishTelegramAgentPreparedActionLog(ctx, logID, action, result, false)
+	finishTelegramAgentPreparedActionLog(ctx, logID, action, result)
 	return result, nil
 }
 
@@ -1174,51 +1008,6 @@ func loadTelegramProviderSummaries(ctx context.Context, providers []models.Provi
 
 func sendTelegramToolText(ctx context.Context, client TelegramClient, chatID int64, text string) error {
 	return sendTelegramAgentTextWithAttachments(ctx, client, chatID, text)
-}
-
-func isTelegramToolConfirm(raw string) bool {
-	switch normalizeTelegramToolControl(raw) {
-	case "/confirm", "确认", "确认执行", "执行", "是", "好的", "好", "可以", "继续":
-		return true
-	default:
-		return false
-	}
-}
-
-func isStrictTelegramToolConfirm(raw string) bool {
-	switch normalizeTelegramToolControl(raw) {
-	case "/confirm", "确认", "确认执行":
-		return true
-	default:
-		return false
-	}
-}
-
-func isTelegramToolCancel(raw string) bool {
-	switch normalizeTelegramToolControl(raw) {
-	case "/cancel", "取消", "放弃", "不用了", "停止":
-		return true
-	default:
-		return false
-	}
-}
-
-func isStrictTelegramToolCancel(raw string) bool {
-	switch normalizeTelegramToolControl(raw) {
-	case "/cancel", "取消":
-		return true
-	default:
-		return false
-	}
-}
-
-func hasPendingTelegramToolAction(chatID int64) bool {
-	_, ok, err := loadTelegramPendingToolAction(context.Background(), chatID)
-	if err != nil {
-		_, ok = telegramPendingToolActions.Load(chatID)
-		return ok
-	}
-	return ok
 }
 
 func normalizeTelegramToolControl(raw string) string {

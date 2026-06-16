@@ -34,13 +34,14 @@ const (
 	telegramAgentSkillFileMaxBytes        = 1024 * 1024
 	telegramAgentSkillMaxFileNodes        = 2000
 	telegramAgentDynamicSkillContextLimit = 5
+	// 本地哈希向量会产生少量碰撞，动态注入只接受明确相关的 Skill。
+	telegramAgentDynamicSkillMinScore = 0.12
 )
 
 type TelegramAgentSkillScriptView struct {
 	Name        string `json:"name"`
 	Path        string `json:"path"`
 	Description string `json:"description"`
-	Confirm     bool   `json:"confirm"`
 	TimeoutMs   int    `json:"timeout_ms"`
 }
 
@@ -250,7 +251,6 @@ func telegramAgentSkillScriptViews(scripts []telegramAgentSkillScript) []Telegra
 			Name:        script.Name,
 			Path:        filepath.ToSlash(script.Path),
 			Description: script.Description,
-			Confirm:     script.Confirm,
 			TimeoutMs:   script.TimeoutMs,
 		})
 	}
@@ -315,7 +315,6 @@ func telegramAgentSkillFromRecord(record models.TelegramAgentSkill) telegramAgen
 			Name:        script.Name,
 			Path:        script.Path,
 			Description: script.Description,
-			Confirm:     script.Confirm,
 			TimeoutMs:   script.TimeoutMs,
 		})
 	}
@@ -388,7 +387,7 @@ func rankTelegramAgentSkillsBySimilarity(ctx context.Context, cfg models.Telegra
 			return nil, err
 		}
 		score := telegramAgentSkillCosine(queryVector, skillVector)
-		if score <= 0 {
+		if score < telegramAgentDynamicSkillMinScore {
 			continue
 		}
 		scored = append(scored, scoredSkill{skill: skill, score: score})
@@ -757,7 +756,6 @@ func toTelegramAgentSkillView(skill telegramAgentSkill, score float64) TelegramA
 			Name:        script.Name,
 			Path:        script.Path,
 			Description: script.Description,
-			Confirm:     script.Confirm,
 			TimeoutMs:   script.TimeoutMs,
 		})
 	}

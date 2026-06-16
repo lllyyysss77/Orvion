@@ -59,7 +59,6 @@ const defaultTelegramAgentConfig: TelegramAgentConfig = {
   max_history_messages: 20,
   max_tokens: 2048,
   edit_interval_ms: 1200,
-  tool_confirmation_required: true,
   skills_enabled: false,
   skills_embedding_model: "",
 };

@@ -47,6 +47,30 @@ const modelIconAssets: ModelIconAsset[] = Object.entries(iconModules)
   .filter((item) => item.normalizedKey.length >= 2)
   .sort((a, b) => b.normalizedKey.length - a.normalizedKey.length);
 
+const modelIconAliases = [
+  {
+    targetKey: "qwen",
+    patterns: ["z-image", "z-image-turbo", "z-iamge", "z-iamge-turbo"],
+  },
+].map((item) => ({
+  targetKey: normalizeForMatch(item.targetKey),
+  patterns: item.patterns.map(normalizeForMatch).filter(Boolean),
+}));
+
+const resolveAliasedAsset = (modelNormalized: string, modelTokens: string[]): ModelIconAsset | null => {
+  for (const alias of modelIconAliases) {
+    const matched = alias.patterns.some(
+      (pattern) =>
+        modelNormalized === pattern ||
+        modelNormalized.startsWith(pattern) ||
+        modelTokens.includes(pattern)
+    );
+    if (!matched) continue;
+    return modelIconAssets.find((asset) => asset.normalizedKey === alias.targetKey) ?? null;
+  }
+  return null;
+};
+
 const getMatchScore = (modelNormalized: string, modelTokens: string[], asset: ModelIconAsset): number => {
   const key = asset.normalizedKey;
   if (!key) return -1;
@@ -78,6 +102,14 @@ export const resolveModelIcon = (modelName: string): ResolvedModelIcon | null =>
   const modelNormalized = normalizeForMatch(raw);
   if (!modelNormalized) return null;
   const modelTokens = tokenizeForMatch(raw);
+  const aliasedAsset = resolveAliasedAsset(modelNormalized, modelTokens);
+  if (aliasedAsset) {
+    return {
+      src: aliasedAsset.src,
+      alt: aliasedAsset.alt || aliasedAsset.key,
+      key: aliasedAsset.key,
+    };
+  }
 
   let best: ModelIconAsset | null = null;
   let bestScore = -1;

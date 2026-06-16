@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
@@ -26,7 +25,6 @@ func TestDeleteTelegramAgentSessionDeletesConversationRecords(t *testing.T) {
 	if err := db.AutoMigrate(
 		&models.TelegramAgentMessage{},
 		&models.TelegramAgentSession{},
-		&models.TelegramAgentPendingAction{},
 		&models.TelegramAgentToolCallLog{},
 	); err != nil {
 		t.Fatalf("迁移测试表失败: %v", err)
@@ -43,9 +41,6 @@ func TestDeleteTelegramAgentSessionDeletesConversationRecords(t *testing.T) {
 	if err := db.Create(&models.TelegramAgentToolCallLog{ChatID: chatID, ConversationID: conversationID, Source: "function_call", ToolName: "read_system_logs", Status: "completed"}).Error; err != nil {
 		t.Fatalf("写入工具日志失败: %v", err)
 	}
-	if err := db.Create(&models.TelegramAgentPendingAction{ChatID: chatID, Summary: "pending", ExpiresAt: time.Now().Add(time.Minute)}).Error; err != nil {
-		t.Fatalf("写入待确认操作失败: %v", err)
-	}
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
@@ -60,7 +55,6 @@ func TestDeleteTelegramAgentSessionDeletesConversationRecords(t *testing.T) {
 	assertNoRowsForTelegramAgentSessionDelete(t, db, &models.TelegramAgentMessage{}, "conversation_id = ?", conversationID)
 	assertNoRowsForTelegramAgentSessionDelete(t, db, &models.TelegramAgentToolCallLog{}, "conversation_id = ?", conversationID)
 	assertNoRowsForTelegramAgentSessionDelete(t, db, &models.TelegramAgentSession{}, "conversation_id = ?", conversationID)
-	assertNoRowsForTelegramAgentSessionDelete(t, db, &models.TelegramAgentPendingAction{}, "chat_id = ?", chatID)
 }
 
 func TestDeleteTelegramAgentSessionDeletesUnrecordedConversation(t *testing.T) {
@@ -77,7 +71,6 @@ func TestDeleteTelegramAgentSessionDeletesUnrecordedConversation(t *testing.T) {
 	if err := db.AutoMigrate(
 		&models.TelegramAgentMessage{},
 		&models.TelegramAgentSession{},
-		&models.TelegramAgentPendingAction{},
 		&models.TelegramAgentToolCallLog{},
 	); err != nil {
 		t.Fatalf("迁移测试表失败: %v", err)

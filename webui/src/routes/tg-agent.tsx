@@ -18,13 +18,11 @@ import {
   CheckCircle2,
   ChevronDown,
   CircleDashed,
-  Clock3,
   ListChecks,
   RefreshCw,
   TerminalSquare,
   Trash2,
   TriangleAlert,
-  XCircle,
 } from "lucide-react";
 import {
   deleteTelegramAgentSession,
@@ -53,27 +51,16 @@ const statusMeta: Record<string, { label: string; className: string; icon: typeo
     className: "border-emerald-300/70 bg-emerald-50 text-emerald-700 dark:border-emerald-400/30 dark:bg-emerald-500/10 dark:text-emerald-300",
     icon: CheckCircle2,
   },
-  pending_confirmation: {
-    label: "待确认",
-    className: "border-amber-300/70 bg-amber-50 text-amber-700 dark:border-amber-400/30 dark:bg-amber-500/10 dark:text-amber-300",
-    icon: Clock3,
-  },
   failed: {
     label: "失败",
     className: "border-rose-300/70 bg-rose-50 text-rose-700 dark:border-rose-400/30 dark:bg-rose-500/10 dark:text-rose-300",
     icon: TriangleAlert,
-  },
-  cancelled: {
-    label: "已取消",
-    className: "border-slate-300 bg-slate-50 text-slate-600 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-300",
-    icon: XCircle,
   },
 };
 
 const sourceLabel: Record<string, string> = {
   function_call: "函数调用",
   tool_action: "工具动作",
-  confirmation: "确认操作",
   scheduled_task: "定时任务",
 };
 
@@ -231,11 +218,6 @@ function TimelineStep({
               <div className="flex flex-wrap items-center gap-2">
                 <h3 className="max-w-full truncate text-sm font-semibold">{getStepTitle(step)}</h3>
                 <StatusBadge status={step.status} />
-                {step.requires_confirmation ? (
-                  <Badge variant="outline" className="rounded-full border-amber-300/70 bg-amber-50 text-amber-700 dark:border-amber-400/30 dark:bg-amber-500/10 dark:text-amber-300">
-                    需要确认
-                  </Badge>
-                ) : null}
               </div>
               <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
                 <span>{formatDateTime(step.created_at)}</span>
@@ -257,9 +239,7 @@ function TimelineStep({
             <StepDetail title="参数" value={step.arguments} />
             <StepDetail title="结果" value={step.result} />
             <div className="mt-3 flex flex-wrap gap-3 text-xs text-muted-foreground">
-              {step.confirmed_at ? <span>确认：{formatDateTime(step.confirmed_at)}</span> : null}
               {step.executed_at ? <span>执行：{formatDateTime(step.executed_at)}</span> : null}
-              {step.cancelled_at ? <span>取消：{formatDateTime(step.cancelled_at)}</span> : null}
             </div>
           </div>
         ) : null}
@@ -291,7 +271,7 @@ function DeleteSessionDialog({
               <div className="min-w-0">
                 <AlertDialogTitle className="text-base">删除这个 TG 对话？</AlertDialogTitle>
                 <AlertDialogDescription className="mt-1">
-                  将删除该会话的上下文、工具调用记录和待确认操作。
+                  将删除该会话的上下文和工具调用记录。
                 </AlertDialogDescription>
               </div>
             </div>

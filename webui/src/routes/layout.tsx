@@ -55,9 +55,14 @@ const navSections = [
       { to: "/providers", label: "提供商", icon: Cloud },
       { to: "/models", label: "模型", icon: Boxes },
       { to: "/auth-keys", label: "API 密钥", icon: KeyRound },
+    ],
+  },
+  {
+    title: "Agent",
+    items: [
       { to: "/skills", label: "Skills", icon: Sparkles },
-      { to: "/tg-agent", label: "Agent", icon: Bot },
-      { to: "/tg-agent-schedules", label: "Agent 定时", icon: CalendarClock },
+      { to: "/action", label: "Action", icon: Bot },
+      { to: "/tg-agent-schedules", label: "定时任务", icon: CalendarClock },
     ],
   },
   {
@@ -396,7 +401,7 @@ export default function Layout() {
         ...section,
         items: isAuthKeyToken || telegramAgentEnabled
           ? section.items
-          : section.items.filter((item) => item.to !== "/skills" && item.to !== "/tg-agent" && item.to !== "/tg-agent-schedules"),
+          : section.items.filter((item) => item.to !== "/skills" && item.to !== "/action" && item.to !== "/tg-agent-schedules"),
       }))
       .filter((section) => section.items.length > 0);
 

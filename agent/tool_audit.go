@@ -12,14 +12,11 @@ import (
 const (
 	telegramAgentToolLogSourceFunctionCall = "function_call"
 	telegramAgentToolLogSourceToolAction   = "tool_action"
-	telegramAgentToolLogSourceConfirmation = "confirmation"
 
-	telegramAgentToolLogStatusExecuting           = "executing"
-	telegramAgentToolLogStatusCompleted           = "completed"
-	telegramAgentToolLogStatusPendingConfirmation = "pending_confirmation"
-	telegramAgentToolLogStatusExecuted            = "executed"
-	telegramAgentToolLogStatusFailed              = "failed"
-	telegramAgentToolLogStatusCancelled           = "cancelled"
+	telegramAgentToolLogStatusExecuting = "executing"
+	telegramAgentToolLogStatusCompleted = "completed"
+	telegramAgentToolLogStatusExecuted  = "executed"
+	telegramAgentToolLogStatusFailed    = "failed"
 )
 
 func recordTelegramAgentFunctionToolCallLog(ctx context.Context, chatID int64, cfg models.TelegramAgentConfig, toolCall telegramAgentOpenAIToolCall, rawArgs string, toolResult string) {
@@ -28,16 +25,15 @@ func recordTelegramAgentFunctionToolCallLog(ctx context.Context, chatID int64, c
 
 func recordTelegramAgentFunctionToolCallExecutingLog(ctx context.Context, chatID int64, cfg models.TelegramAgentConfig, toolCall telegramAgentOpenAIToolCall, rawArgs string) uint {
 	return recordTelegramAgentToolCallLog(ctx, models.TelegramAgentToolCallLog{
-		ChatID:               chatID,
-		ConversationID:       resolveTelegramAgentToolLogConversationID(ctx, chatID),
-		Source:               telegramAgentToolLogSourceFunctionCall,
-		ToolCallID:           strings.TrimSpace(toolCall.ID),
-		ToolName:             strings.TrimSpace(toolCall.Function.Name),
-		Arguments:            maskTelegramAgentToolArguments(rawArgs),
-		Status:               telegramAgentToolLogStatusExecuting,
-		OK:                   0,
-		Final:                0,
-		RequiresConfirmation: boolToInt(telegramAgentRequiresToolConfirmation(cfg)),
+		ChatID:         chatID,
+		ConversationID: resolveTelegramAgentToolLogConversationID(ctx, chatID),
+		Source:         telegramAgentToolLogSourceFunctionCall,
+		ToolCallID:     strings.TrimSpace(toolCall.ID),
+		ToolName:       strings.TrimSpace(toolCall.Function.Name),
+		Arguments:      maskTelegramAgentToolArguments(rawArgs),
+		Status:         telegramAgentToolLogStatusExecuting,
+		OK:             0,
+		Final:          0,
 	})
 }
 
@@ -55,24 +51,21 @@ func buildTelegramAgentFunctionToolCallLog(ctx context.Context, chatID int64, cf
 	status := telegramAgentToolLogStatusCompleted
 	if !payload.OK {
 		status = telegramAgentToolLogStatusFailed
-	} else if payload.Final && telegramAgentRequiresToolConfirmation(cfg) && strings.Contains(payload.Text, "待确认操作") {
-		status = telegramAgentToolLogStatusPendingConfirmation
 	} else if payload.Final {
 		status = telegramAgentToolLogStatusExecuted
 	}
 
 	log := models.TelegramAgentToolCallLog{
-		ChatID:               chatID,
-		ConversationID:       resolveTelegramAgentToolLogConversationID(ctx, chatID),
-		Source:               telegramAgentToolLogSourceFunctionCall,
-		ToolCallID:           strings.TrimSpace(toolCall.ID),
-		ToolName:             strings.TrimSpace(toolCall.Function.Name),
-		Arguments:            maskTelegramAgentToolArguments(rawArgs),
-		Result:               payload.Text,
-		Status:               status,
-		OK:                   boolToInt(payload.OK),
-		Final:                boolToInt(payload.Final),
-		RequiresConfirmation: boolToInt(telegramAgentRequiresToolConfirmation(cfg)),
+		ChatID:         chatID,
+		ConversationID: resolveTelegramAgentToolLogConversationID(ctx, chatID),
+		Source:         telegramAgentToolLogSourceFunctionCall,
+		ToolCallID:     strings.TrimSpace(toolCall.ID),
+		ToolName:       strings.TrimSpace(toolCall.Function.Name),
+		Arguments:      maskTelegramAgentToolArguments(rawArgs),
+		Result:         payload.Text,
+		Status:         status,
+		OK:             boolToInt(payload.OK),
+		Final:          boolToInt(payload.Final),
 	}
 	if !payload.OK {
 		log.Error = payload.Text
@@ -80,27 +73,26 @@ func buildTelegramAgentFunctionToolCallLog(ctx context.Context, chatID int64, cf
 	return log
 }
 
-func recordTelegramAgentPreparedActionLog(ctx context.Context, action telegramToolAction, result string, requireConfirmation bool) {
-	recordTelegramAgentToolCallLog(ctx, buildTelegramAgentPreparedActionLog(action, result, requireConfirmation))
+func recordTelegramAgentPreparedActionLog(ctx context.Context, action telegramToolAction, result string) {
+	recordTelegramAgentToolCallLog(ctx, buildTelegramAgentPreparedActionLog(action, result))
 }
 
-func recordTelegramAgentToolActionExecutingLog(ctx context.Context, action telegramToolAction, source string, requireConfirmation bool) uint {
+func recordTelegramAgentToolActionExecutingLog(ctx context.Context, action telegramToolAction, source string) uint {
 	return recordTelegramAgentToolCallLog(ctx, models.TelegramAgentToolCallLog{
-		ChatID:               action.ChatID,
-		ConversationID:       action.ConversationID,
-		Source:               source,
-		ToolName:             string(action.Kind),
-		Status:               telegramAgentToolLogStatusExecuting,
-		OK:                   0,
-		Final:                0,
-		RequiresConfirmation: boolToInt(requireConfirmation),
-		ActionKind:           string(action.Kind),
-		ActionSummary:        action.Summary,
+		ChatID:         action.ChatID,
+		ConversationID: action.ConversationID,
+		Source:         source,
+		ToolName:       string(action.Kind),
+		Status:         telegramAgentToolLogStatusExecuting,
+		OK:             0,
+		Final:          0,
+		ActionKind:     string(action.Kind),
+		ActionSummary:  action.Summary,
 	})
 }
 
-func finishTelegramAgentPreparedActionLog(ctx context.Context, logID uint, action telegramToolAction, result string, requireConfirmation bool) {
-	log := buildTelegramAgentPreparedActionLog(action, result, requireConfirmation)
+func finishTelegramAgentPreparedActionLog(ctx context.Context, logID uint, action telegramToolAction, result string) {
+	log := buildTelegramAgentPreparedActionLog(action, result)
 	if logID == 0 {
 		recordTelegramAgentToolCallLog(ctx, log)
 		return
@@ -108,43 +100,36 @@ func finishTelegramAgentPreparedActionLog(ctx context.Context, logID uint, actio
 	updateTelegramAgentToolCallLog(ctx, logID, log)
 }
 
-func buildTelegramAgentPreparedActionLog(action telegramToolAction, result string, requireConfirmation bool) models.TelegramAgentToolCallLog {
-	status := telegramAgentToolLogStatusExecuted
+func buildTelegramAgentPreparedActionLog(action telegramToolAction, result string) models.TelegramAgentToolCallLog {
 	executedAt := time.Now()
-	var executedAtPtr *time.Time = &executedAt
-	if requireConfirmation {
-		status = telegramAgentToolLogStatusPendingConfirmation
-		executedAtPtr = nil
-	}
 
 	return models.TelegramAgentToolCallLog{
-		ChatID:               action.ChatID,
-		ConversationID:       action.ConversationID,
-		Source:               telegramAgentToolLogSourceToolAction,
-		ToolName:             string(action.Kind),
-		Result:               result,
-		Status:               status,
-		OK:                   1,
-		Final:                1,
-		RequiresConfirmation: boolToInt(requireConfirmation),
-		ActionKind:           string(action.Kind),
-		ActionSummary:        action.Summary,
-		ExecutedAt:           executedAtPtr,
+		ChatID:         action.ChatID,
+		ConversationID: action.ConversationID,
+		Source:         telegramAgentToolLogSourceToolAction,
+		ToolName:       string(action.Kind),
+		Result:         result,
+		Status:         telegramAgentToolLogStatusExecuted,
+		OK:             1,
+		Final:          1,
+		ActionKind:     string(action.Kind),
+		ActionSummary:  action.Summary,
+		ExecutedAt:     &executedAt,
 	}
 }
 
-func recordTelegramAgentToolActionFailureLog(ctx context.Context, action telegramToolAction, err error, requireConfirmation bool) {
+func recordTelegramAgentToolActionFailureLog(ctx context.Context, action telegramToolAction, err error) {
 	if err == nil {
 		return
 	}
-	recordTelegramAgentToolCallLog(ctx, buildTelegramAgentToolActionFailureLog(action, err, requireConfirmation))
+	recordTelegramAgentToolCallLog(ctx, buildTelegramAgentToolActionFailureLog(action, err))
 }
 
-func finishTelegramAgentToolActionFailureLog(ctx context.Context, logID uint, action telegramToolAction, err error, requireConfirmation bool) {
+func finishTelegramAgentToolActionFailureLog(ctx context.Context, logID uint, action telegramToolAction, err error) {
 	if err == nil {
 		return
 	}
-	log := buildTelegramAgentToolActionFailureLog(action, err, requireConfirmation)
+	log := buildTelegramAgentToolActionFailureLog(action, err)
 	if logID == 0 {
 		recordTelegramAgentToolCallLog(ctx, log)
 		return
@@ -152,72 +137,20 @@ func finishTelegramAgentToolActionFailureLog(ctx context.Context, logID uint, ac
 	updateTelegramAgentToolCallLog(ctx, logID, log)
 }
 
-func buildTelegramAgentToolActionFailureLog(action telegramToolAction, err error, requireConfirmation bool) models.TelegramAgentToolCallLog {
+func buildTelegramAgentToolActionFailureLog(action telegramToolAction, err error) models.TelegramAgentToolCallLog {
 	return models.TelegramAgentToolCallLog{
-		ChatID:               action.ChatID,
-		ConversationID:       action.ConversationID,
-		Source:               telegramAgentToolLogSourceToolAction,
-		ToolName:             string(action.Kind),
-		Result:               err.Error(),
-		Status:               telegramAgentToolLogStatusFailed,
-		OK:                   0,
-		Final:                1,
-		RequiresConfirmation: boolToInt(requireConfirmation),
-		ActionKind:           string(action.Kind),
-		ActionSummary:        action.Summary,
-		Error:                err.Error(),
+		ChatID:         action.ChatID,
+		ConversationID: action.ConversationID,
+		Source:         telegramAgentToolLogSourceToolAction,
+		ToolName:       string(action.Kind),
+		Result:         err.Error(),
+		Status:         telegramAgentToolLogStatusFailed,
+		OK:             0,
+		Final:          1,
+		ActionKind:     string(action.Kind),
+		ActionSummary:  action.Summary,
+		Error:          err.Error(),
 	}
-}
-
-func recordTelegramAgentConfirmationLog(ctx context.Context, action telegramToolAction, status string, result string, err error) {
-	recordTelegramAgentToolCallLog(ctx, buildTelegramAgentConfirmationLog(action, status, result, err))
-}
-
-func recordTelegramAgentConfirmationExecutingLog(ctx context.Context, action telegramToolAction) uint {
-	return recordTelegramAgentToolActionExecutingLog(ctx, action, telegramAgentToolLogSourceConfirmation, true)
-}
-
-func finishTelegramAgentConfirmationLog(ctx context.Context, logID uint, action telegramToolAction, status string, result string, err error) {
-	log := buildTelegramAgentConfirmationLog(action, status, result, err)
-	if logID == 0 {
-		recordTelegramAgentToolCallLog(ctx, log)
-		return
-	}
-	updateTelegramAgentToolCallLog(ctx, logID, log)
-}
-
-func buildTelegramAgentConfirmationLog(action telegramToolAction, status string, result string, err error) models.TelegramAgentToolCallLog {
-	now := time.Now()
-	log := models.TelegramAgentToolCallLog{
-		ChatID:               action.ChatID,
-		ConversationID:       action.ConversationID,
-		Source:               telegramAgentToolLogSourceConfirmation,
-		ToolName:             string(action.Kind),
-		Result:               strings.TrimSpace(result),
-		Status:               status,
-		OK:                   1,
-		Final:                1,
-		RequiresConfirmation: 1,
-		ActionKind:           string(action.Kind),
-		ActionSummary:        action.Summary,
-	}
-	switch status {
-	case telegramAgentToolLogStatusExecuted:
-		log.ConfirmedAt = &now
-		log.ExecutedAt = &now
-	case telegramAgentToolLogStatusCancelled:
-		log.CancelledAt = &now
-	case telegramAgentToolLogStatusFailed:
-		log.ConfirmedAt = &now
-		log.OK = 0
-	}
-	if err != nil {
-		log.Error = err.Error()
-		if log.Result == "" {
-			log.Result = err.Error()
-		}
-	}
-	return log
 }
 
 func recordTelegramAgentToolCallLog(ctx context.Context, log models.TelegramAgentToolCallLog) uint {
@@ -247,23 +180,20 @@ func updateTelegramAgentToolCallLog(ctx context.Context, id uint, log models.Tel
 		log.ConversationID = resolveTelegramAgentToolLogConversationID(ctx, log.ChatID)
 	}
 	values := map[string]any{
-		"chat_id":               log.ChatID,
-		"conversation_id":       log.ConversationID,
-		"source":                log.Source,
-		"tool_call_id":          log.ToolCallID,
-		"tool_name":             log.ToolName,
-		"arguments":             log.Arguments,
-		"result":                log.Result,
-		"status":                log.Status,
-		"ok":                    log.OK,
-		"final":                 log.Final,
-		"requires_confirmation": log.RequiresConfirmation,
-		"action_kind":           log.ActionKind,
-		"action_summary":        log.ActionSummary,
-		"error":                 log.Error,
-		"confirmed_at":          log.ConfirmedAt,
-		"executed_at":           log.ExecutedAt,
-		"cancelled_at":          log.CancelledAt,
+		"chat_id":         log.ChatID,
+		"conversation_id": log.ConversationID,
+		"source":          log.Source,
+		"tool_call_id":    log.ToolCallID,
+		"tool_name":       log.ToolName,
+		"arguments":       log.Arguments,
+		"result":          log.Result,
+		"status":          log.Status,
+		"ok":              log.OK,
+		"final":           log.Final,
+		"action_kind":     log.ActionKind,
+		"action_summary":  log.ActionSummary,
+		"error":           log.Error,
+		"executed_at":     log.ExecutedAt,
 	}
 	_ = models.DB.WithContext(ctx).Model(&models.TelegramAgentToolCallLog{}).Where("id = ?", id).Updates(values).Error
 }

@@ -30,9 +30,7 @@ type telegramAgentToolLogSummary struct {
 	Executing            int    `json:"executing"`
 	Completed            int    `json:"completed"`
 	Executed             int    `json:"executed"`
-	Pending              int    `json:"pending"`
 	Failed               int    `json:"failed"`
-	Cancelled            int    `json:"cancelled"`
 	ActiveChats          int    `json:"active_chats"`
 	LatestAt             string `json:"latest_at,omitempty"`
 	LatestChatID         int64  `json:"latest_chat_id,omitempty"`
@@ -48,35 +46,30 @@ type telegramAgentSessionSummary struct {
 	Executing      int    `json:"executing"`
 	Completed      int    `json:"completed"`
 	Executed       int    `json:"executed"`
-	Pending        int    `json:"pending"`
 	Failed         int    `json:"failed"`
-	Cancelled      int    `json:"cancelled"`
 	LatestAt       string `json:"latest_at,omitempty"`
 	LatestToolName string `json:"latest_tool_name,omitempty"`
 	LatestStatus   string `json:"latest_status,omitempty"`
 }
 
 type telegramAgentToolLogStep struct {
-	ID                   uint    `json:"id"`
-	CreatedAt            string  `json:"created_at"`
-	UpdatedAt            string  `json:"updated_at"`
-	ChatID               int64   `json:"chat_id"`
-	ConversationID       string  `json:"conversation_id"`
-	Source               string  `json:"source"`
-	ToolCallID           string  `json:"tool_call_id"`
-	ToolName             string  `json:"tool_name"`
-	Arguments            string  `json:"arguments"`
-	Result               string  `json:"result"`
-	Status               string  `json:"status"`
-	OK                   bool    `json:"ok"`
-	Final                bool    `json:"final"`
-	RequiresConfirmation bool    `json:"requires_confirmation"`
-	ActionKind           string  `json:"action_kind"`
-	ActionSummary        string  `json:"action_summary"`
-	Error                string  `json:"error"`
-	ConfirmedAt          *string `json:"confirmed_at,omitempty"`
-	ExecutedAt           *string `json:"executed_at,omitempty"`
-	CancelledAt          *string `json:"cancelled_at,omitempty"`
+	ID             uint    `json:"id"`
+	CreatedAt      string  `json:"created_at"`
+	UpdatedAt      string  `json:"updated_at"`
+	ChatID         int64   `json:"chat_id"`
+	ConversationID string  `json:"conversation_id"`
+	Source         string  `json:"source"`
+	ToolCallID     string  `json:"tool_call_id"`
+	ToolName       string  `json:"tool_name"`
+	Arguments      string  `json:"arguments"`
+	Result         string  `json:"result"`
+	Status         string  `json:"status"`
+	OK             bool    `json:"ok"`
+	Final          bool    `json:"final"`
+	ActionKind     string  `json:"action_kind"`
+	ActionSummary  string  `json:"action_summary"`
+	Error          string  `json:"error"`
+	ExecutedAt     *string `json:"executed_at,omitempty"`
 }
 
 type telegramAgentDeleteSessionResponse struct {
@@ -85,7 +78,6 @@ type telegramAgentDeleteSessionResponse struct {
 	MessageRows    int64   `json:"message_rows"`
 	LogRows        int64   `json:"log_rows"`
 	SessionRows    int64   `json:"session_rows"`
-	PendingRows    int64   `json:"pending_rows"`
 }
 
 func GetTelegramAgentToolCallLogs(c *gin.Context) {
@@ -174,13 +166,6 @@ func DeleteTelegramAgentSession(c *gin.Context) {
 		}
 		response.SessionRows = sessionResult.RowsAffected
 
-		if len(chatIDs) > 0 {
-			pendingResult := tx.Where("chat_id IN ?", chatIDs).Delete(&models.TelegramAgentPendingAction{})
-			if pendingResult.Error != nil {
-				return pendingResult.Error
-			}
-			response.PendingRows = pendingResult.RowsAffected
-		}
 		return nil
 	}); err != nil {
 		common.InternalServerError(c, "删除 TG Agent 会话失败: "+err.Error())
@@ -310,26 +295,23 @@ func parseTelegramAgentPositiveInt(raw string) int {
 
 func telegramAgentToolLogStepFromModel(row models.TelegramAgentToolCallLog) telegramAgentToolLogStep {
 	return telegramAgentToolLogStep{
-		ID:                   row.ID,
-		CreatedAt:            formatTelegramAgentLogTime(row.CreatedAt),
-		UpdatedAt:            formatTelegramAgentLogTime(row.UpdatedAt),
-		ChatID:               row.ChatID,
-		ConversationID:       row.ConversationID,
-		Source:               row.Source,
-		ToolCallID:           row.ToolCallID,
-		ToolName:             row.ToolName,
-		Arguments:            row.Arguments,
-		Result:               row.Result,
-		Status:               row.Status,
-		OK:                   row.OK == 1,
-		Final:                row.Final == 1,
-		RequiresConfirmation: row.RequiresConfirmation == 1,
-		ActionKind:           row.ActionKind,
-		ActionSummary:        row.ActionSummary,
-		Error:                row.Error,
-		ConfirmedAt:          formatTelegramAgentLogTimePtr(row.ConfirmedAt),
-		ExecutedAt:           formatTelegramAgentLogTimePtr(row.ExecutedAt),
-		CancelledAt:          formatTelegramAgentLogTimePtr(row.CancelledAt),
+		ID:             row.ID,
+		CreatedAt:      formatTelegramAgentLogTime(row.CreatedAt),
+		UpdatedAt:      formatTelegramAgentLogTime(row.UpdatedAt),
+		ChatID:         row.ChatID,
+		ConversationID: row.ConversationID,
+		Source:         row.Source,
+		ToolCallID:     row.ToolCallID,
+		ToolName:       row.ToolName,
+		Arguments:      row.Arguments,
+		Result:         row.Result,
+		Status:         row.Status,
+		OK:             row.OK == 1,
+		Final:          row.Final == 1,
+		ActionKind:     row.ActionKind,
+		ActionSummary:  row.ActionSummary,
+		Error:          row.Error,
+		ExecutedAt:     formatTelegramAgentLogTimePtr(row.ExecutedAt),
 	}
 }
 
@@ -339,7 +321,7 @@ func buildTelegramAgentToolLogSummary(total int64, steps []telegramAgentToolLogS
 	sessionOrder := make([]string, 0)
 
 	for index, step := range steps {
-		addTelegramAgentStatusCount(step.Status, &summary.Executing, &summary.Completed, &summary.Executed, &summary.Pending, &summary.Failed, &summary.Cancelled)
+		addTelegramAgentStatusCount(step.Status, &summary.Executing, &summary.Completed, &summary.Executed, &summary.Failed)
 		if index == 0 {
 			summary.LatestAt = step.CreatedAt
 			summary.LatestChatID = step.ChatID
@@ -362,7 +344,7 @@ func buildTelegramAgentToolLogSummary(total int64, steps []telegramAgentToolLogS
 			sessionOrder = append(sessionOrder, sessionKey)
 		}
 		session.TotalSteps++
-		addTelegramAgentStatusCount(step.Status, &session.Executing, &session.Completed, &session.Executed, &session.Pending, &session.Failed, &session.Cancelled)
+		addTelegramAgentStatusCount(step.Status, &session.Executing, &session.Completed, &session.Executed, &session.Failed)
 	}
 
 	summary.ActiveChats = len(sessionMap)
@@ -377,7 +359,7 @@ func telegramAgentLogSessionKey(chatID int64, conversationID string) string {
 	return strconv.FormatInt(chatID, 10) + ":" + conversationID
 }
 
-func addTelegramAgentStatusCount(status string, executing *int, completed *int, executed *int, pending *int, failed *int, cancelled *int) {
+func addTelegramAgentStatusCount(status string, executing *int, completed *int, executed *int, failed *int) {
 	switch status {
 	case "executing":
 		*executing = *executing + 1
@@ -385,12 +367,8 @@ func addTelegramAgentStatusCount(status string, executing *int, completed *int, 
 		*completed = *completed + 1
 	case "executed":
 		*executed = *executed + 1
-	case "pending_confirmation":
-		*pending = *pending + 1
 	case "failed":
 		*failed = *failed + 1
-	case "cancelled":
-		*cancelled = *cancelled + 1
 	}
 }
 

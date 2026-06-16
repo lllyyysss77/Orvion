@@ -294,7 +294,7 @@ func TestTelegramSessionMessagesPersistedAndNewConversationIsolated(t *testing.T
 		t.Fatalf("初始化测试数据库失败: %v", err)
 	}
 	models.DB = db
-	if err := db.AutoMigrate(&models.TelegramAgentMessage{}, &models.TelegramAgentSession{}, &models.TelegramAgentPendingAction{}); err != nil {
+	if err := db.AutoMigrate(&models.TelegramAgentMessage{}, &models.TelegramAgentSession{}); err != nil {
 		t.Fatalf("迁移测试表失败: %v", err)
 	}
 
@@ -303,7 +303,6 @@ func TestTelegramSessionMessagesPersistedAndNewConversationIsolated(t *testing.T
 	telegramSessions.Delete(chatID)
 	t.Cleanup(func() {
 		telegramSessions.Delete(chatID)
-		telegramPendingToolActions.Delete(chatID)
 	})
 	cfg := models.TelegramAgentConfig{MaxHistoryMessages: 3}
 	allMessages := []chatMessage{
@@ -365,88 +364,35 @@ func TestShouldBypassTelegramAgentOnlyForExplicitSystemStatus(t *testing.T) {
 	}
 }
 
-func TestTelegramAgentToolModelStatusRequiresConfirmation(t *testing.T) {
-	db := setupTelegramAgentToolTestDB(t, "tg_agent_tool_model_confirm")
+func TestTelegramAgentToolModelStatusExecutesDirectly(t *testing.T) {
+	db := setupTelegramAgentToolTestDB(t, "tg_agent_tool_model_direct")
 	ctx := context.Background()
 	chatID := int64(6801293687)
-	telegramPendingToolActions.Delete(chatID)
 
 	model := models.Model{Name: "gpt-tool-test", Status: 1}
 	if err := db.Create(&model).Error; err != nil {
 		t.Fatalf("创建模型失败: %v", err)
 	}
 
-	client := &telegramToolTestClient{}
 	action, err := buildTelegramSetModelStatusActionWithMode(ctx, chatID, "gpt-tool-test", false, false)
 	if err != nil {
 		t.Fatalf("准备工具动作失败: %v", err)
 	}
-	text, err := prepareOrExecuteTelegramToolAction(ctx, action, true)
+	text, err := prepareOrExecuteTelegramToolAction(ctx, action)
 	if err != nil {
-		t.Fatalf("写入待确认操作失败: %v", err)
+		t.Fatalf("执行工具动作失败: %v", err)
 	}
-	if !strings.Contains(text, "操作：禁用模型") {
-		t.Fatalf("期望返回待确认提示，实际为: %s", text)
+	if !strings.Contains(text, "已禁用模型") {
+		t.Fatalf("期望返回执行结果，实际为: %s", text)
 	}
 	assertTelegramToolTextHasNoVisibleID(t, text)
 
-	var before models.Model
-	if err := db.First(&before, model.ID).Error; err != nil {
-		t.Fatalf("读取模型失败: %v", err)
-	}
-	if before.Status != 1 {
-		t.Fatalf("确认前不应修改模型状态，实际 status=%d", before.Status)
-	}
-
-	handled, err := HandleTelegramMessage(ctx, client, TelegramMessage{ChatID: chatID, Text: "确认"})
-	if err != nil || !handled {
-		t.Fatalf("期望确认消息被处理，handled=%v err=%v", handled, err)
-	}
 	var after models.Model
 	if err := db.First(&after, model.ID).Error; err != nil {
-		t.Fatalf("读取确认后的模型失败: %v", err)
+		t.Fatalf("读取执行后的模型失败: %v", err)
 	}
 	if after.Status != 0 {
-		t.Fatalf("确认后应禁用模型，实际 status=%d", after.Status)
-	}
-	if !strings.Contains(client.lastSent(), "已禁用模型") {
-		t.Fatalf("期望返回执行结果，实际为: %s", client.lastSent())
-	}
-	assertTelegramToolTextHasNoVisibleID(t, client.lastSent())
-}
-
-func TestTelegramAgentToolCancelKeepsModelStatus(t *testing.T) {
-	db := setupTelegramAgentToolTestDB(t, "tg_agent_tool_model_cancel")
-	ctx := context.Background()
-	chatID := int64(6801293688)
-	telegramPendingToolActions.Delete(chatID)
-
-	model := models.Model{Name: "gpt-tool-cancel", Status: 1}
-	if err := db.Create(&model).Error; err != nil {
-		t.Fatalf("创建模型失败: %v", err)
-	}
-
-	client := &telegramToolTestClient{}
-	action, err := buildTelegramSetModelStatusActionWithMode(ctx, chatID, "gpt-tool-cancel", false, false)
-	if err != nil {
-		t.Fatalf("准备工具动作失败: %v", err)
-	}
-	if _, err := prepareOrExecuteTelegramToolAction(ctx, action, true); err != nil {
-		t.Fatalf("写入待确认操作失败: %v", err)
-	}
-	if handled, err := HandleTelegramMessage(ctx, client, TelegramMessage{ChatID: chatID, Text: "取消"}); err != nil || !handled {
-		t.Fatalf("期望取消消息被处理，handled=%v err=%v", handled, err)
-	}
-
-	var after models.Model
-	if err := db.First(&after, model.ID).Error; err != nil {
-		t.Fatalf("读取模型失败: %v", err)
-	}
-	if after.Status != 1 {
-		t.Fatalf("取消后不应修改模型状态，实际 status=%d", after.Status)
-	}
-	if !strings.Contains(client.lastSent(), "已取消") {
-		t.Fatalf("期望返回取消提示，实际为: %s", client.lastSent())
+		t.Fatalf("应直接禁用模型，实际 status=%d", after.Status)
 	}
 }
 
@@ -454,7 +400,6 @@ func TestTelegramAgentToolBulkModelStatusByKeyword(t *testing.T) {
 	db := setupTelegramAgentToolTestDB(t, "tg_agent_tool_model_bulk")
 	ctx := context.Background()
 	chatID := int64(6801293691)
-	telegramPendingToolActions.Delete(chatID)
 
 	modelsToCreate := []models.Model{
 		{Name: "claude-haiku-test", Status: 1},
@@ -465,53 +410,26 @@ func TestTelegramAgentToolBulkModelStatusByKeyword(t *testing.T) {
 		t.Fatalf("创建模型失败: %v", err)
 	}
 
-	client := &telegramToolTestClient{}
 	action, err := buildTelegramSetModelStatusActionWithMode(ctx, chatID, "claude", false, true)
 	if err != nil {
 		t.Fatalf("准备批量工具动作失败: %v", err)
 	}
-	text, err := prepareOrExecuteTelegramToolAction(ctx, action, true)
+	text, err := prepareOrExecuteTelegramToolAction(ctx, action)
 	if err != nil {
-		t.Fatalf("写入批量待确认操作失败: %v", err)
+		t.Fatalf("执行批量工具动作失败: %v", err)
 	}
-	if !strings.Contains(text, "操作：禁用模型（匹配“claude”，共 2 个）") {
-		t.Fatalf("期望返回批量待确认提示，实际为: %s", text)
-	}
-	assertTelegramModelStatus(t, db, modelsToCreate[0].ID, 1)
-	assertTelegramModelStatus(t, db, modelsToCreate[1].ID, 1)
-	assertTelegramModelStatus(t, db, modelsToCreate[2].ID, 1)
-
-	handled, err := HandleTelegramMessage(ctx, client, TelegramMessage{ChatID: chatID, Text: "确认"})
-	if err != nil || !handled {
-		t.Fatalf("期望确认批量操作被处理，handled=%v err=%v", handled, err)
+	if !strings.Contains(text, "已禁用模型") || !strings.Contains(text, "数量：2 个") {
+		t.Fatalf("期望返回批量执行结果，实际为: %s", text)
 	}
 	assertTelegramModelStatus(t, db, modelsToCreate[0].ID, 0)
 	assertTelegramModelStatus(t, db, modelsToCreate[1].ID, 0)
 	assertTelegramModelStatus(t, db, modelsToCreate[2].ID, 1)
-	if !strings.Contains(client.lastSent(), "数量：2 个") {
-		t.Fatalf("期望返回批量执行结果，实际为: %s", client.lastSent())
-	}
-}
-
-func TestTelegramAgentToolLooseConfirmWithoutPendingFallsThrough(t *testing.T) {
-	chatID := int64(6801293690)
-	telegramPendingToolActions.Delete(chatID)
-
-	client := &telegramToolTestClient{}
-	handled, err := handleTelegramAgentToolMessage(context.Background(), client, chatID, "好", models.TelegramAgentConfig{})
-	if err != nil {
-		t.Fatalf("处理宽泛确认词失败: %v", err)
-	}
-	if handled {
-		t.Fatalf("没有待确认操作时，宽泛确认词不应被工具层截获")
-	}
 }
 
 func TestTelegramAgentToolProviderStatusKeepsAssociationStatus(t *testing.T) {
 	db := setupTelegramAgentToolTestDB(t, "tg_agent_tool_provider_restore")
 	ctx := context.Background()
 	chatID := int64(6801293689)
-	telegramPendingToolActions.Delete(chatID)
 
 	modelA := models.Model{Name: "model-a", Status: 1}
 	modelB := models.Model{Name: "model-b", Status: 1}
@@ -535,19 +453,12 @@ func TestTelegramAgentToolProviderStatusKeepsAssociationStatus(t *testing.T) {
 		t.Fatalf("创建禁用关联失败: %v", err)
 	}
 
-	client := &telegramToolTestClient{}
 	disableAction, err := buildTelegramSetProviderStatusAction(ctx, chatID, "ToolProvider", false)
 	if err != nil {
 		t.Fatalf("准备关闭提供商动作失败: %v", err)
 	}
-	if _, err := prepareOrExecuteTelegramToolAction(ctx, disableAction, true); err != nil {
-		t.Fatalf("写入关闭提供商待确认失败: %v", err)
-	}
-	assertTelegramModelProviderStatus(t, db, enabledAssoc.ID, 1)
-	assertTelegramModelProviderStatus(t, db, disabledAssoc.ID, 0)
-
-	if handled, err := HandleTelegramMessage(ctx, client, TelegramMessage{ChatID: chatID, Text: "确认"}); err != nil || !handled {
-		t.Fatalf("期望确认关闭被处理，handled=%v err=%v", handled, err)
+	if _, err := prepareOrExecuteTelegramToolAction(ctx, disableAction); err != nil {
+		t.Fatalf("关闭提供商失败: %v", err)
 	}
 	assertTelegramProviderStatus(t, db, provider.ID, 0)
 	assertTelegramModelProviderStatus(t, db, enabledAssoc.ID, 1)
@@ -557,11 +468,8 @@ func TestTelegramAgentToolProviderStatusKeepsAssociationStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("准备开启提供商动作失败: %v", err)
 	}
-	if _, err := prepareOrExecuteTelegramToolAction(ctx, enableAction, true); err != nil {
-		t.Fatalf("写入开启提供商待确认失败: %v", err)
-	}
-	if handled, err := HandleTelegramMessage(ctx, client, TelegramMessage{ChatID: chatID, Text: "确认"}); err != nil || !handled {
-		t.Fatalf("期望确认开启被处理，handled=%v err=%v", handled, err)
+	if _, err := prepareOrExecuteTelegramToolAction(ctx, enableAction); err != nil {
+		t.Fatalf("开启提供商失败: %v", err)
 	}
 	assertTelegramProviderStatus(t, db, provider.ID, 1)
 	assertTelegramModelProviderStatus(t, db, enabledAssoc.ID, 1)
@@ -572,7 +480,6 @@ func TestTelegramAgentToolBulkModelStatusCleansRelatedExpression(t *testing.T) {
 	db := setupTelegramAgentToolTestDB(t, "tg_agent_tool_model_related")
 	ctx := context.Background()
 	chatID := int64(6801293692)
-	telegramPendingToolActions.Delete(chatID)
 
 	modelsToCreate := []models.Model{
 		{Name: "claude-haiku-related", Status: 0},
@@ -591,25 +498,18 @@ func TestTelegramAgentToolBulkModelStatusCleansRelatedExpression(t *testing.T) {
 			Arguments: `{"target":"claude的相关模型","enabled":true,"bulk":true}`,
 		},
 	})
-	if !strings.Contains(toolResult, "操作：启用模型（匹配“claude”，共 2 个）") {
+	if !strings.Contains(toolResult, "已启用模型") || !strings.Contains(toolResult, "数量：2 个") {
 		t.Fatalf("期望 function call 工具清理 claude 的相关表达，实际为: %s", toolResult)
-	}
-
-	client := &telegramToolTestClient{}
-	handled, err := HandleTelegramMessage(ctx, client, TelegramMessage{ChatID: chatID, Text: "确认"})
-	if err != nil || !handled {
-		t.Fatalf("期望确认批量启用被处理，handled=%v err=%v", handled, err)
 	}
 	assertTelegramModelStatus(t, db, modelsToCreate[0].ID, 1)
 	assertTelegramModelStatus(t, db, modelsToCreate[1].ID, 1)
 	assertTelegramModelStatus(t, db, modelsToCreate[2].ID, 0)
 }
 
-func TestTelegramAgentFunctionToolCreatesPendingAction(t *testing.T) {
+func TestTelegramAgentFunctionToolExecutesModelStatusDirectly(t *testing.T) {
 	db := setupTelegramAgentToolTestDB(t, "tg_agent_tool_model_function_call")
 	ctx := context.Background()
 	chatID := int64(6801293693)
-	telegramPendingToolActions.Delete(chatID)
 
 	modelsToCreate := []models.Model{
 		{Name: "claude-sonnet-llm", Status: 0},
@@ -628,11 +528,11 @@ func TestTelegramAgentFunctionToolCreatesPendingAction(t *testing.T) {
 			Arguments: `{"target":"claude","enabled":true,"bulk":true}`,
 		},
 	})
-	if !strings.Contains(toolResult, "操作：启用模型（匹配“claude”，共 2 个）") {
-		t.Fatalf("期望 function call 创建待确认操作，实际为: %s", toolResult)
+	if !strings.Contains(toolResult, "已启用模型") || !strings.Contains(toolResult, "数量：2 个") {
+		t.Fatalf("期望 function call 直接执行模型操作，实际为: %s", toolResult)
 	}
-	assertTelegramModelStatus(t, db, modelsToCreate[0].ID, 0)
-	assertTelegramModelStatus(t, db, modelsToCreate[1].ID, 0)
+	assertTelegramModelStatus(t, db, modelsToCreate[0].ID, 1)
+	assertTelegramModelStatus(t, db, modelsToCreate[1].ID, 1)
 	assertTelegramModelStatus(t, db, modelsToCreate[2].ID, 0)
 }
 
@@ -640,7 +540,6 @@ func TestTelegramAgentFunctionToolMergesMultipleModelStatusActions(t *testing.T)
 	db := setupTelegramAgentToolTestDB(t, "tg_agent_tool_model_function_merge")
 	ctx := context.Background()
 	chatID := int64(6801293694)
-	telegramPendingToolActions.Delete(chatID)
 
 	modelsToCreate := []models.Model{
 		{Name: "claude-haiku-merge", Status: 0},
@@ -662,8 +561,8 @@ func TestTelegramAgentFunctionToolMergesMultipleModelStatusActions(t *testing.T)
 			Arguments: `{"target":"claude","enabled":true,"bulk":true}`,
 		},
 	})
-	if !strings.Contains(firstResult, "操作：启用模型（匹配“claude”，共 3 个）") {
-		t.Fatalf("期望第一个工具调用准备 claude 模型，实际为: %s", firstResult)
+	if !strings.Contains(firstResult, "已启用模型") || !strings.Contains(firstResult, "数量：3 个") {
+		t.Fatalf("期望第一个工具调用启用 claude 模型，实际为: %s", firstResult)
 	}
 
 	secondResult := executeTelegramAgentFunctionToolCall(ctx, chatID, models.TelegramAgentConfig{}, telegramAgentOpenAIToolCall{
@@ -674,29 +573,19 @@ func TestTelegramAgentFunctionToolMergesMultipleModelStatusActions(t *testing.T)
 			Arguments: `{"target":"deepseek","enabled":true,"bulk":true}`,
 		},
 	})
-	if !strings.Contains(secondResult, "操作：启用模型（共 5 个）") {
-		t.Fatalf("期望第二个工具调用合并为 5 个模型，实际为: %s", secondResult)
-	}
-
-	client := &telegramToolTestClient{}
-	handled, err := HandleTelegramMessage(ctx, client, TelegramMessage{ChatID: chatID, Text: "确认"})
-	if err != nil || !handled {
-		t.Fatalf("期望确认合并操作被处理，handled=%v err=%v", handled, err)
+	if !strings.Contains(secondResult, "已启用模型") || !strings.Contains(secondResult, "数量：2 个") {
+		t.Fatalf("期望第二个工具调用启用 deepseek 模型，实际为: %s", secondResult)
 	}
 	for index := 0; index < 5; index++ {
 		assertTelegramModelStatus(t, db, modelsToCreate[index].ID, 1)
 	}
 	assertTelegramModelStatus(t, db, modelsToCreate[5].ID, 0)
-	if !strings.Contains(client.lastSent(), "数量：5 个") {
-		t.Fatalf("期望确认后启用 5 个模型，实际为: %s", client.lastSent())
-	}
 }
 
 func TestTelegramAgentFunctionToolBatchesMixedModelStatusActions(t *testing.T) {
 	db := setupTelegramAgentToolTestDB(t, "tg_agent_tool_model_function_mixed_batch")
 	ctx := context.Background()
 	chatID := int64(6801293699)
-	telegramPendingToolActions.Delete(chatID)
 
 	modelsToCreate := []models.Model{
 		{Name: "claude-haiku-mixed", Status: 1},
@@ -717,8 +606,8 @@ func TestTelegramAgentFunctionToolBatchesMixedModelStatusActions(t *testing.T) {
 			Arguments: `{"target":"claude","enabled":false,"bulk":true}`,
 		},
 	})
-	if !strings.Contains(disableClaudeResult, "操作：禁用模型（匹配“claude”，共 2 个）") {
-		t.Fatalf("期望第一个工具调用准备禁用 claude，实际为: %s", disableClaudeResult)
+	if !strings.Contains(disableClaudeResult, "已禁用模型") || !strings.Contains(disableClaudeResult, "数量：2 个") {
+		t.Fatalf("期望第一个工具调用禁用 claude，实际为: %s", disableClaudeResult)
 	}
 
 	enableDeepSeekResult := executeTelegramAgentFunctionToolCall(ctx, chatID, models.TelegramAgentConfig{}, telegramAgentOpenAIToolCall{
@@ -729,38 +618,20 @@ func TestTelegramAgentFunctionToolBatchesMixedModelStatusActions(t *testing.T) {
 			Arguments: `{"target":"deepseek","enabled":true,"bulk":true}`,
 		},
 	})
-	if !strings.Contains(enableDeepSeekResult, "批次操作（2 项）") ||
-		!strings.Contains(enableDeepSeekResult, "禁用模型（匹配“claude”，共 2 个）") ||
-		!strings.Contains(enableDeepSeekResult, "启用模型（匹配“deepseek”，共 2 个）") {
-		t.Fatalf("期望混合操作合并为批次，实际为: %s", enableDeepSeekResult)
-	}
-
-	for _, model := range modelsToCreate {
-		assertTelegramModelStatus(t, db, model.ID, model.Status)
-	}
-
-	client := &telegramToolTestClient{}
-	handled, err := HandleTelegramMessage(ctx, client, TelegramMessage{ChatID: chatID, Text: "确认"})
-	if err != nil || !handled {
-		t.Fatalf("期望确认混合批次被处理，handled=%v err=%v", handled, err)
+	if !strings.Contains(enableDeepSeekResult, "已启用模型") || !strings.Contains(enableDeepSeekResult, "数量：2 个") {
+		t.Fatalf("期望第二个工具调用启用 deepseek，实际为: %s", enableDeepSeekResult)
 	}
 	assertTelegramModelStatus(t, db, modelsToCreate[0].ID, 0)
 	assertTelegramModelStatus(t, db, modelsToCreate[1].ID, 0)
 	assertTelegramModelStatus(t, db, modelsToCreate[2].ID, 1)
 	assertTelegramModelStatus(t, db, modelsToCreate[3].ID, 1)
 	assertTelegramModelStatus(t, db, modelsToCreate[4].ID, 1)
-	if !strings.Contains(client.lastSent(), "已执行批次操作") ||
-		!strings.Contains(client.lastSent(), "已禁用模型") ||
-		!strings.Contains(client.lastSent(), "已启用模型") {
-		t.Fatalf("期望返回批次执行结果，实际为: %s", client.lastSent())
-	}
 }
 
 func TestTelegramAgentFunctionToolSetModelsStatusBatch(t *testing.T) {
 	db := setupTelegramAgentToolTestDB(t, "tg_agent_tool_model_function_batch_tool")
 	ctx := context.Background()
 	chatID := int64(6801293700)
-	telegramPendingToolActions.Delete(chatID)
 
 	modelsToCreate := []models.Model{
 		{Name: "claude-haiku-batch-tool", Status: 1},
@@ -786,16 +657,10 @@ func TestTelegramAgentFunctionToolSetModelsStatusBatch(t *testing.T) {
 			}`,
 		},
 	})
-	if !strings.Contains(toolResult, "批次操作（2 项）") ||
-		!strings.Contains(toolResult, "禁用模型（匹配“claude”，共 2 个）") ||
-		!strings.Contains(toolResult, "启用模型（匹配“deepseek”，共 2 个）") {
-		t.Fatalf("期望批量工具一次准备两个模型操作，实际为: %s", toolResult)
-	}
-
-	client := &telegramToolTestClient{}
-	handled, err := HandleTelegramMessage(ctx, client, TelegramMessage{ChatID: chatID, Text: "确认"})
-	if err != nil || !handled {
-		t.Fatalf("期望确认批量工具操作被处理，handled=%v err=%v", handled, err)
+	if !strings.Contains(toolResult, "已执行批次操作") ||
+		!strings.Contains(toolResult, "已禁用模型") ||
+		!strings.Contains(toolResult, "已启用模型") {
+		t.Fatalf("期望批量工具一次执行两个模型操作，实际为: %s", toolResult)
 	}
 	assertTelegramModelStatus(t, db, modelsToCreate[0].ID, 0)
 	assertTelegramModelStatus(t, db, modelsToCreate[1].ID, 0)
@@ -808,7 +673,6 @@ func TestTelegramAgentFunctionToolGetsProviderConfigMasked(t *testing.T) {
 	db := setupTelegramAgentToolTestDB(t, "tg_agent_tool_provider_config_get")
 	ctx := context.Background()
 	chatID := int64(6801293695)
-	telegramPendingToolActions.Delete(chatID)
 
 	provider := models.Provider{
 		Name:            "ProviderConfigMasked",
@@ -838,11 +702,10 @@ func TestTelegramAgentFunctionToolGetsProviderConfigMasked(t *testing.T) {
 	}
 }
 
-func TestTelegramAgentFunctionToolUpdatesProviderConfigAfterConfirm(t *testing.T) {
+func TestTelegramAgentFunctionToolUpdatesProviderConfigDirectly(t *testing.T) {
 	db := setupTelegramAgentToolTestDB(t, "tg_agent_tool_provider_config_update")
 	ctx := context.Background()
 	chatID := int64(6801293696)
-	telegramPendingToolActions.Delete(chatID)
 
 	provider := models.Provider{
 		Name:                       "ProviderConfigUpdate",
@@ -875,35 +738,21 @@ func TestTelegramAgentFunctionToolUpdatesProviderConfigAfterConfirm(t *testing.T
 			}`,
 		},
 	})
-	if !strings.Contains(toolResult, "操作：更新提供商配置：ProviderConfigUpdate") {
-		t.Fatalf("期望创建待确认配置更新，实际为: %s", toolResult)
+	if !strings.Contains(toolResult, "已更新提供商配置") {
+		t.Fatalf("期望直接更新提供商配置，实际为: %s", toolResult)
 	}
 	assertTelegramToolTextHasNoVisibleID(t, toolResult)
 	if strings.Contains(toolResult, "new-a") || strings.Contains(toolResult, "new-b") {
-		t.Fatalf("待确认消息不应泄露新 api_key，实际为: %s", toolResult)
-	}
-
-	var before models.Provider
-	if err := db.First(&before, provider.ID).Error; err != nil {
-		t.Fatalf("读取确认前提供商失败: %v", err)
-	}
-	if before.Console != "https://old.example.com" {
-		t.Fatalf("确认前不应更新提供商，实际 console=%s", before.Console)
-	}
-
-	client := &telegramToolTestClient{}
-	handled, err := HandleTelegramMessage(ctx, client, TelegramMessage{ChatID: chatID, Text: "确认"})
-	if err != nil || !handled {
-		t.Fatalf("期望确认配置更新被处理，handled=%v err=%v", handled, err)
+		t.Fatalf("工具返回不应泄露新 api_key，实际为: %s", toolResult)
 	}
 
 	var updated models.Provider
 	if err := db.First(&updated, provider.ID).Error; err != nil {
-		t.Fatalf("读取确认后提供商失败: %v", err)
+		t.Fatalf("读取更新后提供商失败: %v", err)
 	}
 	config := map[string]string{}
 	if err := json.Unmarshal([]byte(updated.Config), &config); err != nil {
-		t.Fatalf("解析确认后 config 失败: %v", err)
+		t.Fatalf("解析更新后 config 失败: %v", err)
 	}
 	if config["base_url"] != "https://new.example.com/v1" || config["api_key"] != "new-a,new-b" {
 		t.Fatalf("config 未按预期更新: %#v", config)
@@ -917,10 +766,6 @@ func TestTelegramAgentFunctionToolUpdatesProviderConfigAfterConfirm(t *testing.T
 	if updated.InterfaceConversionEnabled != 0 || updated.InterfaceConversionTarget != "" {
 		t.Fatalf("接口转换应关闭并清空目标: enabled=%d target=%s", updated.InterfaceConversionEnabled, updated.InterfaceConversionTarget)
 	}
-	if !strings.Contains(client.lastSent(), "已更新提供商配置") {
-		t.Fatalf("期望确认后返回更新成功，实际为: %s", client.lastSent())
-	}
-	assertTelegramToolTextHasNoVisibleID(t, client.lastSent())
 }
 
 func TestTelegramAgentToolListOutputsHideIDs(t *testing.T) {
@@ -962,7 +807,6 @@ func TestTelegramAgentFunctionToolUpdatesProviderConfigWithoutConfirm(t *testing
 	db := setupTelegramAgentToolTestDB(t, "tg_agent_tool_provider_config_update_direct")
 	ctx := context.Background()
 	chatID := int64(6801293698)
-	telegramPendingToolActions.Delete(chatID)
 
 	provider := models.Provider{
 		Name:   "DirectProviderConfigUpdate",
@@ -972,10 +816,7 @@ func TestTelegramAgentFunctionToolUpdatesProviderConfigWithoutConfirm(t *testing
 		t.Fatalf("创建提供商失败: %v", err)
 	}
 
-	requireConfirm := false
-	toolResult := executeTelegramAgentFunctionToolCall(ctx, chatID, models.TelegramAgentConfig{
-		ToolConfirmationRequired: &requireConfirm,
-	}, telegramAgentOpenAIToolCall{
+	toolResult := executeTelegramAgentFunctionToolCall(ctx, chatID, models.TelegramAgentConfig{}, telegramAgentOpenAIToolCall{
 		ID:   "call_direct_update_provider_config",
 		Type: "function",
 		Function: telegramAgentOpenAIFunctionCall{
@@ -984,10 +825,7 @@ func TestTelegramAgentFunctionToolUpdatesProviderConfigWithoutConfirm(t *testing
 		},
 	})
 	if !strings.Contains(toolResult, "已更新提供商配置") {
-		t.Fatalf("期望关闭确认后直接执行，实际为: %s", toolResult)
-	}
-	if hasPendingTelegramToolAction(chatID) {
-		t.Fatalf("关闭确认后不应创建待确认操作")
+		t.Fatalf("期望直接执行，实际为: %s", toolResult)
 	}
 
 	var updated models.Provider
@@ -1006,7 +844,6 @@ func TestTelegramAgentFunctionToolUpdatesProviderConfigWithoutConfirm(t *testing
 func TestTelegramAgentFunctionToolCreatesAuthKeyWithoutConfirm(t *testing.T) {
 	db := setupTelegramAgentToolTestDB(t, "tg_agent_tool_auth_key_create")
 	ctx := context.Background()
-	confirmationRequired := false
 
 	modelsToCreate := []models.Model{
 		{Name: "claude-auth-key-create", Status: 1},
@@ -1016,9 +853,7 @@ func TestTelegramAgentFunctionToolCreatesAuthKeyWithoutConfirm(t *testing.T) {
 		t.Fatalf("创建模型失败: %v", err)
 	}
 
-	toolResult := executeTelegramAgentFunctionToolCall(ctx, 6801293710, models.TelegramAgentConfig{
-		ToolConfirmationRequired: &confirmationRequired,
-	}, telegramAgentOpenAIToolCall{
+	toolResult := executeTelegramAgentFunctionToolCall(ctx, 6801293710, models.TelegramAgentConfig{}, telegramAgentOpenAIToolCall{
 		ID:   "call_create_auth_key",
 		Type: "function",
 		Function: telegramAgentOpenAIFunctionCall{
@@ -1049,7 +884,6 @@ func TestTelegramAgentFunctionToolCreatesAuthKeyWithoutConfirm(t *testing.T) {
 func TestTelegramAgentFunctionToolUpdatesAuthKeyWithoutConfirm(t *testing.T) {
 	db := setupTelegramAgentToolTestDB(t, "tg_agent_tool_auth_key_update")
 	ctx := context.Background()
-	confirmationRequired := false
 	expiresAt := time.Now().Add(24 * time.Hour)
 
 	model := models.Model{Name: "deepseek-auth-key-update", Status: 1}
@@ -1069,9 +903,7 @@ func TestTelegramAgentFunctionToolUpdatesAuthKeyWithoutConfirm(t *testing.T) {
 		t.Fatalf("创建 AuthKey 失败: %v", err)
 	}
 
-	toolResult := executeTelegramAgentFunctionToolCall(ctx, 6801293711, models.TelegramAgentConfig{
-		ToolConfirmationRequired: &confirmationRequired,
-	}, telegramAgentOpenAIToolCall{
+	toolResult := executeTelegramAgentFunctionToolCall(ctx, 6801293711, models.TelegramAgentConfig{}, telegramAgentOpenAIToolCall{
 		ID:   "call_update_auth_key",
 		Type: "function",
 		Function: telegramAgentOpenAIFunctionCall{
@@ -1170,14 +1002,12 @@ func TestTelegramAgentFunctionToolDirectExecutionContinuesToolLoop(t *testing.T)
 	db := setupTelegramAgentToolTestDB(t, "tg_agent_tool_direct_continue_loop")
 	ctx := context.Background()
 	chatID := int64(6801293703)
-	telegramPendingToolActions.Delete(chatID)
 
 	model := models.Model{Name: "direct-loop-model", Status: 1}
 	if err := db.Create(&model).Error; err != nil {
 		t.Fatalf("创建模型失败: %v", err)
 	}
 
-	requireConfirm := false
 	toolCalls := []telegramAgentOpenAIToolCall{
 		{
 			ID:   "call_direct_disable_model",
@@ -1188,14 +1018,15 @@ func TestTelegramAgentFunctionToolDirectExecutionContinuesToolLoop(t *testing.T)
 			},
 		},
 	}
-	messages, directFinalText := appendTelegramAgentToolResults(ctx, chatID, models.TelegramAgentConfig{
-		ToolConfirmationRequired: &requireConfirm,
-	}, toolCalls, nil)
+	messages, directFinalText, err := appendTelegramAgentToolResults(ctx, chatID, models.TelegramAgentConfig{}, toolCalls, nil, nil)
+	if err != nil {
+		t.Fatalf("执行工具失败: %v", err)
+	}
 	if len(messages) != 1 {
 		t.Fatalf("期望写入 1 条 tool message，实际为 %d", len(messages))
 	}
 	if directFinalText != "" {
-		t.Fatalf("关闭确认后的直接执行不应提前结束工具循环，实际为: %s", directFinalText)
+		t.Fatalf("直接执行不应提前结束工具循环，实际为: %s", directFinalText)
 	}
 	assertTelegramModelStatus(t, db, model.ID, 0)
 }
@@ -1213,11 +1044,42 @@ func TestTelegramAgentToolCallsNeedResultSummary(t *testing.T) {
 	}
 }
 
-func TestTelegramAgentFunctionToolPendingActionStopsToolLoop(t *testing.T) {
+func TestTelegramAgentToolRunningStatus(t *testing.T) {
+	searchText := telegramAgentToolRunningStatus(telegramAgentOpenAIToolCall{
+		Function: telegramAgentOpenAIFunctionCall{
+			Name:      telegramAgentToolListSkills,
+			Arguments: `{"query":"广州天气"}`,
+		},
+	})
+	if !strings.Contains(searchText, "正在搜索 广州天气") {
+		t.Fatalf("期望显示搜索状态，实际为: %s", searchText)
+	}
+
+	runText := telegramAgentToolRunningStatus(telegramAgentOpenAIToolCall{
+		Function: telegramAgentOpenAIFunctionCall{
+			Name:      telegramAgentToolRunTerminalCommand,
+			Arguments: `{"skill":"ultimate-search","command":"bash","command_args":["dual-search.sh","--query","广州天气"]}`,
+		},
+	})
+	if !strings.Contains(runText, "ultimate-search") || !strings.Contains(runText, "正在搜索 广州天气") {
+		t.Fatalf("期望显示命令搜索状态，实际为: %s", runText)
+	}
+
+	commandText := telegramAgentToolRunningStatus(telegramAgentOpenAIToolCall{
+		Function: telegramAgentOpenAIFunctionCall{
+			Name:      telegramAgentToolRunTerminalCommand,
+			Arguments: `{"command":"bash","command_args":["sync.sh"]}`,
+		},
+	})
+	if !strings.Contains(commandText, "bash") || !strings.Contains(commandText, "正在运行") {
+		t.Fatalf("期望显示命令运行状态，实际为: %s", commandText)
+	}
+}
+
+func TestTelegramAgentFunctionToolProviderUpdateContinuesToolLoop(t *testing.T) {
 	db := setupTelegramAgentToolTestDB(t, "tg_agent_tool_provider_config_stop_loop")
 	ctx := context.Background()
 	chatID := int64(6801293697)
-	telegramPendingToolActions.Delete(chatID)
 
 	provider := models.Provider{
 		Name:   "小米公益",
@@ -1237,66 +1099,23 @@ func TestTelegramAgentFunctionToolPendingActionStopsToolLoop(t *testing.T) {
 			},
 		},
 	}
-	messages, directFinalText := appendTelegramAgentToolResults(ctx, chatID, models.TelegramAgentConfig{}, toolCalls, nil)
+	messages, directFinalText, err := appendTelegramAgentToolResults(ctx, chatID, models.TelegramAgentConfig{}, toolCalls, nil, nil)
+	if err != nil {
+		t.Fatalf("执行工具失败: %v", err)
+	}
 	if len(messages) != 1 {
 		t.Fatalf("期望写入 1 条 tool message，实际为 %d", len(messages))
 	}
-	if !strings.Contains(directFinalText, "操作：更新提供商配置：小米公益") {
-		t.Fatalf("期望待确认消息直接结束工具循环，实际为: %s", directFinalText)
+	if directFinalText != "" {
+		t.Fatalf("普通工具执行结果不应直接结束工具循环，实际为: %s", directFinalText)
 	}
 
-	var unchanged models.Provider
-	if err := db.First(&unchanged, provider.ID).Error; err != nil {
+	var updated models.Provider
+	if err := db.First(&updated, provider.ID).Error; err != nil {
 		t.Fatalf("读取提供商失败: %v", err)
 	}
-	if strings.Contains(unchanged.Config, "11111") {
-		t.Fatalf("未确认前不应写入新 api_key: %s", unchanged.Config)
-	}
-}
-
-func TestTelegramAgentPendingActionPersistsInDatabase(t *testing.T) {
-	db := setupTelegramAgentToolTestDB(t, "tg_agent_tool_pending_persist")
-	ctx := context.Background()
-	chatID := int64(6801293701)
-	telegramPendingToolActions.Delete(chatID)
-
-	model := models.Model{Name: "persist-confirm-model", Status: 1}
-	if err := db.Create(&model).Error; err != nil {
-		t.Fatalf("创建模型失败: %v", err)
-	}
-
-	toolResult := executeTelegramAgentFunctionToolCall(ctx, chatID, models.TelegramAgentConfig{}, telegramAgentOpenAIToolCall{
-		ID:   "call_persist_pending",
-		Type: "function",
-		Function: telegramAgentOpenAIFunctionCall{
-			Name:      telegramAgentToolSetModelStatus,
-			Arguments: `{"target":"persist-confirm-model","enabled":false}`,
-		},
-	})
-	if !strings.Contains(toolResult, "待确认操作") {
-		t.Fatalf("期望创建待确认操作，实际为: %s", toolResult)
-	}
-
-	var pendingCount int64
-	if err := db.Model(&models.TelegramAgentPendingAction{}).Where("chat_id = ?", chatID).Count(&pendingCount).Error; err != nil {
-		t.Fatalf("统计待确认操作失败: %v", err)
-	}
-	if pendingCount != 1 {
-		t.Fatalf("期望待确认操作落库 1 条，实际为 %d", pendingCount)
-	}
-
-	telegramPendingToolActions.Delete(chatID)
-	client := &telegramToolTestClient{}
-	handled, err := HandleTelegramMessage(ctx, client, TelegramMessage{ChatID: chatID, Text: "确认"})
-	if err != nil || !handled {
-		t.Fatalf("期望清掉内存后仍能确认，handled=%v err=%v", handled, err)
-	}
-	assertTelegramModelStatus(t, db, model.ID, 0)
-	if err := db.Model(&models.TelegramAgentPendingAction{}).Where("chat_id = ?", chatID).Count(&pendingCount).Error; err != nil {
-		t.Fatalf("再次统计待确认操作失败: %v", err)
-	}
-	if pendingCount != 0 {
-		t.Fatalf("确认后待确认操作应删除，实际剩余 %d 条", pendingCount)
+	if !strings.Contains(updated.Config, "11111") {
+		t.Fatalf("应直接写入新 api_key: %s", updated.Config)
 	}
 }
 
@@ -1304,7 +1123,6 @@ func TestTelegramAgentToolCallLogMasksSensitiveArguments(t *testing.T) {
 	db := setupTelegramAgentToolTestDB(t, "tg_agent_tool_call_log_mask")
 	ctx := context.Background()
 	chatID := int64(6801293702)
-	telegramPendingToolActions.Delete(chatID)
 
 	provider := models.Provider{
 		Name:   "SensitiveLogProvider",
@@ -1322,8 +1140,8 @@ func TestTelegramAgentToolCallLogMasksSensitiveArguments(t *testing.T) {
 			Arguments: `{"target":"SensitiveLogProvider","config_updates":{"api_key":"secret-new-key","base_url":"https://new.example.com/v1"}}`,
 		},
 	})
-	if !strings.Contains(toolResult, "待确认操作") {
-		t.Fatalf("期望创建待确认操作，实际为: %s", toolResult)
+	if !strings.Contains(toolResult, "已更新提供商配置") {
+		t.Fatalf("期望直接更新提供商配置，实际为: %s", toolResult)
 	}
 
 	var callLog models.TelegramAgentToolCallLog
@@ -1332,8 +1150,8 @@ func TestTelegramAgentToolCallLogMasksSensitiveArguments(t *testing.T) {
 		First(&callLog).Error; err != nil {
 		t.Fatalf("读取工具调用日志失败: %v", err)
 	}
-	if callLog.Status != telegramAgentToolLogStatusPendingConfirmation {
-		t.Fatalf("期望工具调用日志状态为待确认，实际为 %s", callLog.Status)
+	if callLog.Status != telegramAgentToolLogStatusExecuted {
+		t.Fatalf("期望工具调用日志状态为已执行，实际为 %s", callLog.Status)
 	}
 	if strings.Contains(callLog.Arguments, "secret-new-key") {
 		t.Fatalf("工具调用日志不应记录 api_key 明文: %s", callLog.Arguments)
@@ -1353,7 +1171,7 @@ func TestTelegramAgentToolActionExecutingLogIsUpdated(t *testing.T) {
 		Summary:        "执行测试命令",
 	}
 
-	logID := recordTelegramAgentToolActionExecutingLog(ctx, action, telegramAgentToolLogSourceToolAction, false)
+	logID := recordTelegramAgentToolActionExecutingLog(ctx, action, telegramAgentToolLogSourceToolAction)
 	if logID == 0 {
 		t.Fatalf("期望创建执行中日志")
 	}
@@ -1366,7 +1184,7 @@ func TestTelegramAgentToolActionExecutingLogIsUpdated(t *testing.T) {
 		t.Fatalf("期望状态为执行中，实际为 %s", callLog.Status)
 	}
 
-	finishTelegramAgentPreparedActionLog(ctx, logID, action, "执行完成", false)
+	finishTelegramAgentPreparedActionLog(ctx, logID, action, "执行完成")
 	if err := db.First(&callLog, logID).Error; err != nil {
 		t.Fatalf("读取完成日志失败: %v", err)
 	}
@@ -1477,7 +1295,6 @@ func TestTelegramAgentSkillToolsListReadAndRun(t *testing.T) {
 	db := setupTelegramAgentToolTestDB(t, "tg_agent_skill_tools_run")
 	ctx := context.Background()
 	chatID := int64(6801293713)
-	telegramPendingToolActions.Delete(chatID)
 
 	root := t.TempDir()
 	demoDir := filepath.Join(root, "demo")
@@ -1494,7 +1311,6 @@ func TestTelegramAgentSkillToolsListReadAndRun(t *testing.T) {
 		"  - name: echo",
 		"    path: scripts/echo.sh",
 		"    description: Echo args",
-		"    confirm: false",
 		"    timeout_ms: 5000",
 		"---",
 		"Demo instructions.",
@@ -1523,12 +1339,10 @@ func TestTelegramAgentSkillToolsListReadAndRun(t *testing.T) {
 		t.Fatalf("写入禁用 Skill 文件失败: %v", err)
 	}
 
-	requireConfirm := false
 	skillsEnabled := true
 	cfg := models.TelegramAgentConfig{
-		ToolConfirmationRequired: &requireConfirm,
-		SkillsEnabled:            &skillsEnabled,
-		SkillsDir:                root,
+		SkillsEnabled: &skillsEnabled,
+		SkillsDir:     root,
 	}
 	if _, err := SetTelegramAgentSkillEnabled(ctx, cfg, "disabled", false); err != nil {
 		t.Fatalf("写入禁用 Skill 状态失败: %v", err)
@@ -1597,140 +1411,57 @@ func TestTelegramAgentSkillToolsListReadAndRun(t *testing.T) {
 		First(&actionLog).Error; err != nil {
 		t.Fatalf("读取 Skill 命令审计日志失败: %v", err)
 	}
-	if actionLog.Status != telegramAgentToolLogStatusExecuted || actionLog.RequiresConfirmation != 0 {
+	if actionLog.Status != telegramAgentToolLogStatusExecuted {
 		t.Fatalf("Skill 命令审计日志状态不正确: %+v", actionLog)
 	}
 }
 
-func TestTelegramAgentSkillScriptRequiresConfirmation(t *testing.T) {
-	db := setupTelegramAgentToolTestDB(t, "tg_agent_skill_tools_confirm")
+func TestTelegramAgentSkillScriptRunsDirectly(t *testing.T) {
+	setupTelegramAgentToolTestDB(t, "tg_agent_skill_tools_direct")
 	ctx := context.Background()
 	chatID := int64(6801293714)
-	telegramPendingToolActions.Delete(chatID)
 
 	root := t.TempDir()
-	confirmDir := filepath.Join(root, "confirm")
-	scriptDir := filepath.Join(confirmDir, "scripts")
+	skillDir := filepath.Join(root, "direct")
+	scriptDir := filepath.Join(skillDir, "scripts")
 	if err := os.MkdirAll(scriptDir, 0o755); err != nil {
 		t.Fatalf("创建 Skill 脚本目录失败: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(confirmDir, "SKILL.md"), []byte(strings.Join([]string{
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(strings.Join([]string{
 		"---",
-		"name: confirm",
-		"description: Confirm skill",
+		"name: direct",
+		"description: Direct skill",
 		"scripts:",
 		"  - name: dangerous",
 		"    path: scripts/dangerous.sh",
-		"    description: Requires confirmation",
-		"    confirm: true",
+		"    description: Runs directly",
 		"---",
-		"Confirm instructions.",
+		"Direct instructions.",
 	}, "\n")), 0o644); err != nil {
 		t.Fatalf("写入 Skill 文件失败: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(scriptDir, "dangerous.sh"), []byte(strings.Join([]string{
-		"#!/bin/sh",
-		"printf '{\"ok\":true,\"text\":\"confirmed-run\"}'",
-	}, "\n")), 0o755); err != nil {
-		t.Fatalf("写入 Skill 脚本失败: %v", err)
-	}
-
-	requireConfirm := true
-	skillsEnabled := true
-	cfg := models.TelegramAgentConfig{
-		ToolConfirmationRequired: &requireConfirm,
-		SkillsEnabled:            &skillsEnabled,
-		SkillsDir:                root,
-	}
-	commandArgs, err := json.Marshal(map[string]any{
-		"command":      "bash",
-		"command_args": []string{filepath.Join(scriptDir, "dangerous.sh")},
-		"working_dir":  confirmDir,
-	})
-	if err != nil {
-		t.Fatalf("构造命令参数失败: %v", err)
-	}
-	result := executeTelegramAgentFunctionToolCall(ctx, chatID, cfg, telegramAgentOpenAIToolCall{
-		ID:   "call_run_skill_confirm",
-		Type: "function",
-		Function: telegramAgentOpenAIFunctionCall{
-			Name:      telegramAgentToolRunTerminalCommand,
-			Arguments: string(commandArgs),
-		},
-	})
-	payload := parseTelegramAgentToolResultPayload(result)
-	if !payload.OK || !payload.Final || !strings.Contains(payload.Text, "待确认操作") {
-		t.Fatalf("期望 Skill 脚本进入待确认，实际为: %+v", payload)
-	}
-
-	var pendingCount int64
-	if err := db.Model(&models.TelegramAgentPendingAction{}).Where("chat_id = ?", chatID).Count(&pendingCount).Error; err != nil {
-		t.Fatalf("统计待确认操作失败: %v", err)
-	}
-	if pendingCount != 1 {
-		t.Fatalf("期望待确认操作落库 1 条，实际为 %d", pendingCount)
-	}
-
-	client := &telegramToolTestClient{}
-	handled, err := HandleTelegramMessage(ctx, client, TelegramMessage{ChatID: chatID, Text: "确认"})
-	if err != nil || !handled {
-		t.Fatalf("确认 Skill 脚本失败，handled=%v err=%v", handled, err)
-	}
-	if !strings.Contains(client.lastSent(), "confirmed-run") {
-		t.Fatalf("确认后应执行 Skill 脚本，实际为: %s", client.lastSent())
-	}
-}
-
-func TestTelegramAgentSkillScriptSkipsConfirmationWhenGlobalDisabled(t *testing.T) {
-	db := setupTelegramAgentToolTestDB(t, "tg_agent_skill_tools_global_confirm_disabled")
-	ctx := context.Background()
-	chatID := int64(6801293715)
-	telegramPendingToolActions.Delete(chatID)
-
-	root := t.TempDir()
-	confirmDir := filepath.Join(root, "confirm-disabled")
-	scriptDir := filepath.Join(confirmDir, "scripts")
-	if err := os.MkdirAll(scriptDir, 0o755); err != nil {
-		t.Fatalf("创建 Skill 脚本目录失败: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(confirmDir, "SKILL.md"), []byte(strings.Join([]string{
-		"---",
-		"name: confirm-disabled",
-		"description: Confirm disabled skill",
-		"scripts:",
-		"  - name: search",
-		"    path: scripts/search.sh",
-		"    description: Should run directly when global confirmation is disabled",
-		"    confirm: true",
-		"---",
-		"Confirm disabled instructions.",
-	}, "\n")), 0o644); err != nil {
-		t.Fatalf("写入 Skill 文件失败: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(scriptDir, "search.sh"), []byte(strings.Join([]string{
 		"#!/bin/sh",
 		"printf '{\"ok\":true,\"text\":\"direct-run\"}'",
 	}, "\n")), 0o755); err != nil {
 		t.Fatalf("写入 Skill 脚本失败: %v", err)
 	}
 
-	requireConfirm := false
 	skillsEnabled := true
 	cfg := models.TelegramAgentConfig{
-		ToolConfirmationRequired: &requireConfirm,
-		SkillsEnabled:            &skillsEnabled,
-		SkillsDir:                root,
+		SkillsEnabled: &skillsEnabled,
+		SkillsDir:     root,
 	}
 	commandArgs, err := json.Marshal(map[string]any{
 		"command":      "bash",
-		"command_args": []string{filepath.Join(scriptDir, "search.sh")},
-		"working_dir":  confirmDir,
+		"command_args": []string{filepath.Join(scriptDir, "dangerous.sh")},
+		"working_dir":  skillDir,
 	})
 	if err != nil {
 		t.Fatalf("构造命令参数失败: %v", err)
 	}
 	result := executeTelegramAgentFunctionToolCall(ctx, chatID, cfg, telegramAgentOpenAIToolCall{
-		ID:   "call_run_skill_global_confirm_disabled",
+		ID:   "call_run_skill_direct",
 		Type: "function",
 		Function: telegramAgentOpenAIFunctionCall{
 			Name:      telegramAgentToolRunTerminalCommand,
@@ -1739,28 +1470,7 @@ func TestTelegramAgentSkillScriptSkipsConfirmationWhenGlobalDisabled(t *testing.
 	})
 	payload := parseTelegramAgentToolResultPayload(result)
 	if !payload.OK || !payload.Final || !strings.Contains(payload.Text, "direct-run") {
-		t.Fatalf("全局关闭确认时应直接执行 Skill 脚本，实际为: %+v", payload)
-	}
-	if strings.Contains(payload.Text, "待确认操作") {
-		t.Fatalf("全局关闭确认时不应创建待确认操作，实际为: %s", payload.Text)
-	}
-
-	var pendingCount int64
-	if err := db.Model(&models.TelegramAgentPendingAction{}).Where("chat_id = ?", chatID).Count(&pendingCount).Error; err != nil {
-		t.Fatalf("统计待确认操作失败: %v", err)
-	}
-	if pendingCount != 0 {
-		t.Fatalf("全局关闭确认时不应落库待确认操作，实际为 %d", pendingCount)
-	}
-
-	var actionLog models.TelegramAgentToolCallLog
-	if err := db.Where("chat_id = ? AND source = ? AND tool_name = ?", chatID, telegramAgentToolLogSourceToolAction, telegramAgentToolRunTerminalCommand).
-		Order("id DESC").
-		First(&actionLog).Error; err != nil {
-		t.Fatalf("读取 Skill 命令审计日志失败: %v", err)
-	}
-	if actionLog.Status != telegramAgentToolLogStatusExecuted || actionLog.RequiresConfirmation != 0 {
-		t.Fatalf("全局关闭确认时审计日志应记录直接执行，实际为: %+v", actionLog)
+		t.Fatalf("Skill 脚本应直接执行，实际为: %+v", payload)
 	}
 }
 
@@ -1901,6 +1611,54 @@ func TestTelegramAgentSkillFunctionDefinitionsAreDynamic(t *testing.T) {
 	}
 }
 
+func TestTelegramAgentSkillFunctionDefinitionsSkipUnrelatedSkill(t *testing.T) {
+	ctx := context.Background()
+	setupTelegramAgentToolTestDB(t, "tg_agent_skill_unrelated_definitions")
+	root := t.TempDir()
+	writeTelegramAgentTestSkill(t, root, "image", "SKILL.md", "生成图片 小猫 插画 头像", "draw")
+
+	skillsEnabled := true
+	cfg := models.TelegramAgentConfig{
+		SkillsEnabled: &skillsEnabled,
+		SkillsDir:     root,
+	}
+
+	unrelated, err := selectTelegramAgentSkillsForToolContext(ctx, cfg, "黄仁勋最近行程", telegramAgentDynamicSkillContextLimit)
+	if err != nil {
+		t.Fatalf("动态检索无关 Skill 失败: %v", err)
+	}
+	if len(unrelated) != 0 {
+		t.Fatalf("无关查询不应注入图片 Skill，实际为: %+v", unrelated)
+	}
+
+	unrelatedDefinitions := telegramAgentFunctionToolDefinitions(ctx, cfg, "黄仁勋最近行程")
+	if _, ok := findTelegramAgentFunctionDefinitionForTest(unrelatedDefinitions, telegramAgentToolListSkills); !ok {
+		t.Fatalf("无关查询仍应保留 list_skills 供主动查看")
+	}
+	if _, ok := findTelegramAgentFunctionDefinitionForTest(unrelatedDefinitions, telegramAgentToolReadSkill); ok {
+		t.Fatalf("无关查询不应暴露 read_skill")
+	}
+	if _, ok := findTelegramAgentFunctionDefinitionForTest(unrelatedDefinitions, telegramAgentToolRunTerminalCommand); ok {
+		t.Fatalf("无关查询不应暴露 run_terminal_command")
+	}
+
+	related, err := selectTelegramAgentSkillsForToolContext(ctx, cfg, "生成一张小猫图片", telegramAgentDynamicSkillContextLimit)
+	if err != nil {
+		t.Fatalf("动态检索图片 Skill 失败: %v", err)
+	}
+	if len(related) != 1 || related[0].Name != "image" {
+		t.Fatalf("图片查询应注入图片 Skill，实际为: %+v", related)
+	}
+
+	relatedDefinitions := telegramAgentFunctionToolDefinitions(ctx, cfg, "生成一张小猫图片")
+	if _, ok := findTelegramAgentFunctionDefinitionForTest(relatedDefinitions, telegramAgentToolReadSkill); !ok {
+		t.Fatalf("相关查询应暴露 read_skill")
+	}
+	if _, ok := findTelegramAgentFunctionDefinitionForTest(relatedDefinitions, telegramAgentToolRunTerminalCommand); !ok {
+		t.Fatalf("相关查询应暴露 run_terminal_command")
+	}
+}
+
 func TestTelegramAgentFunctionToolRequiredIsArray(t *testing.T) {
 	tool := telegramAgentFunctionTool(
 		telegramAgentToolListModels,
@@ -1922,18 +1680,6 @@ func TestTelegramAgentFunctionToolRequiredIsArray(t *testing.T) {
 	}
 	if len(required) != 0 {
 		t.Fatalf("无必填参数时 required 应为空数组，实际为 %+v", required)
-	}
-}
-
-func TestMergeTelegramAgentConfigPreservesToolConfirmationDisabled(t *testing.T) {
-	baseRequireConfirm := true
-	overrideRequireConfirm := false
-	merged := mergeTelegramAgentConfig(
-		models.TelegramAgentConfig{ToolConfirmationRequired: &baseRequireConfirm},
-		models.TelegramAgentConfig{ToolConfirmationRequired: &overrideRequireConfirm},
-	)
-	if telegramAgentRequiresToolConfirmation(merged) {
-		t.Fatalf("期望配置覆盖后关闭工具确认")
 	}
 }
 
@@ -1967,7 +1713,6 @@ func writeTelegramAgentTestSkillWithMetaName(t *testing.T, root string, dirName 
 		"  - name: " + scriptName,
 		"    path: scripts/" + scriptName + ".sh",
 		"    description: " + description,
-		"    confirm: false",
 		"---",
 		description,
 	}
@@ -2008,7 +1753,6 @@ func setupTelegramAgentToolTestDB(t *testing.T, name string) *gorm.DB {
 		&models.ModelWithProvider{},
 		&models.AuthKey{},
 		&models.TelegramAgentSession{},
-		&models.TelegramAgentPendingAction{},
 		&models.TelegramAgentToolCallLog{},
 		&models.TelegramAgentScheduledTask{},
 		&models.TelegramAgentSkill{},

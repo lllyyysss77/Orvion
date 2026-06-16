@@ -280,19 +280,16 @@ func runTelegramAgentScheduledTaskSilently(ctx context.Context, cfg models.Teleg
 
 func recordTelegramAgentScheduledTaskExecutingLog(ctx context.Context, task models.TelegramAgentScheduledTask, chatID int64) uint {
 	return recordTelegramAgentToolCallLog(ctx, models.TelegramAgentToolCallLog{
-		ChatID:               chatID,
-		Source:               telegramAgentScheduledTaskSource,
-		ToolName:             telegramAgentScheduledTaskToolName,
-		Arguments:            telegramAgentScheduledTaskArguments(task),
-		Status:               telegramAgentToolLogStatusExecuting,
-		ActionKind:           telegramAgentScheduledTaskAction,
-		ActionSummary:        task.Name,
-		OK:                   0,
-		Final:                0,
-		ExecutedAt:           nil,
-		CancelledAt:          nil,
-		ConfirmedAt:          nil,
-		RequiresConfirmation: 0,
+		ChatID:        chatID,
+		Source:        telegramAgentScheduledTaskSource,
+		ToolName:      telegramAgentScheduledTaskToolName,
+		Arguments:     telegramAgentScheduledTaskArguments(task),
+		Status:        telegramAgentToolLogStatusExecuting,
+		ActionKind:    telegramAgentScheduledTaskAction,
+		ActionSummary: task.Name,
+		OK:            0,
+		Final:         0,
+		ExecutedAt:    nil,
 	})
 }
 
@@ -309,19 +306,18 @@ func finishTelegramAgentScheduledTaskLog(ctx context.Context, logID uint, task m
 	}
 	now := time.Now()
 	updateTelegramAgentToolCallLog(ctx, logID, models.TelegramAgentToolCallLog{
-		ChatID:               result.ChatID,
-		Source:               telegramAgentScheduledTaskSource,
-		ToolName:             telegramAgentScheduledTaskToolName,
-		Arguments:            telegramAgentScheduledTaskArguments(task),
-		Result:               limitTelegramAgentScheduledTaskText(text),
-		Status:               status,
-		OK:                   ok,
-		Final:                1,
-		RequiresConfirmation: 0,
-		ActionKind:           telegramAgentScheduledTaskAction,
-		ActionSummary:        task.Name,
-		Error:                limitTelegramAgentScheduledTaskText(errorText),
-		ExecutedAt:           &now,
+		ChatID:        result.ChatID,
+		Source:        telegramAgentScheduledTaskSource,
+		ToolName:      telegramAgentScheduledTaskToolName,
+		Arguments:     telegramAgentScheduledTaskArguments(task),
+		Result:        limitTelegramAgentScheduledTaskText(text),
+		Status:        status,
+		OK:            ok,
+		Final:         1,
+		ActionKind:    telegramAgentScheduledTaskAction,
+		ActionSummary: task.Name,
+		Error:         limitTelegramAgentScheduledTaskText(errorText),
+		ExecutedAt:    &now,
 	})
 }
 

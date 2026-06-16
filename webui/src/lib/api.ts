@@ -202,9 +202,7 @@ export interface TelegramAgentToolLogSummary {
   executing: number;
   completed: number;
   executed: number;
-  pending: number;
   failed: number;
-  cancelled: number;
   active_chats: number;
   latest_at?: string;
   latest_chat_id?: number;
@@ -220,9 +218,7 @@ export interface TelegramAgentSessionSummary {
   executing: number;
   completed: number;
   executed: number;
-  pending: number;
   failed: number;
-  cancelled: number;
   latest_at?: string;
   latest_tool_name?: string;
   latest_status?: string;
@@ -242,13 +238,10 @@ export interface TelegramAgentToolLogStep {
   status: string;
   ok: boolean;
   final: boolean;
-  requires_confirmation: boolean;
   action_kind: string;
   action_summary: string;
   error: string;
-  confirmed_at?: string;
   executed_at?: string;
-  cancelled_at?: string;
 }
 
 export interface TelegramAgentToolLogResponse {
@@ -263,7 +256,6 @@ export interface TelegramAgentDeleteSessionResponse {
   message_rows: number;
   log_rows: number;
   session_rows: number;
-  pending_rows: number;
 }
 
 export type TelegramAgentScheduleType = "interval" | "daily";
@@ -902,7 +894,6 @@ export interface TelegramAgentConfig {
   max_tokens: number;
   temperature?: number;
   edit_interval_ms: number;
-  tool_confirmation_required?: boolean;
   skills_enabled?: boolean;
   skills_embedding_model?: string;
 }
@@ -911,7 +902,6 @@ export interface SkillScript {
   name: string;
   path: string;
   description: string;
-  confirm: boolean;
   timeout_ms: number;
 }
 
@@ -973,7 +963,6 @@ const normalizeSkillScript = (raw: unknown): SkillScript => {
     name: typeof record.name === "string" ? record.name : "",
     path: typeof record.path === "string" ? record.path : "",
     description: typeof record.description === "string" ? record.description : "",
-    confirm: toBoolean(record.confirm),
     timeout_ms: typeof record.timeout_ms === "number" ? record.timeout_ms : 0,
   };
 };

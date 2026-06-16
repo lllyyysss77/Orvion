@@ -155,41 +155,24 @@ func (TelegramAgentSession) TableName() string {
 	return "telegram_agent_sessions"
 }
 
-type TelegramAgentPendingAction struct {
-	ID         uint `gorm:"primaryKey"`
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
-	ChatID     int64     `gorm:"column:chat_id;uniqueIndex"`
-	ActionJSON string    `gorm:"column:action_json"`
-	Summary    string    `gorm:"column:summary"`
-	ExpiresAt  time.Time `gorm:"column:expires_at;index"`
-}
-
-func (TelegramAgentPendingAction) TableName() string {
-	return "telegram_agent_pending_actions"
-}
-
 type TelegramAgentToolCallLog struct {
-	ID                   uint `gorm:"primaryKey"`
-	CreatedAt            time.Time
-	UpdatedAt            time.Time
-	ChatID               int64      `gorm:"column:chat_id;index"`
-	ConversationID       string     `gorm:"column:conversation_id;size:96;index"`
-	Source               string     `gorm:"column:source;size:32;index"`
-	ToolCallID           string     `gorm:"column:tool_call_id;size:128;index"`
-	ToolName             string     `gorm:"column:tool_name;size:128;index"`
-	Arguments            string     `gorm:"column:arguments"`
-	Result               string     `gorm:"column:result"`
-	Status               string     `gorm:"column:status;size:64;index"`
-	OK                   int        `gorm:"column:ok"`
-	Final                int        `gorm:"column:final"`
-	RequiresConfirmation int        `gorm:"column:requires_confirmation"`
-	ActionKind           string     `gorm:"column:action_kind;size:64"`
-	ActionSummary        string     `gorm:"column:action_summary"`
-	Error                string     `gorm:"column:error"`
-	ConfirmedAt          *time.Time `gorm:"column:confirmed_at"`
-	ExecutedAt           *time.Time `gorm:"column:executed_at"`
-	CancelledAt          *time.Time `gorm:"column:cancelled_at"`
+	ID             uint `gorm:"primaryKey"`
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	ChatID         int64      `gorm:"column:chat_id;index"`
+	ConversationID string     `gorm:"column:conversation_id;size:96;index"`
+	Source         string     `gorm:"column:source;size:32;index"`
+	ToolCallID     string     `gorm:"column:tool_call_id;size:128;index"`
+	ToolName       string     `gorm:"column:tool_name;size:128;index"`
+	Arguments      string     `gorm:"column:arguments"`
+	Result         string     `gorm:"column:result"`
+	Status         string     `gorm:"column:status;size:64;index"`
+	OK             int        `gorm:"column:ok"`
+	Final          int        `gorm:"column:final"`
+	ActionKind     string     `gorm:"column:action_kind;size:64"`
+	ActionSummary  string     `gorm:"column:action_summary"`
+	Error          string     `gorm:"column:error"`
+	ExecutedAt     *time.Time `gorm:"column:executed_at"`
 }
 
 func (TelegramAgentToolCallLog) TableName() string {

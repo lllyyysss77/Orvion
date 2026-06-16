@@ -168,10 +168,6 @@ func HandleTelegramMessage(ctx context.Context, client TelegramClient, message T
 		return false, nil
 	}
 
-	if handled, err := handleTelegramAgentToolMessage(ctx, client, message.ChatID, raw, cfg); handled {
-		return true, err
-	}
-
 	command, commandText := parseTelegramAgentCommand(raw)
 	switch command {
 	case "/new", "/reset":
@@ -224,18 +220,23 @@ func runTelegramAgentConversation(ctx context.Context, client TelegramClient, ch
 
 	edit := func(force bool) error {
 		content := strings.TrimSpace(answer.String())
-		if content == "" {
-			content = strings.TrimSpace(statusText)
-			if content == "" {
-				content = "正在思考..."
+		status := strings.TrimSpace(statusText)
+		if status != "" {
+			if content != "" {
+				content += "\n\n" + status
+			} else {
+				content = status
 			}
 		}
+		if content == "" {
+			content = "正在思考..."
+		}
 		content = trimTelegramMessage(content)
+		if content == lastEditedText {
+			return nil
+		}
 		if !force {
 			if time.Since(lastEditedAt) < resolveTelegramAgentEditInterval(cfg) {
-				return nil
-			}
-			if content == lastEditedText {
 				return nil
 			}
 		}
@@ -260,6 +261,7 @@ func runTelegramAgentConversation(ctx context.Context, client TelegramClient, ch
 		if delta == "" {
 			return nil
 		}
+		statusText = ""
 		answer.WriteString(delta)
 		return edit(false)
 	}, updateStatus)
@@ -282,6 +284,7 @@ func runTelegramAgentConversation(ctx context.Context, client TelegramClient, ch
 	}
 	answer.Reset()
 	answer.WriteString(finalAnswer)
+	statusText = ""
 	if err := edit(true); err != nil {
 		return err
 	}
@@ -344,11 +347,11 @@ func runTelegramAgentToolResultFollowup(ctx context.Context, client TelegramClie
 			content = "正在整理结果..."
 		}
 		content = trimTelegramMessage(content)
+		if content == lastEditedText {
+			return nil
+		}
 		if !force {
 			if time.Since(lastEditedAt) < resolveTelegramAgentEditInterval(cfg) {
-				return nil
-			}
-			if content == lastEditedText {
 				return nil
 			}
 		}
@@ -404,7 +407,7 @@ func runTelegramAgentToolResultFollowup(ctx context.Context, client TelegramClie
 	}
 
 	nextHistory := trimTelegramHistory(append(history,
-		chatMessage{Role: "user", Content: "确认"},
+		chatMessage{Role: "user", Content: "整理工具执行结果"},
 		chatMessage{Role: "assistant", Content: finalAnswer},
 	), cfg)
 	if err := saveTelegramSessionMessages(ctx, chatID, nextHistory); err != nil {
@@ -445,7 +448,7 @@ func buildTelegramAgentToolResultFollowupPrompt(action telegramToolAction, toolR
 	}
 	result := truncateTelegramSkillText(toolResult, telegramAgentToolResultFollowupMaxBytes)
 	return strings.Join([]string{
-		"用户刚刚确认执行本地工具操作。请基于工具执行结果，回答用户原始需求。",
+		"系统刚刚执行了本地工具操作。请基于工具执行结果，回答用户原始需求。",
 		"要求：",
 		"- 使用简体中文。",
 		"- 不要原样粘贴 JSON，也不要输出内部字段名清单。",
@@ -453,7 +456,7 @@ func buildTelegramAgentToolResultFollowupPrompt(action telegramToolAction, toolR
 		"- 可以保留重要数值、时间、来源名称和必要链接。",
 		"- 如果结果表示失败或信息不足，请说明原因和下一步建议。",
 		"",
-		"已确认操作：",
+		"已执行操作：",
 		summary,
 		"",
 		"工具执行结果：",
@@ -1278,9 +1281,6 @@ func mergeTelegramAgentConfig(base models.TelegramAgentConfig, override models.T
 	if override.EditIntervalMs > 0 {
 		base.EditIntervalMs = override.EditIntervalMs
 	}
-	if override.ToolConfirmationRequired != nil {
-		base.ToolConfirmationRequired = override.ToolConfirmationRequired
-	}
 	if override.SkillsEnabled != nil {
 		base.SkillsEnabled = override.SkillsEnabled
 	}
@@ -1292,10 +1292,6 @@ func mergeTelegramAgentConfig(base models.TelegramAgentConfig, override models.T
 
 func isTelegramAgentEnabled(cfg models.TelegramAgentConfig) bool {
 	return cfg.Enabled == nil || *cfg.Enabled
-}
-
-func telegramAgentRequiresToolConfirmation(cfg models.TelegramAgentConfig) bool {
-	return cfg.ToolConfirmationRequired == nil || *cfg.ToolConfirmationRequired
 }
 
 func parseTelegramAgentCommand(raw string) (command string, text string) {
@@ -1345,7 +1341,6 @@ func ForgetTelegramConversation(chatID int64, conversationID string) {
 		session.conversationID = ""
 		session.messages = nil
 		telegramSessions.Delete(chatID)
-		telegramPendingToolActions.Delete(chatID)
 	}
 }
 
@@ -1434,22 +1429,18 @@ func startNewTelegramConversation(ctx context.Context, chatID int64) (string, er
 	conversationID := newTelegramConversationID(chatID)
 	session.conversationID = conversationID
 	session.messages = nil
-	telegramPendingToolActions.Delete(chatID)
 
 	if models.DB == nil {
 		return conversationID, nil
 	}
 	err := models.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Clauses(clause.OnConflict{
+		return tx.Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "chat_id"}},
 			DoUpdates: clause.AssignmentColumns([]string{"conversation_id", "updated_at"}),
 		}).Create(&models.TelegramAgentSession{
 			ChatID:         chatID,
 			ConversationID: conversationID,
-		}).Error; err != nil {
-			return err
-		}
-		return tx.Where("chat_id = ?", chatID).Delete(&models.TelegramAgentPendingAction{}).Error
+		}).Error
 	})
 	return conversationID, err
 }

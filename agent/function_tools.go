@@ -190,7 +190,10 @@ func streamTelegramAgentReplyWithFunctionTools(ctx context.Context, cfg models.T
 			ToolCalls: streamResult.ToolCalls,
 		})
 		var directFinalText string
-		messages, directFinalText = appendTelegramAgentToolResults(ctx, chatID, cfg, streamResult.ToolCalls, messages)
+		messages, directFinalText, err = appendTelegramAgentToolResults(ctx, chatID, cfg, streamResult.ToolCalls, messages, onStatus)
+		if err != nil {
+			return result, err
+		}
 		if directFinalText != "" {
 			if err := onDelta(directFinalText); err != nil {
 				return result, err
@@ -249,9 +252,14 @@ func streamTelegramAgentPlainReplyWithPool(ctx context.Context, cfg models.Teleg
 	return result, err
 }
 
-func appendTelegramAgentToolResults(ctx context.Context, chatID int64, cfg models.TelegramAgentConfig, toolCalls []telegramAgentOpenAIToolCall, messages []telegramAgentOpenAIMessage) ([]telegramAgentOpenAIMessage, string) {
+func appendTelegramAgentToolResults(ctx context.Context, chatID int64, cfg models.TelegramAgentConfig, toolCalls []telegramAgentOpenAIToolCall, messages []telegramAgentOpenAIMessage, onStatus streamStatusHandler) ([]telegramAgentOpenAIMessage, string, error) {
 	directFinalText := ""
 	for _, toolCall := range toolCalls {
+		if onStatus != nil {
+			if err := onStatus(telegramAgentToolRunningStatus(toolCall)); err != nil {
+				return messages, directFinalText, err
+			}
+		}
 		toolResult := executeTelegramAgentFunctionToolCall(ctx, chatID, cfg, toolCall)
 		messages = append(messages, telegramAgentOpenAIMessage{
 			Role:       "tool",
@@ -262,7 +270,80 @@ func appendTelegramAgentToolResults(ctx context.Context, chatID int64, cfg model
 			directFinalText = text
 		}
 	}
-	return messages, directFinalText
+	return messages, directFinalText, nil
+}
+
+func telegramAgentToolRunningStatus(toolCall telegramAgentOpenAIToolCall) string {
+	name := strings.TrimSpace(toolCall.Function.Name)
+	if name == "" {
+		name = "工具"
+	}
+
+	args := telegramAgentToolCallArgs{}
+	if rawArgs := strings.TrimSpace(toolCall.Function.Arguments); rawArgs != "" {
+		_ = json.Unmarshal([]byte(rawArgs), &args)
+	}
+
+	label := telegramAgentToolStatusLabel(name, args)
+	if query := telegramAgentToolStatusQuery(args); query != "" {
+		return fmt.Sprintf("%s 正在搜索 %s...", label, query)
+	}
+	return fmt.Sprintf("%s 正在运行...", label)
+}
+
+func telegramAgentToolStatusLabel(name string, args telegramAgentToolCallArgs) string {
+	switch name {
+	case telegramAgentToolRunTerminalCommand:
+		if skill := strings.TrimSpace(args.Skill); skill != "" {
+			return skill
+		}
+		if command := strings.TrimSpace(args.Command); command != "" {
+			return command
+		}
+	case telegramAgentToolReadSkill:
+		if skill := strings.TrimSpace(args.Skill); skill != "" {
+			return skill
+		}
+	}
+	return name
+}
+
+func telegramAgentToolStatusQuery(args telegramAgentToolCallArgs) string {
+	for _, value := range []string{
+		args.Query,
+		telegramAgentToolCommandQuery(args.CommandArgs),
+		args.Target,
+		args.Model,
+		args.ProviderName,
+		args.Skill,
+	} {
+		value = sanitizeTelegramAgentToolStatusValue(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func telegramAgentToolCommandQuery(args []string) string {
+	for index, arg := range args {
+		if strings.TrimSpace(arg) == "--query" && index+1 < len(args) {
+			return args[index+1]
+		}
+	}
+	return ""
+}
+
+func sanitizeTelegramAgentToolStatusValue(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.ReplaceAll(value, "\r", " ")
+	value = strings.ReplaceAll(value, "\n", " ")
+	value = strings.Join(strings.Fields(value), " ")
+	if len([]rune(value)) > 48 {
+		runes := []rune(value)
+		value = string(runes[:48]) + "..."
+	}
+	return value
 }
 
 func telegramAgentToolCallsNeedResultSummary(toolCalls []telegramAgentOpenAIToolCall) bool {
@@ -490,7 +571,7 @@ func telegramAgentToolDirectFinalText(raw string) (string, bool) {
 		return "", false
 	}
 	text := strings.TrimSpace(payload.Text)
-	return text, payload.Final && text != "" && (strings.Contains(text, "待确认操作") || telegramAgentTextContainsAttachmentMarker(text))
+	return text, payload.Final && text != "" && telegramAgentTextContainsAttachmentMarker(text)
 }
 
 func telegramAgentFunctionToolSystemPrompt(cfg models.TelegramAgentConfig) string {
@@ -502,7 +583,7 @@ func telegramAgentFunctionToolSystemPrompt(cfg models.TelegramAgentConfig) strin
 		"新增或修改 API Key 时，allow_all=false 表示限制模型；如用户给的是模型关键词，请用 model_keywords 批量匹配模型，不要把“claude 的模型”当成单个模型名。",
 		"用户要求查看、新增、修改、启用或禁用 Agent 定时任务时，必须调用对应定时任务工具；不要只口头说明。",
 		"不要在普通回复中泄露 api_key、token、secret、password 等敏感配置值。",
-		"Skills 工具上下文会按当前用户消息从数据库里的启用 Skill 动态检索生成；用户提到 skills、技能、脚本、自动化能力包、本地能力扩展时，如果 Skills 工具可用，优先调用 list_skills/read_skill；用户用自然语言描述能力需求时，list_skills 可使用 search_mode=embedding；需要执行本地脚本时，先 read_skill 获取 Skill 目录和脚本绝对路径，再调用 run_terminal_command 自己执行命令，不要编造脚本结果。",
+		"Skills 工具上下文会按当前用户消息从数据库里的启用 Skill 动态检索生成；只有当 Skill 与用户需求明确相关时才读取或执行 Skill，不要用无关 Skill 替代答案；用户提到 skills、技能、脚本、自动化能力包、本地能力扩展时，如果 Skills 工具可用，优先调用 list_skills/read_skill；用户用自然语言描述能力需求时，list_skills 可使用 search_mode=embedding；需要执行本地脚本时，先 read_skill 获取 Skill 目录和脚本绝对路径，再调用 run_terminal_command 自己执行命令，不要编造脚本结果。",
 		"run_terminal_command 使用结构化参数 command + command_args + working_dir；不要把整段 shell 文本塞进 command，也不要使用 bash -c/sh -c/zsh -c。",
 		"用户要求生成 SVG、文本文件、配置文件、HTML 文件等你可以直接写出内容的文件时，必须调用 create_attachment_file 创建附件文件；尤其是 SVG，不要只回复“已生成”。",
 		"如果工具生成了需要发给用户的图片或文件，请在最终回复中使用附件标记：[orvion:image:/绝对路径或URL|可选说明] 或 [orvion:file:/绝对路径或URL|可选说明]；不要把这个标记放进代码块。",
@@ -511,11 +592,7 @@ func telegramAgentFunctionToolSystemPrompt(cfg models.TelegramAgentConfig) strin
 		"如果用户在同一句话中要求修改后继续检查某些模型或提供商状态，修改工具执行后还要继续调用查看工具，不要只总结修改结果。",
 		"完成工具调用后，用简体中文简洁总结工具结果。",
 	}
-	if telegramAgentRequiresToolConfirmation(cfg) {
-		lines = append(lines, "修改类工具只会创建待确认操作；工具返回要求用户确认时，请明确告诉用户回复“确认”执行或“取消”放弃。")
-	} else {
-		lines = append(lines, "修改类工具会直接执行数据库更新；工具返回执行结果后，请直接告知用户结果，不要要求用户再次确认。")
-	}
+	lines = append(lines, "修改类工具会直接执行数据库更新；工具返回执行结果后，请直接告知用户结果。")
 	return strings.Join(lines, "\n")
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/url"
 	"os"
@@ -12,7 +13,6 @@ import (
 	"time"
 
 	"github.com/glebarez/sqlite"
-	"github.com/racio/orvion/pkg/logutil"
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
 )
@@ -56,7 +56,6 @@ func Init(_ context.Context, dsn string) {
 		&ChatIO{},
 		&TelegramAgentMessage{},
 		&TelegramAgentSession{},
-		&TelegramAgentPendingAction{},
 		&TelegramAgentToolCallLog{},
 		&TelegramAgentScheduledTask{},
 		&TelegramAgentSkill{},
@@ -66,9 +65,7 @@ func Init(_ context.Context, dsn string) {
 	); err != nil {
 		panic(err)
 	}
-	if err := cleanupProviderStatusSnapshots(); err != nil {
-		log.Printf("清理旧提供商状态快照失败: %v", err)
-	}
+	_ = cleanupProviderStatusSnapshots()
 
 	if _, err := EnsureChatLogMonthlyTable(time.Now()); err != nil {
 		panic(err)
@@ -83,9 +80,8 @@ func cleanupProviderStatusSnapshots() error {
 }
 
 func newGormLogger() gormlogger.Interface {
-	writer := logutil.NewSystemLogWriter(os.Stdout)
 	baseLogger := gormlogger.New(
-		log.New(writer, "", log.LstdFlags),
+		log.New(io.Discard, "", log.LstdFlags),
 		gormlogger.Config{
 			SlowThreshold:             gormSlowSQLThreshold,
 			LogLevel:                  gormlogger.Warn,

@@ -19,10 +19,7 @@ type telegramAgentFunctionToolDefinition struct {
 }
 
 func telegramAgentFunctionToolDefinitions(ctx context.Context, cfg models.TelegramAgentConfig, skillQuery string) []telegramAgentFunctionToolDefinition {
-	mutationDescriptionSuffix := "该工具不会立即修改，而是创建一个需要用户确认的待执行操作。"
-	if !telegramAgentRequiresToolConfirmation(cfg) {
-		mutationDescriptionSuffix = "该工具会直接执行修改，不需要用户再次确认。"
-	}
+	mutationDescriptionSuffix := "该工具会立即执行修改并返回结果。"
 
 	definitions := []telegramAgentFunctionToolDefinition{
 		{
@@ -247,7 +244,7 @@ func telegramAgentFunctionToolDefinitions(ctx context.Context, cfg models.Telegr
 		},
 		{
 			Name:        telegramAgentToolGetProviderConfig,
-			Description: "查看提供商配置摘要。敏感字段会被隐藏，用于修改前确认当前配置。",
+			Description: "查看提供商配置摘要。敏感字段会被隐藏，用于修改前核对当前配置。",
 			Properties: map[string]any{
 				"target": map[string]any{"type": "string", "description": "提供商名称或 ID。"},
 			},
@@ -354,7 +351,7 @@ func telegramAgentSkillFunctionToolDefinitions(ctx context.Context, cfg models.T
 		},
 		telegramAgentFunctionToolDefinition{
 			Name:        telegramAgentToolRunTerminalCommand,
-			Description: "执行本地命令行工具，用于按 Skill 说明运行脚本。请先 read_skill 获取脚本绝对路径，再用 command + command_args + working_dir 结构化执行；不要使用 bash -c/sh -c/zsh -c。执行会进入确认机制和审计日志。" + catalogText,
+			Description: "执行本地命令行工具，用于按 Skill 说明运行脚本。请先 read_skill 获取脚本绝对路径，再用 command + command_args + working_dir 结构化执行；不要使用 bash -c/sh -c/zsh -c。执行会直接运行并写入审计日志。" + catalogText,
 			Properties: map[string]any{
 				"command":      map[string]any{"type": "string", "description": "可执行命令或绝对路径，例如 bash、python3、node 或 /path/to/script。必须是单个命令，参数放 command_args。"},
 				"command_args": map[string]any{"type": "array", "description": "命令参数列表，例如 [\"/abs/skill/scripts/search.sh\", \"--query\", \"广州天气\"]。", "items": map[string]any{"type": "string"}},
@@ -377,7 +374,7 @@ func summarizeTelegramAgentSkillToolCatalog(skills []telegramAgentSkill) string 
 		}
 	}
 	if len(enabled) == 0 {
-		return "当前没有启用的 Skill。"
+		return "当前没有与本轮需求明确相关的 Skill；不要用无关 Skill 替代执行。"
 	}
 	limit := len(enabled)
 	if limit > 8 {
@@ -476,11 +473,11 @@ func telegramAgentFunctionReadSkill(ctx context.Context, _ int64, cfg models.Tel
 }
 
 func telegramAgentFunctionRunTerminalCommand(ctx context.Context, chatID int64, cfg models.TelegramAgentConfig, args telegramAgentToolCallArgs) string {
-	action, requireConfirmation, err := buildTelegramRunCommandAction(ctx, chatID, cfg, args)
+	action, err := buildTelegramRunCommandAction(ctx, chatID, cfg, args)
 	if err != nil {
 		return telegramAgentToolResult(false, "准备执行命令失败："+err.Error())
 	}
-	text, err := prepareOrExecuteTelegramToolAction(ctx, action, requireConfirmation)
+	text, err := prepareOrExecuteTelegramToolAction(ctx, action)
 	if err != nil {
 		return telegramAgentToolFinalResult(false, "执行命令失败："+err.Error())
 	}
@@ -492,7 +489,7 @@ func telegramAgentFunctionCreateAuthKey(ctx context.Context, chatID int64, cfg m
 	if err != nil {
 		return telegramAgentToolResult(false, "准备新增 API Key 失败："+err.Error())
 	}
-	text, err := prepareOrExecuteTelegramToolAction(ctx, action, telegramAgentRequiresToolConfirmation(cfg))
+	text, err := prepareOrExecuteTelegramToolAction(ctx, action)
 	if err != nil {
 		return telegramAgentToolFinalResult(false, "新增 API Key 失败："+err.Error())
 	}
@@ -504,7 +501,7 @@ func telegramAgentFunctionUpdateAuthKey(ctx context.Context, chatID int64, cfg m
 	if err != nil {
 		return telegramAgentToolResult(false, "准备修改 API Key 失败："+err.Error())
 	}
-	text, err := prepareOrExecuteTelegramToolAction(ctx, action, telegramAgentRequiresToolConfirmation(cfg))
+	text, err := prepareOrExecuteTelegramToolAction(ctx, action)
 	if err != nil {
 		return telegramAgentToolFinalResult(false, "修改 API Key 失败："+err.Error())
 	}
@@ -524,7 +521,7 @@ func telegramAgentFunctionCreateScheduledTask(ctx context.Context, chatID int64,
 	if err != nil {
 		return telegramAgentToolResult(false, "准备新增 Agent 定时任务失败："+err.Error())
 	}
-	text, err := prepareOrExecuteTelegramToolAction(ctx, action, telegramAgentRequiresToolConfirmation(cfg))
+	text, err := prepareOrExecuteTelegramToolAction(ctx, action)
 	if err != nil {
 		return telegramAgentToolFinalResult(false, "新增 Agent 定时任务失败："+err.Error())
 	}
@@ -536,7 +533,7 @@ func telegramAgentFunctionUpdateScheduledTask(ctx context.Context, chatID int64,
 	if err != nil {
 		return telegramAgentToolResult(false, "准备修改 Agent 定时任务失败："+err.Error())
 	}
-	text, err := prepareOrExecuteTelegramToolAction(ctx, action, telegramAgentRequiresToolConfirmation(cfg))
+	text, err := prepareOrExecuteTelegramToolAction(ctx, action)
 	if err != nil {
 		return telegramAgentToolFinalResult(false, "修改 Agent 定时任务失败："+err.Error())
 	}
@@ -548,7 +545,7 @@ func telegramAgentFunctionSetScheduledTaskStatus(ctx context.Context, chatID int
 	if err != nil {
 		return telegramAgentToolResult(false, "准备 Agent 定时任务状态操作失败："+err.Error())
 	}
-	text, err := prepareOrExecuteTelegramToolAction(ctx, action, telegramAgentRequiresToolConfirmation(cfg))
+	text, err := prepareOrExecuteTelegramToolAction(ctx, action)
 	if err != nil {
 		return telegramAgentToolFinalResult(false, "执行 Agent 定时任务状态操作失败："+err.Error())
 	}
@@ -564,7 +561,7 @@ func telegramAgentFunctionSetModelStatus(ctx context.Context, chatID int64, cfg 
 	if err != nil {
 		return telegramAgentToolResult(false, "准备模型操作失败："+err.Error())
 	}
-	text, err := prepareOrExecuteTelegramToolAction(ctx, action, telegramAgentRequiresToolConfirmation(cfg))
+	text, err := prepareOrExecuteTelegramToolAction(ctx, action)
 	if err != nil {
 		return telegramAgentToolFinalResult(false, "执行模型操作失败："+err.Error())
 	}
@@ -576,7 +573,7 @@ func telegramAgentFunctionSetModelsStatusBatch(ctx context.Context, chatID int64
 	if err != nil {
 		return telegramAgentToolResult(false, "准备批量模型操作失败："+err.Error())
 	}
-	text, err := prepareOrExecuteTelegramToolAction(ctx, action, telegramAgentRequiresToolConfirmation(cfg))
+	text, err := prepareOrExecuteTelegramToolAction(ctx, action)
 	if err != nil {
 		return telegramAgentToolFinalResult(false, "执行批量模型操作失败："+err.Error())
 	}
@@ -592,7 +589,7 @@ func telegramAgentFunctionSetProviderStatus(ctx context.Context, chatID int64, c
 	if err != nil {
 		return telegramAgentToolResult(false, "准备提供商操作失败："+err.Error())
 	}
-	text, err := prepareOrExecuteTelegramToolAction(ctx, action, telegramAgentRequiresToolConfirmation(cfg))
+	text, err := prepareOrExecuteTelegramToolAction(ctx, action)
 	if err != nil {
 		return telegramAgentToolFinalResult(false, "执行提供商操作失败："+err.Error())
 	}
@@ -612,7 +609,7 @@ func telegramAgentFunctionUpdateProviderConfig(ctx context.Context, chatID int64
 	if err != nil {
 		return telegramAgentToolResult(false, "准备提供商配置更新失败："+err.Error())
 	}
-	text, err := prepareOrExecuteTelegramToolAction(ctx, action, telegramAgentRequiresToolConfirmation(cfg))
+	text, err := prepareOrExecuteTelegramToolAction(ctx, action)
 	if err != nil {
 		return telegramAgentToolFinalResult(false, "执行提供商配置更新失败："+err.Error())
 	}

@@ -2,11 +2,13 @@ package main
 
 import (
 	"embed"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/gin-contrib/gzip"
 	"github.com/gin-gonic/gin"
@@ -19,7 +21,8 @@ func buildRouter(token string) *gin.Engine {
 	router := gin.New()
 	router.Use(
 		gin.LoggerWithConfig(gin.LoggerConfig{
-			Skip: shouldSkipAccessLog,
+			Formatter: formatAccessLog,
+			Skip:      shouldSkipAccessLog,
 		}),
 		gin.Recovery(),
 	)
@@ -38,6 +41,44 @@ func buildRouter(token string) *gin.Engine {
 	setWebUIRoutes(router)
 
 	return router
+}
+
+func formatAccessLog(param gin.LogFormatterParams) string {
+	level := "INFO"
+	if param.StatusCode >= http.StatusInternalServerError {
+		level = "ERROR"
+	} else if param.StatusCode >= http.StatusBadRequest {
+		level = "WARN"
+	}
+
+	path := param.Path
+	if path == "" && param.Request != nil && param.Request.URL != nil {
+		path = param.Request.URL.Path
+	}
+
+	errorMessage := sanitizeAccessLogValue(param.ErrorMessage)
+	errorPart := ""
+	if errorMessage != "" {
+		errorPart = fmt.Sprintf(" error=%q", errorMessage)
+	}
+
+	return fmt.Sprintf(
+		"time=%s level=%s msg=%q status=%d method=%s path=%q%s\n",
+		param.TimeStamp.Format(time.RFC3339),
+		level,
+		"接口调用",
+		param.StatusCode,
+		param.Method,
+		path,
+		errorPart,
+	)
+}
+
+func sanitizeAccessLogValue(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.ReplaceAll(value, "\r", " ")
+	value = strings.ReplaceAll(value, "\n", " ")
+	return value
 }
 
 func shouldSkipAccessLog(c *gin.Context) bool {

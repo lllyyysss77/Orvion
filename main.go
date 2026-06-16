@@ -67,11 +67,11 @@ func initLogging() {
 		level = slog.LevelError
 	}
 
-	logWriter := resolveLogWriter()
-	gin.DefaultWriter = logWriter
-	gin.DefaultErrorWriter = logWriter
+	accessLogWriter := resolveLogWriter()
+	gin.DefaultWriter = accessLogWriter
+	gin.DefaultErrorWriter = io.Discard
 
-	slog.SetDefault(slog.New(slog.NewTextHandler(logWriter, &slog.HandlerOptions{
+	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{
 		Level: level,
 	})))
 

@@ -386,14 +386,10 @@ const HealthModelRow = ({
   const startTime = model.requestBlocks.length > 0 ? formatShortTime(model.requestBlocks[0].timestamp) : "-";
   const endTime = model.requestBlocks.length > 0 ? formatShortTime(model.requestBlocks[model.requestBlocks.length - 1].timestamp) : "-";
   const rateClass = pickSuccessRateClass(model.successRate);
-  const isUnused = model.totalRequests <= 0;
 
   return (
     <div
-      className={cn(
-        "relative cursor-pointer overflow-hidden rounded-2xl border border-border/60 bg-card/70 px-4 py-2.5 transition-colors hover:bg-card",
-        isUnused && "border-border/50 bg-muted/25 shadow-inner dark:bg-muted/10"
-      )}
+      className="cursor-pointer rounded-2xl border border-border/60 bg-card/70 px-4 py-2.5 transition-colors hover:bg-card"
       role="button"
       tabIndex={0}
       aria-expanded={expanded}
@@ -405,13 +401,7 @@ const HealthModelRow = ({
         }
       }}
     >
-      {isUnused ? (
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-0 rounded-2xl bg-muted/30 shadow-[inset_0_0_28px_rgba(15,23,42,0.14)] dark:bg-black/15 dark:shadow-[inset_0_0_32px_rgba(0,0,0,0.38)]"
-        />
-      ) : null}
-      <div className="relative z-10 flex flex-col gap-2.5 lg:flex-row lg:items-start">
+      <div className="flex flex-col gap-2.5 lg:flex-row lg:items-start">
         <div className="w-full lg:w-56 shrink-0">
           <div className="flex items-center justify-between gap-2">
             <div className="min-w-0">
@@ -435,7 +425,7 @@ const HealthModelRow = ({
         </div>
       </div>
       {expanded ? (
-        <div className="relative z-10 mt-3 grid gap-2 border-t border-border/50 pt-3 md:grid-cols-2 xl:grid-cols-3" onClick={(event) => event.stopPropagation()}>
+        <div className="mt-3 grid gap-2 border-t border-border/50 pt-3 md:grid-cols-2 xl:grid-cols-3" onClick={(event) => event.stopPropagation()}>
           {model.providers.length > 0 ? (
             model.providers.map((item) => {
               const itemRate = item.totalRequests > 0 && typeof item.successRate === "number" ? item.successRate : 100;
@@ -639,7 +629,7 @@ export default function HealthPage() {
   }, [health, providerConsoleMap, checkConsoleLatencies]);
 
   const modelMonitorItems = useMemo(
-    () => (health ? buildModelMonitorItems(health.components.providers.details) : []),
+    () => (health ? buildModelMonitorItems(health.components.providers.details).filter((model) => model.totalRequests > 0) : []),
     [health]
   );
 

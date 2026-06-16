@@ -86,7 +86,6 @@ const telegramBreakerAlertSchema = z.object({
 
 const telegramAgentSchema = z.object({
   enabled: z.boolean(),
-  tool_confirmation_required: z.boolean(),
   skills_enabled: z.boolean(),
   skills_embedding_model: z.string().trim(),
   base_url: z.string().trim(),
@@ -142,7 +141,6 @@ const TELEGRAM_AGENT_CONFIG_CHANGED_EVENT = "telegram-agent-config-changed";
 
 const telegramAgentDefaultValues: TelegramAgentForm = {
   enabled: true,
-  tool_confirmation_required: true,
   skills_enabled: false,
   skills_embedding_model: '',
   base_url: '',
@@ -309,7 +307,6 @@ export default function ConfigPage() {
         const agentCfg = JSON.parse(telegramAgentResponse.value) as TelegramAgentConfig;
         const nextTelegramAgentConfig = {
           enabled: agentCfg.enabled !== false,
-          tool_confirmation_required: agentCfg.tool_confirmation_required !== false,
           skills_enabled: agentCfg.skills_enabled === true,
           skills_embedding_model: agentCfg.skills_embedding_model || '',
           base_url: agentCfg.base_url || '',
@@ -880,22 +877,6 @@ export default function ConfigPage() {
                       render={({ field }) => (
                         <FormItem className="flex h-9 items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/50 px-3">
                           <FormLabel className="text-xs text-muted-foreground">启用对话</FormLabel>
-                          <FormControl>
-                            <Switch
-                              checked={field.value === true}
-                              onCheckedChange={(checked) => field.onChange(checked === true)}
-                            />
-                          </FormControl>
-                        </FormItem>
-                      )}
-                    />
-
-                    <FormField
-                      control={telegramAgentForm.control}
-                      name="tool_confirmation_required"
-                      render={({ field }) => (
-                        <FormItem className="flex h-9 items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/50 px-3">
-                          <FormLabel className="text-xs text-muted-foreground">修改需确认</FormLabel>
                           <FormControl>
                             <Switch
                               checked={field.value === true}
