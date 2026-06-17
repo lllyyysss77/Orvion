@@ -16,7 +16,7 @@ import (
 
 const (
 	telegramAgentCommandDefaultTimeoutMs = 30000
-	telegramAgentCommandMaxTimeoutMs     = 120000
+	telegramAgentCommandMaxTimeoutMs     = 240000
 	telegramAgentCommandMaxOutputBytes   = 64 * 1024
 	telegramAgentCommandMaxStdinBytes    = 64 * 1024
 	telegramAgentCommandMaxArgs          = 64

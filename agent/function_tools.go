@@ -40,7 +40,6 @@ const (
 	telegramAgentToolListSkills             = "list_skills"
 	telegramAgentToolReadSkill              = "read_skill"
 	telegramAgentToolRunTerminalCommand     = "run_terminal_command"
-	telegramAgentToolCreateAttachmentFile   = "create_attachment_file"
 )
 
 type telegramAgentOpenAIMessage struct {
@@ -107,10 +106,6 @@ type telegramAgentToolCallArgs struct {
 	WorkingDir                 string                              `json:"working_dir"`
 	Stdin                      *string                             `json:"stdin"`
 	TimeoutMs                  int                                 `json:"timeout_ms"`
-	FileName                   string                              `json:"file_name"`
-	Content                    string                              `json:"content"`
-	AttachmentKind             string                              `json:"attachment_kind"`
-	Caption                    string                              `json:"caption"`
 }
 
 type telegramAgentModelStatusBatchItem struct {
@@ -585,8 +580,8 @@ func telegramAgentFunctionToolSystemPrompt(cfg models.TelegramAgentConfig) strin
 		"不要在普通回复中泄露 api_key、token、secret、password 等敏感配置值。",
 		"Skills 工具上下文会直接提供当前全部启用 Skill；用户提到 skills、技能、脚本、自动化能力包、本地能力扩展时，如果 Skills 工具可用，优先调用 list_skills/read_skill；用户用自然语言描述能力需求时，list_skills 可使用 search_mode=embedding；需要执行本地脚本时，先 read_skill 获取 Skill 目录和脚本绝对路径，再调用 run_terminal_command 自己执行命令，不要编造脚本结果。",
 		"run_terminal_command 使用结构化参数 command + command_args + working_dir；不要把整段 shell 文本塞进 command，也不要使用 bash -c/sh -c/zsh -c。",
-		"用户要求生成 SVG、文本文件、配置文件、HTML 文件等你可以直接写出内容的文件时，必须调用 create_attachment_file 创建附件文件；尤其是 SVG，不要只回复“已生成”。",
-		"如果工具生成了需要发给用户的图片或文件，请在最终回复中使用附件标记：[orvion:image:/绝对路径或URL|可选说明] 或 [orvion:file:/绝对路径或URL|可选说明]；不要把这个标记放进代码块。",
+		"用户要求创建、写入、修改、删除文件时，必须使用 run_terminal_command 完成文件操作；不要只口头说明已生成。",
+		"如果 run_terminal_command 生成了需要发给用户的图片或文件，请在最终回复中使用附件标记：[orvion:image:/绝对路径或URL|可选说明] 或 [orvion:file:/绝对路径或URL|可选说明]；不要把这个标记放进代码块。",
 		"用户说“claude 的相关模型”“所有 claude 模型”“claude 那批模型”这类表达时，target 应为 claude，bulk 应为 true。",
 		"用户一句话里包含多个模型启停动作时，例如“禁用 claude 并开启 deepseek”，必须调用 set_models_status_batch，并把每个动作分别放进 items；不要只处理其中一个动作。",
 		"如果用户在同一句话中要求修改后继续检查某些模型或提供商状态，修改工具执行后还要继续调用查看工具，不要只总结修改结果。",

@@ -72,18 +72,6 @@ func telegramAgentFunctionToolDefinitions(ctx context.Context, cfg models.Telegr
 			Handler: telegramAgentFunctionReadRequestLogs,
 		},
 		{
-			Name:        telegramAgentToolCreateAttachmentFile,
-			Description: "创建可发送给 Telegram 用户的本地附件文件。适合生成 SVG、Markdown、JSON、HTML、文本等内容；SVG 应作为 file 附件发送，不要只口头说明已生成。",
-			Properties: map[string]any{
-				"file_name":       map[string]any{"type": "string", "description": "文件名，只需要文件名本身，例如 cat.svg、report.md。不要传目录路径。"},
-				"content":         map[string]any{"type": "string", "description": "完整文件内容。SVG 需要传完整 <svg>...</svg> 文本。"},
-				"attachment_kind": map[string]any{"type": "string", "description": "附件类型。SVG 使用 file；普通图片 URL 或真实图片文件才使用 image。默认 file。", "enum": []string{"file", "image"}},
-				"caption":         map[string]any{"type": "string", "description": "Telegram 附件说明，可为空。"},
-			},
-			Required: []string{"file_name", "content"},
-			Handler:  telegramAgentFunctionCreateAttachmentFile,
-		},
-		{
 			Name:        telegramAgentToolListAuthKeys,
 			Description: "查看 Orvion API Key 列表，只返回项目名称、掩码 Key、状态、权限、RPM、用量和最后使用时间，不返回完整 Key。",
 			Properties: map[string]any{
@@ -357,7 +345,7 @@ func telegramAgentSkillFunctionToolDefinitions(ctx context.Context, cfg models.T
 				"command_args": map[string]any{"type": "array", "description": "命令参数列表，例如 [\"/abs/skill/scripts/search.sh\", \"--query\", \"广州天气\"]。", "items": map[string]any{"type": "string"}},
 				"working_dir":  map[string]any{"type": "string", "description": "工作目录。执行 Skill 脚本时通常传 read_skill 返回的 Skill 目录。"},
 				"stdin":        map[string]any{"type": "string", "description": "可选 stdin 文本。脚本要求 JSON stdin 时再传。"},
-				"timeout_ms":   map[string]any{"type": "integer", "description": "超时时间，默认 30000，最大 120000。"},
+				"timeout_ms":   map[string]any{"type": "integer", "description": "超时时间，默认 30000，最大 240000。"},
 			},
 			Required: []string{"command"},
 			Handler:  telegramAgentFunctionRunTerminalCommand,
@@ -438,14 +426,6 @@ func telegramAgentFunctionReadRequestLogs(ctx context.Context, _ int64, _ models
 		return telegramAgentToolResult(false, "读取请求日志失败："+err.Error())
 	}
 	return telegramAgentToolResult(true, text)
-}
-
-func telegramAgentFunctionCreateAttachmentFile(_ context.Context, _ int64, _ models.TelegramAgentConfig, args telegramAgentToolCallArgs) string {
-	text, err := createTelegramAgentAttachmentFile(args)
-	if err != nil {
-		return telegramAgentToolResult(false, "创建附件文件失败："+err.Error())
-	}
-	return telegramAgentToolFinalResult(true, text)
 }
 
 func telegramAgentFunctionListAuthKeys(ctx context.Context, _ int64, _ models.TelegramAgentConfig, args telegramAgentToolCallArgs) string {

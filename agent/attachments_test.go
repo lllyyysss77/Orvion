@@ -2,11 +2,7 @@ package agent
 
 import (
 	"context"
-	"os"
-	"strings"
 	"testing"
-
-	"github.com/racio/orvion/models"
 )
 
 type telegramAttachmentTestClient struct {
@@ -68,54 +64,5 @@ func TestSendTelegramAgentTextWithAttachments(t *testing.T) {
 	}
 	if len(client.documents) != 1 || client.documents[0] != "/tmp/a.txt|文件" {
 		t.Fatalf("文件发送不符合预期: %#v", client.documents)
-	}
-}
-
-func TestCreateTelegramAgentAttachmentFileForSVG(t *testing.T) {
-	result, err := createTelegramAgentAttachmentFile(telegramAgentToolCallArgs{
-		FileName:       "../cute-cat.svg",
-		Content:        `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120"><text x="20" y="60">cat</text></svg>`,
-		AttachmentKind: telegramAgentAttachmentKindImage,
-		Caption:        "小猫 SVG",
-	})
-	if err != nil {
-		t.Fatalf("创建 SVG 附件失败: %v", err)
-	}
-	if !strings.Contains(result, "文件名：cute-cat.svg") || !strings.Contains(result, "[orvion:file:") {
-		t.Fatalf("SVG 应作为文件附件返回，实际为: %s", result)
-	}
-
-	_, attachments := extractTelegramAgentAttachments(result)
-	if len(attachments) != 1 {
-		t.Fatalf("应解析出 1 个附件，实际为: %#v", attachments)
-	}
-	if attachments[0].Kind != telegramAgentAttachmentKindFile || attachments[0].Caption != "小猫 SVG" {
-		t.Fatalf("附件信息不符合预期: %#v", attachments[0])
-	}
-	if _, err := os.Stat(attachments[0].Source); err != nil {
-		t.Fatalf("附件文件应已落盘: %v", err)
-	}
-}
-
-func TestCreateAttachmentFileToolStopsLoopWithAttachmentMarker(t *testing.T) {
-	toolCalls := []telegramAgentOpenAIToolCall{
-		{
-			ID:   "call_create_svg",
-			Type: "function",
-			Function: telegramAgentOpenAIFunctionCall{
-				Name:      telegramAgentToolCreateAttachmentFile,
-				Arguments: `{"file_name":"cat.svg","content":"<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 10 10\"></svg>","caption":"小猫 SVG"}`,
-			},
-		},
-	}
-	messages, directFinalText, err := appendTelegramAgentToolResults(context.Background(), 123, models.TelegramAgentConfig{}, toolCalls, nil, nil)
-	if err != nil {
-		t.Fatalf("执行附件工具失败: %v", err)
-	}
-	if len(messages) != 1 {
-		t.Fatalf("期望写入 1 条 tool message，实际为 %d", len(messages))
-	}
-	if !strings.Contains(directFinalText, "[orvion:file:") {
-		t.Fatalf("创建附件文件后应直接返回附件标记，实际为: %s", directFinalText)
 	}
 }

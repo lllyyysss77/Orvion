@@ -205,10 +205,6 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, requestP
 				"model", before.Model,
 				"provider", provider.Name,
 				"provider_model", modelWithProvider.ProviderModel,
-				"model_with_provider_id", modelWithProvider.ID,
-				"attempt", attempt+1,
-				"max_retry", providersWithMeta.MaxRetry,
-				"strategy", providersWithMeta.Strategy,
 			)
 
 			// 根据请求原始请求头 是否透传请求头 自定义请求头 构建新的请求头
