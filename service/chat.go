@@ -81,6 +81,12 @@ func balanceChatWithFallback(c *gin.Context, start time.Time, style string, requ
 		return nil, nil, before, providersWithMeta, fmt.Errorf("%w; 回退模型不可用: %v", err, fallbackErr)
 	}
 
+	slog.Info("已确认模型回退目标",
+		"model", before.Model,
+		"fallback_model", fallbackModel.Name,
+		"fallback_model_id", fallbackModel.ID,
+		"endpoint", providersWithMeta.Endpoint,
+	)
 	slog.Warn("模型全部提供商失败，尝试回退模型",
 		"model", before.Model,
 		"fallback_model", fallbackModel.Name,
@@ -117,6 +123,9 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, requestP
 	}
 
 	providerMap := providersWithMeta.ProviderMap
+	if len(providersWithMeta.WeightItems) == 0 {
+		return nil, nil, errMaximumRetryAttemptsReached
+	}
 
 	var proxyIP string
 	if cfg, ok := runtimesvc.LoadAnthropicProxyIPConfig(ctx); ok {
@@ -133,6 +142,13 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, requestP
 
 	// 选择负载均衡策略（含可选熔断包装）
 	balancer := runtimesvc.NewBalancer(providersWithMeta.Strategy, providersWithMeta.Breaker, providersWithMeta.WeightItems)
+	slog.Info("开始提供商调度",
+		"model", before.Model,
+		"strategy", providersWithMeta.Strategy,
+		"breaker", providersWithMeta.Breaker,
+		"max_retry", providersWithMeta.MaxRetry,
+		"provider_candidates", len(providersWithMeta.WeightItems),
+	)
 
 	// 设置请求超时
 	responseHeaderTimeout := time.Second * time.Duration(providersWithMeta.TimeOut)
@@ -185,7 +201,15 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, requestP
 				limiterChecked = true
 			}
 
-			slog.Info("using provider", "provider", provider.Name, "model", modelWithProvider.ProviderModel)
+			slog.Info("已选择提供商",
+				"model", before.Model,
+				"provider", provider.Name,
+				"provider_model", modelWithProvider.ProviderModel,
+				"model_with_provider_id", modelWithProvider.ID,
+				"attempt", attempt+1,
+				"max_retry", providersWithMeta.MaxRetry,
+				"strategy", providersWithMeta.Strategy,
+			)
 
 			// 根据请求原始请求头 是否透传请求头 自定义请求头 构建新的请求头
 			withHeader := modelWithProvider.WithHeader == 1
@@ -277,6 +301,15 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, requestP
 					retryLog <- log.WithError(err)
 					lastStatus = 0
 					lastWas429 = false
+					slog.Warn("提供商请求失败，准备重试",
+						"model", before.Model,
+						"provider", provider.Name,
+						"provider_model", modelWithProvider.ProviderModel,
+						"model_with_provider_id", modelWithProvider.ID,
+						"provider_attempt", providerAttempt+1,
+						"global_attempt", attempt,
+						"error", err,
+					)
 					// 网络/超时类错误：继续在同一 provider 内重试
 					continue
 				}
@@ -292,6 +325,15 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, requestP
 					_, _ = io.Copy(io.Discard, res.Body)
 					retryLog <- log.WithError(fmt.Errorf("status: %d, body: %s", res.StatusCode, runtimesvc.SafeBodyTextForLog(res, limitedBody)))
 					_ = res.Body.Close()
+					slog.Warn("提供商返回非成功状态",
+						"model", before.Model,
+						"provider", provider.Name,
+						"provider_model", modelWithProvider.ProviderModel,
+						"model_with_provider_id", modelWithProvider.ID,
+						"status_code", res.StatusCode,
+						"provider_attempt", providerAttempt+1,
+						"global_attempt", attempt,
+					)
 
 					// 非可重试的 4xx：直接切换（不浪费同 provider 的 3 次机会）
 					if !runtimesvc.IsRetryableStatus(res.StatusCode) {
@@ -334,10 +376,22 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, requestP
 
 			// 同一 provider 多次失败后再切换
 			if lastWas429 {
+				slog.Warn("提供商因限流被降权",
+					"model", before.Model,
+					"provider", provider.Name,
+					"provider_model", modelWithProvider.ProviderModel,
+					"model_with_provider_id", modelWithProvider.ID,
+				)
 				balancer.Reduce(id)
 			} else {
 				// 0 表示网络/构建错误；或非 429 的 HTTP 错误：移除待选
-				_ = lastStatus
+				slog.Warn("提供商已从本轮候选中移除",
+					"model", before.Model,
+					"provider", provider.Name,
+					"provider_model", modelWithProvider.ProviderModel,
+					"model_with_provider_id", modelWithProvider.ID,
+					"last_status", lastStatus,
+				)
 				balancer.Delete(id)
 			}
 
@@ -548,22 +602,19 @@ func providersWithMetaByModel(ctx context.Context, endpoint string, model models
 	if err != nil {
 		return nil, err
 	}
-
-	if len(modelWithProviders) == 0 {
-		return nil, errors.New("not provider for model " + model.Name)
-	}
-
 	modelWithProviderMap := lo.KeyBy(modelWithProviders, func(mp models.ModelWithProvider) uint { return mp.ID })
 
-	providerQuery := gorm.G[models.Provider](models.DB).
-		Where("id IN ?", lo.Map(modelWithProviders, func(mp models.ModelWithProvider, _ int) uint { return mp.ProviderID })).
-		Where("status = ?", 1)
-	providers, err := providerQuery.Find(ctx)
-	if err != nil {
-		return nil, err
+	providerMap := make(map[uint]models.Provider)
+	if len(modelWithProviders) > 0 {
+		providerQuery := gorm.G[models.Provider](models.DB).
+			Where("id IN ?", lo.Map(modelWithProviders, func(mp models.ModelWithProvider, _ int) uint { return mp.ProviderID })).
+			Where("status = ?", 1)
+		providers, err := providerQuery.Find(ctx)
+		if err != nil {
+			return nil, err
+		}
+		providerMap = lo.KeyBy(providers, func(p models.Provider) uint { return p.ID })
 	}
-
-	providerMap := lo.KeyBy(providers, func(p models.Provider) uint { return p.ID })
 
 	weightItems := make(map[uint]int)
 	bridgePlans := make(map[uint]ifacebridge.Plan)
@@ -586,7 +637,15 @@ func providersWithMetaByModel(ctx context.Context, endpoint string, model models
 	}
 
 	if len(weightItems) == 0 {
-		return nil, errors.New("not provider for model " + model.Name)
+		if model.FallbackModelID == 0 {
+			return nil, errors.New("not provider for model " + model.Name)
+		}
+		slog.Warn("当前模型无可用提供商，准备尝试回退模型",
+			"model", model.Name,
+			"model_id", model.ID,
+			"fallback_model_id", model.FallbackModelID,
+			"endpoint", endpoint,
+		)
 	}
 
 	// IOLog 和 Breaker 现在是 int 类型(0/1)

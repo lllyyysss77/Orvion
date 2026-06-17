@@ -25,6 +25,8 @@ var (
 	autoDisableQueue      = make(chan uint, modelProviderAutoDisableQueueSize)
 	autoDisablePendingMu  sync.Mutex
 	autoDisablePending    = make(map[uint]struct{})
+	autoDisableProviderMu sync.Mutex
+	autoDisableProviders  = make(map[uint]struct{})
 )
 
 func StartModelProviderAutoRecovery(ctx context.Context) {
@@ -49,9 +51,32 @@ func ScheduleModelProviderAutoDisableCheck(modelWithProviderID uint) {
 	}
 	StartModelProviderAutoDisableQueue(RootContext())
 
+	providerID, err := loadModelProviderProviderID(RootContext(), modelWithProviderID)
+	if err != nil {
+		slog.Warn("读取模型关联提供商失败，跳过自动关闭检查",
+			"error", err,
+			"model_with_provider_id", modelWithProviderID,
+		)
+		return
+	}
+	if providerID == 0 {
+		return
+	}
+
+	autoDisableProviderMu.Lock()
+	if _, exists := autoDisableProviders[providerID]; exists {
+		autoDisableProviderMu.Unlock()
+		return
+	}
+	autoDisableProviders[providerID] = struct{}{}
+	autoDisableProviderMu.Unlock()
+
 	autoDisablePendingMu.Lock()
 	if _, exists := autoDisablePending[modelWithProviderID]; exists {
 		autoDisablePendingMu.Unlock()
+		autoDisableProviderMu.Lock()
+		delete(autoDisableProviders, providerID)
+		autoDisableProviderMu.Unlock()
 		return
 	}
 	autoDisablePending[modelWithProviderID] = struct{}{}
@@ -63,8 +88,12 @@ func ScheduleModelProviderAutoDisableCheck(modelWithProviderID uint) {
 		autoDisablePendingMu.Lock()
 		delete(autoDisablePending, modelWithProviderID)
 		autoDisablePendingMu.Unlock()
+		autoDisableProviderMu.Lock()
+		delete(autoDisableProviders, providerID)
+		autoDisableProviderMu.Unlock()
 		slog.Warn("模型关联提供商自动关闭检查队列已满，丢弃检查任务",
 			"model_with_provider_id", modelWithProviderID,
+			"provider_id", providerID,
 			"queue_size", modelProviderAutoDisableQueueSize,
 		)
 	}
@@ -82,10 +111,16 @@ func modelProviderAutoDisableWorker(ctx context.Context, workerID int) {
 }
 
 func modelProviderAutoDisableWorkerHandle(ctx context.Context, workerID int, modelWithProviderID uint) {
+	providerID, _ := loadModelProviderProviderID(ctx, modelWithProviderID)
 	defer func() {
 		autoDisablePendingMu.Lock()
 		delete(autoDisablePending, modelWithProviderID)
 		autoDisablePendingMu.Unlock()
+		if providerID > 0 {
+			autoDisableProviderMu.Lock()
+			delete(autoDisableProviders, providerID)
+			autoDisableProviderMu.Unlock()
+		}
 	}()
 
 	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -97,6 +132,23 @@ func modelProviderAutoDisableWorkerHandle(ctx context.Context, workerID int, mod
 			"model_with_provider_id", modelWithProviderID,
 		)
 	}
+}
+
+func loadModelProviderProviderID(ctx context.Context, modelWithProviderID uint) (uint, error) {
+	if modelWithProviderID == 0 || models.DB == nil {
+		return 0, nil
+	}
+	var row struct {
+		ProviderID uint `gorm:"column:provider_id"`
+	}
+	if err := models.DB.WithContext(ctx).
+		Model(&models.ModelWithProvider{}).
+		Select("provider_id").
+		Where("id = ?", modelWithProviderID).
+		Take(&row).Error; err != nil {
+		return 0, err
+	}
+	return row.ProviderID, nil
 }
 
 func modelProviderAutoRecoveryLoop(ctx context.Context) {

@@ -85,23 +85,10 @@ func shouldSkipAccessLog(c *gin.Context) bool {
 	path := c.Request.URL.Path
 
 	if path == "" {
-		return false
-	}
-
-	if path == "/api/system-logs" {
 		return true
 	}
 
-	if strings.HasPrefix(path, "/assets/") {
-		return true
-	}
-
-	switch c.Request.Method {
-	case http.MethodGet, http.MethodHead:
-		return shouldServeSPA(path)
-	default:
-		return false
-	}
+	return !strings.HasPrefix(path, "/v1")
 }
 
 func configureTrustedProxies(router *gin.Engine) {

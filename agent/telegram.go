@@ -198,6 +198,10 @@ func HandleTelegramMessage(ctx context.Context, client TelegramClient, message T
 }
 
 func runTelegramAgentConversation(ctx context.Context, client TelegramClient, chatID int64, prompt string, attachments []TelegramInputAttachment, cfg models.TelegramAgentConfig) error {
+	return runTelegramAgentConversationWithHistoryMode(ctx, client, chatID, prompt, attachments, cfg, true)
+}
+
+func runTelegramAgentConversationWithHistoryMode(ctx context.Context, client TelegramClient, chatID int64, prompt string, attachments []TelegramInputAttachment, cfg models.TelegramAgentConfig, loadHistory bool) error {
 	session := getTelegramSession(chatID)
 	session.mu.Lock()
 	defer session.mu.Unlock()
@@ -209,9 +213,12 @@ func runTelegramAgentConversation(ctx context.Context, client TelegramClient, ch
 	stopTyping := startTelegramTypingLoop(ctx, client, chatID)
 	defer stopTyping()
 
-	history, err := loadTelegramSessionMessages(ctx, chatID, cfg)
-	if err != nil {
-		return err
+	history := make([]chatMessage, 0)
+	if loadHistory {
+		history, err = loadTelegramSessionMessages(ctx, chatID, cfg)
+		if err != nil {
+			return err
+		}
 	}
 	var answer strings.Builder
 	statusText := ""

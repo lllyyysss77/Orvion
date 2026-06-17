@@ -34,8 +34,6 @@ const (
 	telegramAgentSkillFileMaxBytes        = 1024 * 1024
 	telegramAgentSkillMaxFileNodes        = 2000
 	telegramAgentDynamicSkillContextLimit = 5
-	// 本地哈希向量会产生少量碰撞，动态注入只接受明确相关的 Skill。
-	telegramAgentDynamicSkillMinScore = 0.12
 )
 
 type TelegramAgentSkillScriptView struct {
@@ -322,10 +320,7 @@ func telegramAgentSkillFromRecord(record models.TelegramAgentSkill) telegramAgen
 	return skill
 }
 
-func selectTelegramAgentSkillsForToolContext(ctx context.Context, cfg models.TelegramAgentConfig, query string, limit int) ([]telegramAgentSkill, error) {
-	if limit <= 0 {
-		limit = telegramAgentDynamicSkillContextLimit
-	}
+func loadTelegramAgentEnabledSkills(ctx context.Context, cfg models.TelegramAgentConfig) ([]telegramAgentSkill, error) {
 	scanned, err := scanTelegramAgentSkills(ctx, cfg)
 	if err != nil {
 		return nil, err
@@ -340,25 +335,10 @@ func selectTelegramAgentSkillsForToolContext(ctx context.Context, cfg models.Tel
 	if len(skills) == 0 {
 		return []telegramAgentSkill{}, nil
 	}
-	query = strings.TrimSpace(query)
-	if query == "" {
-		if len(skills) > limit {
-			return skills[:limit], nil
-		}
-		return skills, nil
+	if len(skills) > telegramAgentDynamicSkillContextLimit {
+		return skills[:telegramAgentDynamicSkillContextLimit], nil
 	}
-
-	ranked, err := rankTelegramAgentSkillsBySimilarity(ctx, cfg, skills, query)
-	if err != nil {
-		return nil, err
-	}
-	if len(ranked) == 0 {
-		return []telegramAgentSkill{}, nil
-	}
-	if len(ranked) > limit {
-		return ranked[:limit], nil
-	}
-	return ranked, nil
+	return skills, nil
 }
 
 func filterEnabledTelegramAgentSkills(skills []telegramAgentSkill) []telegramAgentSkill {
@@ -369,40 +349,6 @@ func filterEnabledTelegramAgentSkills(skills []telegramAgentSkill) []telegramAge
 		}
 	}
 	return result
-}
-
-func rankTelegramAgentSkillsBySimilarity(ctx context.Context, cfg models.TelegramAgentConfig, skills []telegramAgentSkill, query string) ([]telegramAgentSkill, error) {
-	queryVector, err := buildTelegramAgentSkillEmbedding(ctx, cfg, query)
-	if err != nil {
-		return nil, err
-	}
-	type scoredSkill struct {
-		skill telegramAgentSkill
-		score float64
-	}
-	scored := make([]scoredSkill, 0, len(skills))
-	for _, skill := range skills {
-		skillVector, err := buildTelegramAgentSkillEmbedding(ctx, cfg, telegramAgentSkillSearchText(skill))
-		if err != nil {
-			return nil, err
-		}
-		score := telegramAgentSkillCosine(queryVector, skillVector)
-		if score < telegramAgentDynamicSkillMinScore {
-			continue
-		}
-		scored = append(scored, scoredSkill{skill: skill, score: score})
-	}
-	sort.SliceStable(scored, func(i, j int) bool {
-		if scored[i].score == scored[j].score {
-			return strings.ToLower(scored[i].skill.Name) < strings.ToLower(scored[j].skill.Name)
-		}
-		return scored[i].score > scored[j].score
-	})
-	result := make([]telegramAgentSkill, 0, len(scored))
-	for _, item := range scored {
-		result = append(result, item.skill)
-	}
-	return result, nil
 }
 
 func ReadTelegramAgentSkillForManagement(ctx context.Context, cfg models.TelegramAgentConfig, name string) (TelegramAgentSkillView, error) {

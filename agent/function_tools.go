@@ -149,7 +149,7 @@ func streamTelegramAgentReplyWithFunctionTools(ctx context.Context, cfg models.T
 
 	messages := toTelegramAgentOpenAIMessages(systemPrompt, history, prompt, attachments)
 	for round := 0; round < telegramAgentToolLoopMaxRounds; round++ {
-		body, err := buildTelegramAgentOpenAIChatBody(ctx, cfg, messages, true, true, prompt)
+		body, err := buildTelegramAgentOpenAIChatBody(ctx, cfg, messages, true, true)
 		if err != nil {
 			return result, err
 		}
@@ -223,7 +223,7 @@ func streamTelegramAgentPlainReplyWithPool(ctx context.Context, cfg models.Teleg
 	attempt, err := performTelegramAgentProviderRequestWithRetry(ctx, pool, true, result.StartedAt, func(requestCtx context.Context, selected selectedModelProvider) ([]byte, context.Context, error) {
 		if selected.responseStyle() == consts.StyleOpenAI {
 			messages := toTelegramAgentOpenAIMessages(strings.TrimSpace(cfg.SystemPrompt), history, prompt, nil)
-			body, err := buildTelegramAgentOpenAIChatBody(ctx, cfg, messages, true, false, "")
+			body, err := buildTelegramAgentOpenAIChatBody(ctx, cfg, messages, true, false)
 			return body, context.WithValue(requestCtx, consts.ContextKeyOpenAIEndpoint, "chat/completions"), err
 		}
 		return buildTelegramAgentRequestBody(requestCtx, cfg, selected, history, prompt, nil)
@@ -406,7 +406,7 @@ func performTelegramAgentProviderRequestWithContext(ctx context.Context, selecte
 	return res, int(time.Since(startedAt).Milliseconds()), nil
 }
 
-func buildTelegramAgentOpenAIChatBody(ctx context.Context, cfg models.TelegramAgentConfig, messages []telegramAgentOpenAIMessage, stream bool, withTools bool, skillQuery string) ([]byte, error) {
+func buildTelegramAgentOpenAIChatBody(ctx context.Context, cfg models.TelegramAgentConfig, messages []telegramAgentOpenAIMessage, stream bool, withTools bool) ([]byte, error) {
 	payload := map[string]any{
 		"messages": messages,
 		"stream":   stream,
@@ -421,7 +421,7 @@ func buildTelegramAgentOpenAIChatBody(ctx context.Context, cfg models.TelegramAg
 		payload["temperature"] = *cfg.Temperature
 	}
 	if withTools {
-		payload["tools"] = telegramAgentFunctionTools(ctx, cfg, skillQuery)
+		payload["tools"] = telegramAgentFunctionTools(ctx, cfg)
 		payload["tool_choice"] = "auto"
 	}
 	return json.Marshal(payload)
@@ -583,7 +583,7 @@ func telegramAgentFunctionToolSystemPrompt(cfg models.TelegramAgentConfig) strin
 		"新增或修改 API Key 时，allow_all=false 表示限制模型；如用户给的是模型关键词，请用 model_keywords 批量匹配模型，不要把“claude 的模型”当成单个模型名。",
 		"用户要求查看、新增、修改、启用或禁用 Agent 定时任务时，必须调用对应定时任务工具；不要只口头说明。",
 		"不要在普通回复中泄露 api_key、token、secret、password 等敏感配置值。",
-		"Skills 工具上下文会按当前用户消息从数据库里的启用 Skill 动态检索生成；只有当 Skill 与用户需求明确相关时才读取或执行 Skill，不要用无关 Skill 替代答案；用户提到 skills、技能、脚本、自动化能力包、本地能力扩展时，如果 Skills 工具可用，优先调用 list_skills/read_skill；用户用自然语言描述能力需求时，list_skills 可使用 search_mode=embedding；需要执行本地脚本时，先 read_skill 获取 Skill 目录和脚本绝对路径，再调用 run_terminal_command 自己执行命令，不要编造脚本结果。",
+		"Skills 工具上下文会直接提供当前全部启用 Skill；用户提到 skills、技能、脚本、自动化能力包、本地能力扩展时，如果 Skills 工具可用，优先调用 list_skills/read_skill；用户用自然语言描述能力需求时，list_skills 可使用 search_mode=embedding；需要执行本地脚本时，先 read_skill 获取 Skill 目录和脚本绝对路径，再调用 run_terminal_command 自己执行命令，不要编造脚本结果。",
 		"run_terminal_command 使用结构化参数 command + command_args + working_dir；不要把整段 shell 文本塞进 command，也不要使用 bash -c/sh -c/zsh -c。",
 		"用户要求生成 SVG、文本文件、配置文件、HTML 文件等你可以直接写出内容的文件时，必须调用 create_attachment_file 创建附件文件；尤其是 SVG，不要只回复“已生成”。",
 		"如果工具生成了需要发给用户的图片或文件，请在最终回复中使用附件标记：[orvion:image:/绝对路径或URL|可选说明] 或 [orvion:file:/绝对路径或URL|可选说明]；不要把这个标记放进代码块。",
@@ -596,8 +596,8 @@ func telegramAgentFunctionToolSystemPrompt(cfg models.TelegramAgentConfig) strin
 	return strings.Join(lines, "\n")
 }
 
-func telegramAgentFunctionTools(ctx context.Context, cfg models.TelegramAgentConfig, skillQuery string) []map[string]any {
-	definitions := telegramAgentFunctionToolDefinitions(ctx, cfg, skillQuery)
+func telegramAgentFunctionTools(ctx context.Context, cfg models.TelegramAgentConfig) []map[string]any {
+	definitions := telegramAgentFunctionToolDefinitions(ctx, cfg)
 	tools := make([]map[string]any, 0, len(definitions))
 	for _, definition := range definitions {
 		tools = append(tools, telegramAgentFunctionTool(

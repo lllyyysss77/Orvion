@@ -1557,9 +1557,9 @@ func TestTelegramAgentSkillManagementListToggleAndImport(t *testing.T) {
 	}
 }
 
-func TestTelegramAgentSkillFunctionDefinitionsAreDynamic(t *testing.T) {
+func TestTelegramAgentSkillFunctionDefinitionsExposeAllEnabledSkills(t *testing.T) {
 	ctx := context.Background()
-	setupTelegramAgentToolTestDB(t, "tg_agent_skill_dynamic_definitions")
+	setupTelegramAgentToolTestDB(t, "tg_agent_skill_enabled_definitions")
 	root := t.TempDir()
 	writeTelegramAgentTestSkill(t, root, "writer", "SKILL.md", "Write release notes", "compose")
 	writeTelegramAgentTestSkill(t, root, "weather", "SKILL.md", "Weather forecast rainfall temperature", "forecast")
@@ -1569,7 +1569,7 @@ func TestTelegramAgentSkillFunctionDefinitionsAreDynamic(t *testing.T) {
 	withoutSkills := telegramAgentFunctionToolDefinitions(ctx, models.TelegramAgentConfig{
 		SkillsEnabled: &disabled,
 		SkillsDir:     root,
-	}, "")
+	})
 	if _, ok := findTelegramAgentFunctionDefinitionForTest(withoutSkills, telegramAgentToolListSkills); ok {
 		t.Fatalf("Skills 未启用时不应暴露 Skills 工具")
 	}
@@ -1582,7 +1582,7 @@ func TestTelegramAgentSkillFunctionDefinitionsAreDynamic(t *testing.T) {
 		t.Fatalf("禁用非目标 Skill 失败: %v", err)
 	}
 
-	withSkills := telegramAgentFunctionToolDefinitions(ctx, cfg, "release notes")
+	withSkills := telegramAgentFunctionToolDefinitions(ctx, cfg)
 	if _, ok := findTelegramAgentFunctionDefinitionForTest(withSkills, telegramAgentToolListSkills); !ok {
 		t.Fatalf("Skills 启用时应暴露 list_skills")
 	}
@@ -1599,63 +1599,15 @@ func TestTelegramAgentSkillFunctionDefinitionsAreDynamic(t *testing.T) {
 	}
 	enumValues, ok := skillProp["enum"].([]string)
 	if !ok || len(enumValues) != 1 || enumValues[0] != "writer" {
-		t.Fatalf("Skill enum 未按启用状态动态生成: %+v", skillProp["enum"])
+		t.Fatalf("Skill enum 未按启用状态生成: %+v", skillProp["enum"])
 	}
 
-	ranked, err := selectTelegramAgentSkillsForToolContext(ctx, cfg, "release notes", 1)
+	enabledSkills, err := loadTelegramAgentEnabledSkills(ctx, cfg)
 	if err != nil {
-		t.Fatalf("动态检索 Skill 失败: %v", err)
+		t.Fatalf("加载启用 Skill 失败: %v", err)
 	}
-	if len(ranked) != 1 || ranked[0].Name != "writer" {
-		t.Fatalf("动态检索应优先返回匹配 Skill，实际为: %+v", ranked)
-	}
-}
-
-func TestTelegramAgentSkillFunctionDefinitionsSkipUnrelatedSkill(t *testing.T) {
-	ctx := context.Background()
-	setupTelegramAgentToolTestDB(t, "tg_agent_skill_unrelated_definitions")
-	root := t.TempDir()
-	writeTelegramAgentTestSkill(t, root, "image", "SKILL.md", "生成图片 小猫 插画 头像", "draw")
-
-	skillsEnabled := true
-	cfg := models.TelegramAgentConfig{
-		SkillsEnabled: &skillsEnabled,
-		SkillsDir:     root,
-	}
-
-	unrelated, err := selectTelegramAgentSkillsForToolContext(ctx, cfg, "黄仁勋最近行程", telegramAgentDynamicSkillContextLimit)
-	if err != nil {
-		t.Fatalf("动态检索无关 Skill 失败: %v", err)
-	}
-	if len(unrelated) != 0 {
-		t.Fatalf("无关查询不应注入图片 Skill，实际为: %+v", unrelated)
-	}
-
-	unrelatedDefinitions := telegramAgentFunctionToolDefinitions(ctx, cfg, "黄仁勋最近行程")
-	if _, ok := findTelegramAgentFunctionDefinitionForTest(unrelatedDefinitions, telegramAgentToolListSkills); !ok {
-		t.Fatalf("无关查询仍应保留 list_skills 供主动查看")
-	}
-	if _, ok := findTelegramAgentFunctionDefinitionForTest(unrelatedDefinitions, telegramAgentToolReadSkill); ok {
-		t.Fatalf("无关查询不应暴露 read_skill")
-	}
-	if _, ok := findTelegramAgentFunctionDefinitionForTest(unrelatedDefinitions, telegramAgentToolRunTerminalCommand); ok {
-		t.Fatalf("无关查询不应暴露 run_terminal_command")
-	}
-
-	related, err := selectTelegramAgentSkillsForToolContext(ctx, cfg, "生成一张小猫图片", telegramAgentDynamicSkillContextLimit)
-	if err != nil {
-		t.Fatalf("动态检索图片 Skill 失败: %v", err)
-	}
-	if len(related) != 1 || related[0].Name != "image" {
-		t.Fatalf("图片查询应注入图片 Skill，实际为: %+v", related)
-	}
-
-	relatedDefinitions := telegramAgentFunctionToolDefinitions(ctx, cfg, "生成一张小猫图片")
-	if _, ok := findTelegramAgentFunctionDefinitionForTest(relatedDefinitions, telegramAgentToolReadSkill); !ok {
-		t.Fatalf("相关查询应暴露 read_skill")
-	}
-	if _, ok := findTelegramAgentFunctionDefinitionForTest(relatedDefinitions, telegramAgentToolRunTerminalCommand); !ok {
-		t.Fatalf("相关查询应暴露 run_terminal_command")
+	if len(enabledSkills) != 1 || enabledSkills[0].Name != "writer" {
+		t.Fatalf("应只返回启用 Skill，实际为: %+v", enabledSkills)
 	}
 }
 

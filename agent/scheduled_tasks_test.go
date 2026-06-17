@@ -2,6 +2,10 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -95,5 +99,128 @@ func TestTelegramAgentScheduledTaskClaimAndFinish(t *testing.T) {
 	}
 	if finished.NextRunAt == nil || !finished.NextRunAt.After(now) {
 		t.Fatalf("下次执行时间未刷新: %#v", finished.NextRunAt)
+	}
+}
+
+func TestExecuteTelegramAgentScheduledTaskPushDoesNotLoadHistory(t *testing.T) {
+	db := setupTelegramAgentToolTestDB(t, "tg_agent_scheduled_task_no_history")
+	ctx := context.Background()
+	chatID := int64(6801293687)
+	telegramSessions.Delete(chatID)
+	t.Cleanup(func() {
+		telegramSessions.Delete(chatID)
+	})
+
+	config := models.TelegramAgentConfig{
+		Enabled:            boolPtr(true),
+		BaseURL:            "https://api.example.com/v1",
+		APIKey:             "sk-test",
+		Model:              "gpt-direct",
+		MaxHistoryMessages: 6,
+	}
+	configValue, err := json.Marshal(config)
+	if err != nil {
+		t.Fatalf("序列化 TG Agent 配置失败: %v", err)
+	}
+	if err := db.Create(&models.Config{
+		Key:   models.KeyTelegramAgent,
+		Value: string(configValue),
+	}).Error; err != nil {
+		t.Fatalf("保存 TG Agent 配置失败: %v", err)
+	}
+
+	oldConversationID, err := startNewTelegramConversation(ctx, chatID)
+	if err != nil {
+		t.Fatalf("创建测试会话失败: %v", err)
+	}
+	oldHistory := []chatMessage{
+		{Role: "user", Content: "旧问题"},
+		{Role: "assistant", Content: "旧回答"},
+	}
+	if err := saveTelegramSessionMessages(ctx, chatID, oldHistory); err != nil {
+		t.Fatalf("保存旧上下文失败: %v", err)
+	}
+	telegramSessions.Delete(chatID)
+
+	previousExecutor := telegramAgentProviderRequestExecutor
+	defer func() {
+		telegramAgentProviderRequestExecutor = previousExecutor
+	}()
+
+	var capturedMessages []map[string]any
+	telegramAgentProviderRequestExecutor = func(ctx context.Context, selected selectedModelProvider, body []byte, stream bool, startedAt time.Time) (*http.Response, int, error) {
+		var payload map[string]any
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("解析 TG Agent 请求体失败: %v", err)
+		}
+		rawMessages, ok := payload["messages"].([]any)
+		if !ok {
+			t.Fatalf("请求体 messages 字段类型不正确: %#v", payload["messages"])
+		}
+		capturedMessages = make([]map[string]any, 0, len(rawMessages))
+		for _, item := range rawMessages {
+			message, ok := item.(map[string]any)
+			if !ok {
+				t.Fatalf("消息项类型不正确: %#v", item)
+			}
+			capturedMessages = append(capturedMessages, message)
+		}
+
+		streamBody := strings.Join([]string{
+			`data: {"choices":[{"delta":{"content":"定时任务执行完成"}}]}`,
+			"",
+			`data: [DONE]`,
+			"",
+		}, "\n")
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader(streamBody)),
+		}, 3, nil
+	}
+
+	task := models.TelegramAgentScheduledTask{
+		Name:               "天气播报",
+		Prompt:             "查询今天广州天气",
+		Enabled:            1,
+		ScheduleType:       TelegramAgentScheduleTypeInterval,
+		IntervalMinutes:    15,
+		Timezone:           "Local",
+		PushToConversation: 1,
+		ChatID:             chatID,
+	}
+	result, err := ExecuteTelegramAgentScheduledTask(ctx, task, &telegramToolTestClient{}, chatID)
+	if err != nil {
+		t.Fatalf("执行推送型定时任务失败: %v", err)
+	}
+	if result.Text != "已推送到 Agent 对话" {
+		t.Fatalf("返回结果不符合预期: %+v", result)
+	}
+	if len(capturedMessages) != 1 {
+		t.Fatalf("推送型定时任务请求不应携带历史上下文，实际消息数=%d，内容=%#v", len(capturedMessages), capturedMessages)
+	}
+	content, _ := capturedMessages[0]["content"].(string)
+	if strings.Contains(content, "旧问题") || strings.Contains(content, "旧回答") {
+		t.Fatalf("推送型定时任务不应加载旧上下文，实际内容=%q", content)
+	}
+
+	telegramSessions.Delete(chatID)
+	loaded, err := loadTelegramSessionMessages(ctx, chatID, config)
+	if err != nil {
+		t.Fatalf("读取执行后的上下文失败: %v", err)
+	}
+	if len(loaded) != 2 {
+		t.Fatalf("执行后应仅保存本轮上下文，实际为 %+v", loaded)
+	}
+	if loaded[0].Content == "旧问题" || loaded[0].Content == "旧回答" {
+		t.Fatalf("执行后上下文不应混入旧会话内容: %+v", loaded)
+	}
+
+	currentConversationID := getTelegramSession(chatID).conversationID
+	if strings.TrimSpace(currentConversationID) == "" {
+		t.Fatalf("执行后应保留当前会话 ID")
+	}
+	if currentConversationID != oldConversationID {
+		t.Fatalf("不应切换到新会话，旧=%q 新=%q", oldConversationID, currentConversationID)
 	}
 }

@@ -258,6 +258,14 @@ func DropEmptyChatLogMonthlyTablesExcept(ctx context.Context, keepTables ...stri
 	return dropped, nil
 }
 
+// ClearChatLogMonthlyTableCacheForTest 清理月表缓存，供测试场景复用。
+func ClearChatLogMonthlyTableCacheForTest() {
+	chatLogMonthlyTableCache.Range(func(key, _ any) bool {
+		chatLogMonthlyTableCache.Delete(key)
+		return true
+	})
+}
+
 // BuildChatLogUnionQuery 生成跨月表查询 SQL；调用方可在外层继续 WHERE/GROUP/ORDER。
 func BuildChatLogUnionQuery(scope ChatLogQueryScope, columns string) (ChatLogUnionQuery, error) {
 	tables, err := ListChatLogMonthlyTablesInRange(scope)

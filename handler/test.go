@@ -782,10 +782,7 @@ func extractChatContent(style string, endpoint string, raw []byte) string {
 			return ""
 		}
 		if endpoint == "videos" {
-			if url := gjson.GetBytes(raw, "data.0.url"); url.Exists() && url.String() != "" {
-				return url.String()
-			}
-			return ""
+			return extractVideoContent(raw)
 		}
 		if endpoint == "responses" {
 			if out := gjson.GetBytes(raw, "output_text"); out.Exists() && out.String() != "" {
@@ -817,6 +814,40 @@ func extractChatContent(style string, endpoint string, raw []byte) string {
 	default:
 		return ""
 	}
+}
+
+func extractVideoContent(raw []byte) string {
+	for _, path := range []string{
+		"data.0.url",
+		"url",
+		"result.url",
+		"output.0.url",
+		"remixed_from_video_id",
+	} {
+		value := strings.TrimSpace(gjson.GetBytes(raw, path).String())
+		if value == "" {
+			continue
+		}
+		if strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") {
+			return value
+		}
+	}
+
+	status := strings.TrimSpace(gjson.GetBytes(raw, "status").String())
+	videoID := strings.TrimSpace(gjson.GetBytes(raw, "video_id").String())
+	if strings.EqualFold(status, "completed") {
+		if videoID != "" {
+			return fmt.Sprintf("视频已生成：%s", videoID)
+		}
+		return "视频已生成"
+	}
+	if videoID != "" {
+		if status == "" {
+			status = "unknown"
+		}
+		return fmt.Sprintf("视频任务状态：%s（%s）", status, videoID)
+	}
+	return ""
 }
 
 func extractChatImagePreview(style string, endpoint string, raw []byte) string {

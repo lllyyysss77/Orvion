@@ -71,7 +71,7 @@ func initLogging() {
 	gin.DefaultWriter = accessLogWriter
 	gin.DefaultErrorWriter = io.Discard
 
-	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{
+	slog.SetDefault(slog.New(slog.NewTextHandler(accessLogWriter, &slog.HandlerOptions{
 		Level: level,
 	})))
 
@@ -176,6 +176,7 @@ func resolveShutdownTimeout() time.Duration {
 
 func startBackgroundWorkers(ctx context.Context) {
 	service.StartChatLogMonthlyPartitionWorker(ctx)
+	service.StartChatLogOutputSizeBackfill(ctx)
 	handler.StartGitHubVersionUpdateRefresher(ctx)
 	service.StartAuthKeyFlusher(ctx)
 	service.StartPriceSync(ctx)

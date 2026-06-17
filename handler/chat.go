@@ -113,18 +113,6 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 		common.InternalServerError(c, err.Error())
 		return
 	}
-	shouldLogDialogueIO := !isDialogueEndpoint(endpoint)
-	if shouldLogDialogueIO {
-		slog.Info("接收到客户端消息",
-			"path", c.FullPath(),
-			"endpoint", endpoint,
-			"model", before.Model,
-			"stream", before.Stream,
-			"payload_bytes", len(reqBody),
-			"payload_preview", formatBodyPreview(reqBody),
-		)
-	}
-
 	ctx := c.Request.Context()
 	requestPath := resolveRequestPath(c)
 	if endpoint != "" {
@@ -188,16 +176,6 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 				logStreamCopyError("stream copy", err)
 				return
 			}
-			if shouldLogDialogueIO {
-				slog.Info("已发送响应消息",
-					"path", c.FullPath(),
-					"endpoint", endpoint,
-					"model", before.Model,
-					"stream", true,
-					"response_bytes", clientWriter.written,
-					"mirror_dropped_bytes", pw.Dropped(),
-				)
-			}
 		} else {
 			body, readErr := io.ReadAll(res.Body)
 			if readErr != nil {
@@ -205,23 +183,25 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 				slog.Error("read response body", "err", readErr)
 				return
 			}
+			if endpoint == "videos" {
+				proxyURL := resolveVideoPollProxyURL(effectiveProvidersWithMeta, log)
+				polledBody, pollErr := waitForOpenAIVideoCompletion(ctx, res.Request, body, proxyURL)
+				if pollErr != nil {
+					slog.Warn("视频任务轮询失败，回退当前响应",
+						"error", pollErr,
+						"model", log.Name,
+						"provider", log.ProviderName,
+						"model_with_provider_id", log.ModelWithProviderID,
+					)
+				}
+				body = polledBody
+			}
 			normalized := runtimesvc.NormalizeOpenAIChatCompletionPayload(body, false)
 			writeHeader(c, false, openAINonStreamHeader(res.Header), logStyle)
 			if _, writeErr := mirror.Write(normalized); writeErr != nil {
 				_ = pw.CloseWithError(writeErr)
 				slog.Error("write response body", "err", writeErr)
 				return
-			}
-			if shouldLogDialogueIO {
-				slog.Info("已发送响应消息",
-					"path", c.FullPath(),
-					"endpoint", endpoint,
-					"model", before.Model,
-					"stream", false,
-					"response_bytes", clientWriter.written,
-					"response_preview", formatBodyPreview(normalized),
-					"mirror_dropped_bytes", pw.Dropped(),
-				)
 			}
 		}
 		_ = pw.Close()
@@ -235,17 +215,6 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 		logStreamCopyError("io copy", err)
 		return
 	}
-	if shouldLogDialogueIO {
-		slog.Info("已发送响应消息",
-			"path", c.FullPath(),
-			"endpoint", endpoint,
-			"model", before.Model,
-			"stream", before.Stream,
-			"response_bytes", clientWriter.written,
-			"mirror_dropped_bytes", pw.Dropped(),
-		)
-	}
-
 	_ = pw.Close()
 }
 

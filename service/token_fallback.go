@@ -119,7 +119,11 @@ func extractOutputText(style string, output *models.OutputUnion) string {
 	case consts.StyleGemini, consts.StyleGeminiEmbeddings:
 		appendGeminiOutput(&sb, output)
 	}
-	return sb.String()
+	text := strings.TrimSpace(sb.String())
+	if text != "" {
+		return text
+	}
+	return extractRawOutputText(output)
 }
 
 func appendOpenAIOutput(sb *strings.Builder, output *models.OutputUnion) {
@@ -353,4 +357,18 @@ func appendText(sb *strings.Builder, text string) {
 		sb.WriteString("\n")
 	}
 	sb.WriteString(text)
+}
+
+func extractRawOutputText(output *models.OutputUnion) string {
+	if output == nil {
+		return ""
+	}
+	var sb strings.Builder
+	if output.OfString != "" {
+		appendText(&sb, output.OfString)
+	}
+	for _, chunk := range output.OfStringArray {
+		appendText(&sb, chunk)
+	}
+	return strings.TrimSpace(sb.String())
 }

@@ -18,7 +18,7 @@ type telegramAgentFunctionToolDefinition struct {
 	Handler     telegramAgentFunctionToolHandler
 }
 
-func telegramAgentFunctionToolDefinitions(ctx context.Context, cfg models.TelegramAgentConfig, skillQuery string) []telegramAgentFunctionToolDefinition {
+func telegramAgentFunctionToolDefinitions(ctx context.Context, cfg models.TelegramAgentConfig) []telegramAgentFunctionToolDefinition {
 	mutationDescriptionSuffix := "该工具会立即执行修改并返回结果。"
 
 	definitions := []telegramAgentFunctionToolDefinition{
@@ -292,15 +292,15 @@ func telegramAgentFunctionToolDefinitions(ctx context.Context, cfg models.Telegr
 		},
 	}
 
-	return append(definitions, telegramAgentSkillFunctionToolDefinitions(ctx, cfg, skillQuery)...)
+	return append(definitions, telegramAgentSkillFunctionToolDefinitions(ctx, cfg)...)
 }
 
-func telegramAgentSkillFunctionToolDefinitions(ctx context.Context, cfg models.TelegramAgentConfig, skillQuery string) []telegramAgentFunctionToolDefinition {
+func telegramAgentSkillFunctionToolDefinitions(ctx context.Context, cfg models.TelegramAgentConfig) []telegramAgentFunctionToolDefinition {
 	if !telegramAgentSkillsEnabled(cfg) {
 		return nil
 	}
 
-	skills, err := selectTelegramAgentSkillsForToolContext(ctx, cfg, skillQuery, telegramAgentDynamicSkillContextLimit)
+	skills, err := loadTelegramAgentEnabledSkills(ctx, cfg)
 	catalogText := "当前 Skill 目录尚未扫描到可用 Skill。"
 	skillNames := []string{}
 	if err == nil {
@@ -374,7 +374,7 @@ func summarizeTelegramAgentSkillToolCatalog(skills []telegramAgentSkill) string 
 		}
 	}
 	if len(enabled) == 0 {
-		return "当前没有与本轮需求明确相关的 Skill；不要用无关 Skill 替代执行。"
+		return "当前没有启用的 Skill。"
 	}
 	limit := len(enabled)
 	if limit > 8 {
@@ -400,7 +400,7 @@ func summarizeTelegramAgentSkillToolCatalog(skills []telegramAgentSkill) string 
 
 func findTelegramAgentFunctionToolDefinition(ctx context.Context, cfg models.TelegramAgentConfig, name string) (telegramAgentFunctionToolDefinition, bool) {
 	name = strings.TrimSpace(name)
-	for _, tool := range telegramAgentFunctionToolDefinitions(ctx, cfg, "") {
+	for _, tool := range telegramAgentFunctionToolDefinitions(ctx, cfg) {
 		if tool.Name == name {
 			return tool, true
 		}

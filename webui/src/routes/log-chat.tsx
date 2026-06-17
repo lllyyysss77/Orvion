@@ -60,6 +60,7 @@ interface ParsedOutputBlock {
   title: string;
   body: string;
   images?: ParsedOutputImage[];
+  videos?: ParsedOutputVideo[];
 }
 
 interface ParsedOutputPayload {
@@ -71,6 +72,12 @@ interface ParsedOutputImage {
   src: string;
   mime: string;
   source: "base64" | "url";
+}
+
+interface ParsedOutputVideo {
+  src: string;
+  mime: string;
+  source: "url";
 }
 
 function formatJson(raw: string): FormattedJson {
@@ -577,6 +584,70 @@ function normalizeImageMimeType(raw: unknown): string {
   return "image/png";
 }
 
+function normalizeVideoMimeType(raw: unknown): string {
+  if (typeof raw !== "string") return "video/mp4";
+  const value = raw.trim().toLowerCase();
+  if (!value) return "video/mp4";
+  if (value.startsWith("video/")) return value;
+  return "video/mp4";
+}
+
+function isLikelyVideoUrl(raw: string): boolean {
+  const value = raw.trim();
+  if (!value) return false;
+  if (/^data:video\//i.test(value)) return true;
+  return /\.(mp4|m4v|webm|mov|mkv)(\?|#|$)/i.test(value);
+}
+
+function pickMediaUrl(record: JsonRecord, keys: string[]): string {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+    if (isRecord(value)) {
+      const nested = pickFirstText(value, ["url", "video_url", "video", "src", "source"]);
+      if (nested.trim()) return nested.trim();
+    }
+  }
+  return "";
+}
+
+function buildVideoOutputBlocks(data: unknown): ParsedOutputBlock[] {
+  if (!Array.isArray(data)) return [];
+  const blocks: ParsedOutputBlock[] = [];
+
+  data.forEach((entry, index) => {
+    if (!isRecord(entry)) return;
+
+    const mime = normalizeVideoMimeType(entry.type ?? entry.mime_type ?? entry.mime);
+    const videoURL = pickMediaUrl(entry, ["url", "video_url", "video", "src", "source", "remixed_from_video_id"]);
+    if (!isLikelyVideoUrl(videoURL)) return;
+
+    const videos: ParsedOutputVideo[] = [
+      {
+        src: videoURL,
+        mime,
+        source: "url",
+      },
+    ];
+
+    const bodyLines: string[] = [];
+    bodyLines.push(`已识别视频输出 ${index + 1}`);
+    bodyLines.push(`类型：${mime}`);
+    bodyLines.push(`视频地址：${wrapTechnicalTerms(videoURL)}`);
+
+    blocks.push({
+      id: `video-${index + 1}`,
+      title: `视频响应 ${index + 1}`,
+      body: bodyLines.join("\n"),
+      videos,
+    });
+  });
+
+  return blocks;
+}
+
 function buildImageOutputBlocks(data: unknown): ParsedOutputBlock[] {
   if (!Array.isArray(data)) return [];
   const blocks: ParsedOutputBlock[] = [];
@@ -641,6 +712,34 @@ function buildParsedOutputPayload(value: unknown): ParsedOutputPayload | null {
   if (imageBlocks.length > 0) {
     blocks.push(...imageBlocks);
     usedKeys.add("data");
+  }
+
+  const videoBlocks = buildVideoOutputBlocks(record.data);
+  if (videoBlocks.length > 0) {
+    blocks.push(...videoBlocks);
+    usedKeys.add("data");
+  }
+
+  const directVideoUrl = pickMediaUrl(record, ["url", "video_url", "video", "src", "source", "remixed_from_video_id"]);
+  if (isLikelyVideoUrl(directVideoUrl)) {
+    blocks.push({
+      id: "direct-video",
+      title: "视频响应",
+      body: `已识别视频输出\n类型：${normalizeVideoMimeType(record.type ?? record.mime_type ?? record.mime)}\n视频地址：${wrapTechnicalTerms(directVideoUrl)}`,
+      videos: [
+        {
+          src: directVideoUrl,
+          mime: normalizeVideoMimeType(record.type ?? record.mime_type ?? record.mime),
+          source: "url",
+        },
+      ],
+    });
+    usedKeys.add("url");
+    usedKeys.add("video_url");
+    usedKeys.add("video");
+    usedKeys.add("src");
+    usedKeys.add("source");
+    usedKeys.add("remixed_from_video_id");
   }
 
   const directTextKeys = ["output_text", "text", "content", "message"];
@@ -1159,6 +1258,25 @@ function StructuredOutputCard({ raw, syntaxStyle }: { raw: string; syntaxStyle: 
                           />
                           <figcaption className="mt-2 text-xs text-muted-foreground">
                             {image.source === "base64" ? "来源：Base64" : "来源：URL"} · {image.mime}
+                          </figcaption>
+                        </figure>
+                      ))}
+                    </div>
+                  )}
+                  {block.videos && block.videos.length > 0 && (
+                    <div className="mt-4 grid gap-3">
+                      {block.videos.map((video, videoIndex) => (
+                        <figure key={`${block.id}-video-${videoIndex}`} className="rounded-lg border bg-background p-2">
+                          <video
+                            controls
+                            preload="metadata"
+                            className="max-h-[420px] w-full rounded bg-black"
+                          >
+                            <source src={video.src} type={video.mime} />
+                            你的浏览器不支持视频播放。
+                          </video>
+                          <figcaption className="mt-2 text-xs text-muted-foreground">
+                            {video.source === "url" ? "来源：URL" : "来源：未知"} · {video.mime}
                           </figcaption>
                         </figure>
                       ))}

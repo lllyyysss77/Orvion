@@ -202,7 +202,7 @@ func ExecuteTelegramAgentScheduledTask(ctx context.Context, task models.Telegram
 			finishTelegramAgentScheduledTaskLog(ctx, logID, task, result, err)
 			return result, err
 		}
-		err = runTelegramAgentConversation(ctx, client, result.ChatID, prompt, nil, cfg)
+		err = runTelegramAgentConversationWithHistoryMode(ctx, client, result.ChatID, prompt, nil, cfg, false)
 		if err != nil {
 			finishTelegramAgentScheduledTaskLog(ctx, logID, task, result, err)
 			return result, err
