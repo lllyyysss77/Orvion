@@ -146,6 +146,10 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 		UserAgent: c.Request.UserAgent(),
 	})
 	if err != nil {
+		if statusCode, ok := service.UpstreamStatusCode(err); ok {
+			common.ErrorWithHttpStatus(c, statusCode, statusCode, err.Error())
+			return
+		}
 		common.InternalServerError(c, err.Error())
 		return
 	}

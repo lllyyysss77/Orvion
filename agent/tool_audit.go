@@ -48,6 +48,11 @@ func finishTelegramAgentFunctionToolCallLog(ctx context.Context, logID uint, cha
 
 func buildTelegramAgentFunctionToolCallLog(ctx context.Context, chatID int64, cfg models.TelegramAgentConfig, toolCall telegramAgentOpenAIToolCall, rawArgs string, toolResult string) models.TelegramAgentToolCallLog {
 	payload := parseTelegramAgentToolResultPayload(toolResult)
+	toolName := strings.TrimSpace(toolCall.Function.Name)
+	resultText := payload.Text
+	if toolName == telegramAgentToolRunTerminalCommand {
+		resultText = terminalCommandOutputForLog(payload.Text)
+	}
 	status := telegramAgentToolLogStatusCompleted
 	if !payload.OK {
 		status = telegramAgentToolLogStatusFailed
@@ -60,15 +65,15 @@ func buildTelegramAgentFunctionToolCallLog(ctx context.Context, chatID int64, cf
 		ConversationID: resolveTelegramAgentToolLogConversationID(ctx, chatID),
 		Source:         telegramAgentToolLogSourceFunctionCall,
 		ToolCallID:     strings.TrimSpace(toolCall.ID),
-		ToolName:       strings.TrimSpace(toolCall.Function.Name),
+		ToolName:       toolName,
 		Arguments:      maskTelegramAgentToolArguments(rawArgs),
-		Result:         payload.Text,
+		Result:         resultText,
 		Status:         status,
 		OK:             boolToInt(payload.OK),
 		Final:          boolToInt(payload.Final),
 	}
 	if !payload.OK {
-		log.Error = payload.Text
+		log.Error = resultText
 	}
 	return log
 }
@@ -102,13 +107,17 @@ func finishTelegramAgentPreparedActionLog(ctx context.Context, logID uint, actio
 
 func buildTelegramAgentPreparedActionLog(action telegramToolAction, result string) models.TelegramAgentToolCallLog {
 	executedAt := time.Now()
+	resultText := result
+	if action.Kind == telegramToolActionRunTerminalCommand {
+		resultText = terminalCommandOutputForLog(result)
+	}
 
 	return models.TelegramAgentToolCallLog{
 		ChatID:         action.ChatID,
 		ConversationID: action.ConversationID,
 		Source:         telegramAgentToolLogSourceToolAction,
 		ToolName:       string(action.Kind),
-		Result:         result,
+		Result:         resultText,
 		Status:         telegramAgentToolLogStatusExecuted,
 		OK:             1,
 		Final:          1,
@@ -138,18 +147,87 @@ func finishTelegramAgentToolActionFailureLog(ctx context.Context, logID uint, ac
 }
 
 func buildTelegramAgentToolActionFailureLog(action telegramToolAction, err error) models.TelegramAgentToolCallLog {
+	resultText := err.Error()
+	if action.Kind == telegramToolActionRunTerminalCommand {
+		resultText = terminalCommandOutputForLog(resultText)
+	}
 	return models.TelegramAgentToolCallLog{
 		ChatID:         action.ChatID,
 		ConversationID: action.ConversationID,
 		Source:         telegramAgentToolLogSourceToolAction,
 		ToolName:       string(action.Kind),
-		Result:         err.Error(),
+		Result:         resultText,
 		Status:         telegramAgentToolLogStatusFailed,
 		OK:             0,
 		Final:          1,
 		ActionKind:     string(action.Kind),
 		ActionSummary:  action.Summary,
-		Error:          err.Error(),
+		Error:          resultText,
+	}
+}
+
+func terminalCommandOutputForLog(raw string) string {
+	lines := strings.Split(strings.TrimSpace(raw), "\n")
+	if len(lines) == 0 {
+		return ""
+	}
+
+	sections := make([]string, 0, 2)
+	for index := 0; index < len(lines); index++ {
+		label := strings.TrimSpace(lines[index])
+		if label != "stdout：" && label != "stderr：" {
+			continue
+		}
+
+		contentLines := make([]string, 0)
+		for next := index + 1; next < len(lines); next++ {
+			nextLabel := strings.TrimSpace(lines[next])
+			if isTelegramCommandResultHeaderLine(nextLabel) {
+				break
+			}
+			contentLines = append(contentLines, lines[next])
+			index = next
+		}
+		content := strings.TrimSpace(strings.Join(contentLines, "\n"))
+		if content == "" {
+			continue
+		}
+		sections = append(sections, label+"\n"+content)
+	}
+
+	if len(sections) > 0 {
+		return strings.Join(sections, "\n")
+	}
+
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "输出：无"
+	}
+	return trimmed
+}
+
+func isTelegramCommandResultHeaderLine(line string) bool {
+	switch {
+	case line == "已执行命令":
+		return true
+	case strings.HasPrefix(line, "命令："):
+		return true
+	case strings.HasPrefix(line, "工作目录："):
+		return true
+	case strings.HasPrefix(line, "退出码："):
+		return true
+	case strings.HasPrefix(line, "Skill："):
+		return true
+	case strings.HasPrefix(line, "脚本："):
+		return true
+	case line == "stdout：":
+		return true
+	case line == "stderr：":
+		return true
+	case strings.HasPrefix(line, "输出："):
+		return true
+	default:
+		return false
 	}
 }
 

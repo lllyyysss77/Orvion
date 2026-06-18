@@ -25,6 +25,33 @@ import (
 
 var errMaximumRetryAttemptsReached = errors.New("maximum retry attempts reached")
 
+type NonRetryableUpstreamStatusError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *NonRetryableUpstreamStatusError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return e.Message
+}
+
+func UpstreamStatusCode(err error) (int, bool) {
+	var target *NonRetryableUpstreamStatusError
+	if errors.As(err, &target) && target != nil && target.StatusCode > 0 {
+		return target.StatusCode, true
+	}
+	return 0, false
+}
+
+func newNonRetryableUpstreamStatusError(statusCode int, message string) *NonRetryableUpstreamStatusError {
+	return &NonRetryableUpstreamStatusError{
+		StatusCode: statusCode,
+		Message:    message,
+	}
+}
+
 // BalanceChatWithLimiter 带限流功能的聊天负载均衡
 func BalanceChatWithLimiter(c *gin.Context, start time.Time, style string, requestPath string, before Before, providersWithMeta *ProvidersWithMeta, reqMeta models.ReqMeta) (*http.Response, *models.ChatLog, Before, *ProvidersWithMeta, error) {
 	return balanceChatWithFallback(c, start, style, requestPath, before, providersWithMeta, reqMeta, true, make(map[uint]struct{}))
@@ -319,7 +346,8 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, requestP
 						slog.Error("read body error", "error", readErr)
 					}
 					_, _ = io.Copy(io.Discard, res.Body)
-					retryLog <- log.WithError(fmt.Errorf("status: %d, body: %s", res.StatusCode, runtimesvc.SafeBodyTextForLog(res, limitedBody)))
+					errorMessage := fmt.Sprintf("status: %d, body: %s", res.StatusCode, runtimesvc.SafeBodyTextForLog(res, limitedBody))
+					retryLog <- log.WithError(errors.New(errorMessage))
 					_ = res.Body.Close()
 					slog.Warn("提供商返回非成功状态",
 						"model", before.Model,
@@ -331,11 +359,11 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, requestP
 						"global_attempt", attempt,
 					)
 
-					// 非可重试的 4xx：直接切换（不浪费同 provider 的 3 次机会）
+					// 4xx 属于客户端请求或权限问题，直接返回给调用方，不切换提供商也不进入模型回退。
 					if !runtimesvc.IsRetryableStatus(res.StatusCode) {
-						break
+						return nil, nil, newNonRetryableUpstreamStatusError(res.StatusCode, errorMessage)
 					}
-					// 429/5xx/408：继续重试同一 provider
+					// 5xx：继续重试同一 provider
 					continue
 				}
 				// 按新口径：首字耗时=从发起上游请求到收到上游 HTTP 200 响应头。

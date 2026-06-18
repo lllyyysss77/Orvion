@@ -16,7 +16,7 @@ import (
 const (
 	telegramAgentDefaultSkillsDir      = "data/skills"
 	telegramAgentSkillDefaultTimeoutMs = 10000
-	telegramAgentSkillMaxTimeoutMs     = 120000
+	telegramAgentSkillMaxTimeoutMs     = 240000
 	telegramAgentSkillMaxOutputBytes   = 64 * 1024
 	telegramAgentSkillListMaxLimit     = 50
 )
@@ -38,6 +38,7 @@ type telegramAgentSkillScript struct {
 	AbsPath     string
 	Description string
 	TimeoutMs   int
+	Usage       []string
 }
 
 func telegramAgentSkillsEnabled(cfg models.TelegramAgentConfig) bool {
@@ -120,6 +121,12 @@ func readTelegramAgentSkill(ctx context.Context, cfg models.TelegramAgentConfig,
 				"  相对路径："+filepath.ToSlash(script.Path),
 				"  绝对路径："+script.AbsPath,
 			)
+			if len(script.Usage) > 0 {
+				lines = append(lines, "  推荐命令模板：")
+				for _, usage := range script.Usage {
+					lines = append(lines, "  - "+usage)
+				}
+			}
 		}
 	} else {
 		lines = append(lines, "脚本：无")
@@ -242,10 +249,15 @@ func parseTelegramAgentSkillFile(dir string, file string) (telegramAgentSkill, e
 	if strings.TrimSpace(skill.Name) == "" {
 		skill.Name = filepath.Base(dir)
 	}
+	if strings.TrimSpace(skill.Description) == "" {
+		skill.Description = extractTelegramSkillMarkdownDescription(skill.Instructions)
+	}
+	usageScripts := inferTelegramSkillScriptsFromUsage(skill, skill.Instructions)
 	skill.Scripts = normalizeTelegramSkillScripts(skill, skill.Scripts)
 	if len(skill.Scripts) == 0 {
 		skill.Scripts = discoverTelegramSkillScripts(skill)
 	}
+	skill.Scripts = mergeTelegramSkillUsageScripts(skill.Scripts, usageScripts)
 	return skill, nil
 }
 
@@ -339,6 +351,8 @@ func parseTelegramSkillScriptKV(line string, script *telegramAgentSkillScript) {
 		if parsed, err := strconv.Atoi(value); err == nil {
 			script.TimeoutMs = normalizeTelegramSkillTimeoutMs(parsed)
 		}
+	case "usage", "command", "command_template":
+		script.Usage = append(script.Usage, value)
 	}
 }
 
@@ -392,6 +406,7 @@ func normalizeTelegramSkillScripts(skill telegramAgentSkill, scripts []telegramA
 			script.Name = strings.TrimSuffix(filepath.Base(script.Path), filepath.Ext(script.Path))
 		}
 		script.TimeoutMs = normalizeTelegramSkillTimeoutMs(script.TimeoutMs)
+		script.Usage = orderedUniqueStrings(script.Usage)
 		absPath := script.Path
 		if !filepath.IsAbs(absPath) {
 			absPath = filepath.Join(skill.Dir, absPath)
@@ -437,6 +452,286 @@ func discoverTelegramSkillScripts(skill telegramAgentSkill) []telegramAgentSkill
 		return strings.ToLower(scripts[i].Name) < strings.ToLower(scripts[j].Name)
 	})
 	return scripts
+}
+
+func extractTelegramSkillMarkdownDescription(instructions string) string {
+	section := extractTelegramSkillMarkdownSection(instructions, "description")
+	if section == "" {
+		return ""
+	}
+	paragraphs := strings.Split(section, "\n\n")
+	for _, paragraph := range paragraphs {
+		paragraph = strings.TrimSpace(paragraph)
+		if paragraph != "" {
+			return strings.Join(strings.Fields(paragraph), " ")
+		}
+	}
+	return ""
+}
+
+func extractTelegramSkillMarkdownSection(instructions string, heading string) string {
+	heading = strings.ToLower(strings.TrimSpace(heading))
+	if heading == "" {
+		return ""
+	}
+	lines := strings.Split(strings.ReplaceAll(instructions, "\r\n", "\n"), "\n")
+	var result []string
+	inSection := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			level, title := parseTelegramSkillMarkdownHeading(trimmed)
+			if level > 0 {
+				if inSection && level <= 2 {
+					break
+				}
+				if level == 2 && strings.EqualFold(title, heading) {
+					inSection = true
+					continue
+				}
+			}
+		}
+		if inSection {
+			result = append(result, line)
+		}
+	}
+	return strings.TrimSpace(strings.Join(result, "\n"))
+}
+
+func parseTelegramSkillMarkdownHeading(line string) (int, string) {
+	level := 0
+	for level < len(line) && line[level] == '#' {
+		level++
+	}
+	if level == 0 || level >= len(line) || line[level] != ' ' {
+		return 0, ""
+	}
+	return level, strings.TrimSpace(line[level+1:])
+}
+
+func inferTelegramSkillScriptsFromUsage(skill telegramAgentSkill, instructions string) []telegramAgentSkillScript {
+	commands := extractTelegramSkillUsageCommands(instructions)
+	if len(commands) == 0 {
+		return nil
+	}
+	scripts := make([]telegramAgentSkillScript, 0, len(commands))
+	for _, command := range commands {
+		script, ok := inferTelegramSkillScriptFromCommand(skill, command)
+		if ok {
+			scripts = append(scripts, script)
+		}
+	}
+	return normalizeTelegramSkillScripts(skill, scripts)
+}
+
+func extractTelegramSkillUsageCommands(instructions string) []string {
+	lines := strings.Split(strings.ReplaceAll(instructions, "\r\n", "\n"), "\n")
+	commands := make([]string, 0)
+	var block []string
+	inFence := false
+	fenceLang := ""
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") {
+			if inFence {
+				commands = append(commands, extractTelegramSkillCommandsFromBlock(fenceLang, block)...)
+				block = nil
+				fenceLang = ""
+				inFence = false
+				continue
+			}
+			inFence = true
+			fenceLang = strings.TrimSpace(strings.TrimPrefix(trimmed, "```"))
+			continue
+		}
+		if inFence {
+			block = append(block, line)
+		}
+	}
+	return orderedUniqueStrings(commands)
+}
+
+func extractTelegramSkillCommandsFromBlock(lang string, lines []string) []string {
+	if !isTelegramSkillCommandFenceLang(lang) {
+		return nil
+	}
+	commands := make([]string, 0, len(lines))
+	for _, line := range joinTelegramSkillContinuationLines(lines) {
+		command := normalizeTelegramSkillUsageCommandLine(line)
+		if command == "" {
+			continue
+		}
+		commands = append(commands, command)
+	}
+	return commands
+}
+
+func isTelegramSkillCommandFenceLang(lang string) bool {
+	lang = strings.ToLower(strings.TrimSpace(lang))
+	switch lang {
+	case "", "bash", "sh", "shell", "zsh", "console", "terminal":
+		return true
+	default:
+		return false
+	}
+}
+
+func joinTelegramSkillContinuationLines(lines []string) []string {
+	result := make([]string, 0, len(lines))
+	var current strings.Builder
+	for _, line := range lines {
+		trimmed := strings.TrimRight(line, " \t")
+		if strings.HasSuffix(trimmed, "\\") {
+			current.WriteString(strings.TrimSpace(strings.TrimSuffix(trimmed, "\\")))
+			current.WriteString(" ")
+			continue
+		}
+		if current.Len() > 0 {
+			current.WriteString(strings.TrimSpace(trimmed))
+			result = append(result, current.String())
+			current.Reset()
+			continue
+		}
+		result = append(result, trimmed)
+	}
+	if current.Len() > 0 {
+		result = append(result, current.String())
+	}
+	return result
+}
+
+func normalizeTelegramSkillUsageCommandLine(line string) string {
+	line = strings.TrimSpace(line)
+	line = strings.TrimPrefix(line, "$ ")
+	line = strings.TrimPrefix(line, "% ")
+	if line == "" || strings.HasPrefix(line, "#") {
+		return ""
+	}
+	if strings.Contains(line, "```") {
+		return ""
+	}
+	return line
+}
+
+func inferTelegramSkillScriptFromCommand(skill telegramAgentSkill, command string) (telegramAgentSkillScript, bool) {
+	tokens := splitTelegramSkillCommandLine(command)
+	for _, token := range tokens {
+		path, ok := normalizeTelegramSkillCommandScriptPath(skill.Dir, token)
+		if !ok {
+			continue
+		}
+		return telegramAgentSkillScript{
+			Name:      strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)),
+			Path:      filepath.ToSlash(mustTelegramSkillRelPath(skill.Dir, path)),
+			TimeoutMs: telegramAgentSkillDefaultTimeoutMs,
+			Usage:     []string{command},
+		}, true
+	}
+	return telegramAgentSkillScript{}, false
+}
+
+func splitTelegramSkillCommandLine(line string) []string {
+	var tokens []string
+	var current strings.Builder
+	var quote rune
+	escaped := false
+	for _, r := range line {
+		if escaped {
+			current.WriteRune(r)
+			escaped = false
+			continue
+		}
+		if r == '\\' {
+			escaped = true
+			continue
+		}
+		if quote != 0 {
+			if r == quote {
+				quote = 0
+				continue
+			}
+			current.WriteRune(r)
+			continue
+		}
+		if r == '\'' || r == '"' {
+			quote = r
+			continue
+		}
+		if r == ' ' || r == '\t' {
+			if current.Len() > 0 {
+				tokens = append(tokens, current.String())
+				current.Reset()
+			}
+			continue
+		}
+		current.WriteRune(r)
+	}
+	if escaped {
+		current.WriteRune('\\')
+	}
+	if current.Len() > 0 {
+		tokens = append(tokens, current.String())
+	}
+	return tokens
+}
+
+func normalizeTelegramSkillCommandScriptPath(root string, token string) (string, bool) {
+	token = strings.TrimSpace(token)
+	token = strings.Trim(token, "`")
+	token = filepath.FromSlash(token)
+	if token == "" || strings.HasPrefix(token, "-") {
+		return "", false
+	}
+	if !filepath.IsAbs(token) && !strings.Contains(token, string(filepath.Separator)) {
+		return "", false
+	}
+	path := token
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(root, path)
+	}
+	path = filepath.Clean(path)
+	if err := ensureTelegramSkillPathInside(root, path); err != nil {
+		return "", false
+	}
+	if !isTelegramSkillScriptSupported(path) {
+		return "", false
+	}
+	return path, true
+}
+
+func mustTelegramSkillRelPath(root string, path string) string {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return filepath.Base(path)
+	}
+	return rel
+}
+
+func mergeTelegramSkillUsageScripts(scripts []telegramAgentSkillScript, usageScripts []telegramAgentSkillScript) []telegramAgentSkillScript {
+	if len(usageScripts) == 0 {
+		return scripts
+	}
+	result := append([]telegramAgentSkillScript{}, scripts...)
+	for _, usageScript := range usageScripts {
+		merged := false
+		for index := range result {
+			if sameTelegramCommandPath(result[index].AbsPath, usageScript.AbsPath) {
+				result[index].Usage = orderedUniqueStrings(append(result[index].Usage, usageScript.Usage...))
+				if strings.TrimSpace(result[index].Description) == "" {
+					result[index].Description = usageScript.Description
+				}
+				merged = true
+				break
+			}
+		}
+		if !merged {
+			result = append(result, usageScript)
+		}
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		return strings.ToLower(result[i].Name) < strings.ToLower(result[j].Name)
+	})
+	return result
 }
 
 func hasTelegramSkillFile(dir string) bool {

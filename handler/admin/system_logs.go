@@ -161,21 +161,11 @@ func readSystemLogTail(path string, lineLimit int) (string, int, error) {
 	}
 
 	lines := strings.Split(text, "\n")
-	accessLines := make([]string, 0, len(lines))
-	for _, line := range lines {
-		if isAccessLogLine(line) {
-			accessLines = append(accessLines, line)
-		}
-	}
-	if len(accessLines) > lineLimit {
-		accessLines = accessLines[len(accessLines)-lineLimit:]
+	if len(lines) > lineLimit {
+		lines = lines[len(lines)-lineLimit:]
 	}
 
-	return strings.Join(accessLines, "\n"), len(accessLines), nil
-}
-
-func isAccessLogLine(line string) bool {
-	return strings.Contains(line, `msg="接口调用"`) || strings.Contains(line, "[GIN]")
+	return strings.Join(lines, "\n"), len(lines), nil
 }
 
 func collectProcessStats() processStats {

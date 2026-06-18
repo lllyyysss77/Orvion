@@ -723,7 +723,7 @@ func performTelegramAgentProviderRequestWithRetry(
 				_ = res.Body.Close()
 				lastErr = fmt.Errorf("%s/%s 返回状态 %d: %s", selected.ProviderName, selected.ProviderModel, res.StatusCode, strings.TrimSpace(runtimesvc.SafeBodyTextForLog(res, limitedBody)))
 				if !runtimesvc.IsRetryableStatus(res.StatusCode) {
-					break
+					return telegramAgentProviderAttempt{}, lastErr
 				}
 				continue
 			}

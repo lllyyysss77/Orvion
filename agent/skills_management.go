@@ -37,10 +37,11 @@ const (
 )
 
 type TelegramAgentSkillScriptView struct {
-	Name        string `json:"name"`
-	Path        string `json:"path"`
-	Description string `json:"description"`
-	TimeoutMs   int    `json:"timeout_ms"`
+	Name        string   `json:"name"`
+	Path        string   `json:"path"`
+	Description string   `json:"description"`
+	TimeoutMs   int      `json:"timeout_ms"`
+	Usage       []string `json:"usage,omitempty"`
 }
 
 type TelegramAgentSkillView struct {
@@ -250,6 +251,7 @@ func telegramAgentSkillScriptViews(scripts []telegramAgentSkillScript) []Telegra
 			Path:        filepath.ToSlash(script.Path),
 			Description: script.Description,
 			TimeoutMs:   script.TimeoutMs,
+			Usage:       append([]string{}, script.Usage...),
 		})
 	}
 	return result
@@ -314,6 +316,7 @@ func telegramAgentSkillFromRecord(record models.TelegramAgentSkill) telegramAgen
 			Path:        script.Path,
 			Description: script.Description,
 			TimeoutMs:   script.TimeoutMs,
+			Usage:       append([]string{}, script.Usage...),
 		})
 	}
 	skill.Scripts = normalizeTelegramSkillScripts(skill, scripts)
@@ -703,6 +706,7 @@ func toTelegramAgentSkillView(skill telegramAgentSkill, score float64) TelegramA
 			Path:        script.Path,
 			Description: script.Description,
 			TimeoutMs:   script.TimeoutMs,
+			Usage:       append([]string{}, script.Usage...),
 		})
 	}
 	return TelegramAgentSkillView{
@@ -800,7 +804,7 @@ func normalizeTelegramAgentSkillSearchMode(value string) string {
 func telegramAgentSkillSearchText(skill telegramAgentSkill) string {
 	parts := []string{skill.Name, skill.Description, strings.Join(skill.Triggers, " "), skill.Instructions}
 	for _, script := range skill.Scripts {
-		parts = append(parts, script.Name, script.Description)
+		parts = append(parts, script.Name, script.Description, strings.Join(script.Usage, " "))
 	}
 	return strings.Join(parts, "\n")
 }

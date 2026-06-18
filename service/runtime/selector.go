@@ -31,9 +31,6 @@ func NewBalancer(strategy string, breaker bool, weightItems map[uint]int) balanc
 }
 
 func IsRetryableStatus(code int) bool {
-	if code == 429 || code == 408 {
-		return true
-	}
 	return code >= 500 && code <= 599
 }
 
