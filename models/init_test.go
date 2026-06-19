@@ -58,6 +58,40 @@ func TestConfigureSQLiteDSNSkipsWALForMemory(t *testing.T) {
 	}
 }
 
+func TestNormalizeDatabaseDriverDetectsMySQLScheme(t *testing.T) {
+	if got := normalizeDatabaseDriver("", "mysql://user:pass@127.0.0.1:3306/orvion"); got != string(DatabaseDriverMySQL) {
+		t.Fatalf("driver = %q, want mysql", got)
+	}
+	if got := normalizeDatabaseDriver("mysql", "data/llmio.db"); got != string(DatabaseDriverMySQL) {
+		t.Fatalf("explicit driver = %q, want mysql", got)
+	}
+	if got := normalizeDatabaseDriver("", "data/llmio.db"); got != string(DatabaseDriverSQLite) {
+		t.Fatalf("sqlite path driver = %q, want sqlite", got)
+	}
+}
+
+func TestNormalizeMySQLDSNFromURL(t *testing.T) {
+	dsn, err := normalizeMySQLDSN("mysql://orvion:secret@127.0.0.1:3306/orvion")
+	if err != nil {
+		t.Fatalf("normalize mysql url: %v", err)
+	}
+	want := "orvion:secret@tcp(127.0.0.1:3306)/orvion?charset=utf8mb4&loc=Local&parseTime=true"
+	if dsn != want {
+		t.Fatalf("dsn = %q, want %q", dsn, want)
+	}
+}
+
+func TestNormalizeMySQLDSNAddsDefaultsToRawDSN(t *testing.T) {
+	dsn, err := normalizeMySQLDSN("orvion:secret@tcp(localhost:3306)/orvion")
+	if err != nil {
+		t.Fatalf("normalize raw mysql dsn: %v", err)
+	}
+	want := "orvion:secret@tcp(localhost:3306)/orvion?charset=utf8mb4&loc=Local&parseTime=true"
+	if dsn != want {
+		t.Fatalf("dsn = %q, want %q", dsn, want)
+	}
+}
+
 func sqlitePragmasForTest(t *testing.T, dsn string) []string {
 	t.Helper()
 	values, err := url.ParseQuery(sqliteQueryString(dsn))

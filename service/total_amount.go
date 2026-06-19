@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"math"
 	"strconv"
@@ -21,7 +20,7 @@ var totalAmountMu sync.Mutex
 // - 若配置不存在：以当前未删除日志的 total_cost 求和作为初始值写入；
 // - 若配置存在但值非法：回退到当前未删除日志求和并修正配置。
 func GetOrInitTotalConsumedAmount(ctx context.Context) (float64, error) {
-	cfg, err := gorm.G[models.Config](models.DB).Where("key = ?", models.KeyTotalConsumedAmount).First(ctx)
+	cfg, err := gorm.G[models.Config](models.DB).Where(models.ColumnEquals("key"), models.KeyTotalConsumedAmount).First(ctx)
 	if err != nil {
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return 0, err
@@ -44,7 +43,7 @@ func GetOrInitTotalConsumedAmount(ctx context.Context) (float64, error) {
 			return 0, err
 		}
 
-		cfg, err = gorm.G[models.Config](models.DB).Where("key = ?", models.KeyTotalConsumedAmount).First(ctx)
+		cfg, err = gorm.G[models.Config](models.DB).Where(models.ColumnEquals("key"), models.KeyTotalConsumedAmount).First(ctx)
 		if err != nil {
 			return 0, err
 		}
@@ -84,27 +83,17 @@ func AddTotalConsumedAmount(ctx context.Context, delta float64) error {
 
 	next := current + delta
 	_, err = gorm.G[models.Config](models.DB).
-		Where("key = ?", models.KeyTotalConsumedAmount).
+		Where(models.ColumnEquals("key"), models.KeyTotalConsumedAmount).
 		Updates(ctx, models.Config{Value: formatAmountValue(next)})
 	return err
 }
 
 func sumCurrentTotalAmount(ctx context.Context) (float64, error) {
-	union, err := models.BuildChatLogUnionQuery(models.ChatLogQueryScope{}, "total_cost")
+	total, err := models.QueryChatLogFloatSum(ctx, models.ChatLogQueryScope{}, "total_cost", "")
 	if err != nil {
 		return 0, err
 	}
-	if union.SQL == "" {
-		return 0, nil
-	}
-	var total sql.NullFloat64
-	if err := models.DB.WithContext(ctx).Raw(
-		`SELECT COALESCE(SUM(total_cost),0) AS total
-		   FROM (` + union.SQL + `) AS logs`,
-	).Scan(&total).Error; err != nil {
-		return 0, err
-	}
-	return sanitizeAmount(total.Float64), nil
+	return sanitizeAmount(total), nil
 }
 
 func parseAmountValue(raw string) (float64, error) {

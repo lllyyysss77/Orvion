@@ -33,8 +33,9 @@ func init() {
 	initLogging()
 
 	ctx := context.Background()
-	// 数据库使用 SQLite。
-	// - DATABASE_DSN：SQLite 文件路径、sqlite:// 路径或 file: DSN；空值默认 ./data/llmio.db。
+	// 数据库默认使用 SQLite；可通过 DATABASE_DRIVER=mysql + DATABASE_DSN 切换 MySQL。
+	// - SQLite：DATABASE_DSN 为空时默认 ./data/llmio.db。
+	// - MySQL：DATABASE_DSN 使用 user:pass@tcp(host:3306)/db 或 mysql://user:pass@host:3306/db。
 	dsn := strings.TrimSpace(os.Getenv("DATABASE_DSN"))
 	models.Init(ctx, dsn)
 

@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -19,18 +18,7 @@ const (
 	chatLogOutputSizeBackfillMaxRowsPerRun = 10000
 )
 
-type chatLogOutputSizeBackfillRow struct {
-	ID                uint   `gorm:"column:id"`
-	UUID              string `gorm:"column:uuid"`
-	Name              string `gorm:"column:name"`
-	Style             string `gorm:"column:style"`
-	Input             string `gorm:"column:input"`
-	OutputString      string `gorm:"column:output_string"`
-	OutputStringArray string `gorm:"column:output_string_array"`
-	PromptTokens      int64  `gorm:"column:prompt_tokens"`
-	CompletionTokens  int64  `gorm:"column:completion_tokens"`
-	TotalTokens       int64  `gorm:"column:total_tokens"`
-}
+type chatLogOutputSizeBackfillRow = models.ChatLogOutputStatsBackfillRow
 
 // StartChatLogOutputSizeBackfill 启动日志输出字节回填任务。
 func StartChatLogOutputSizeBackfill(ctx context.Context) {
@@ -148,44 +136,7 @@ func queryChatLogOutputSizeBackfillRows(ctx context.Context, tableName string, l
 	if !models.IsChatLogMonthlyTableName(tableName) || limit <= 0 {
 		return nil, nil
 	}
-
-	sql := fmt.Sprintf(`
-SELECT logs.id, logs.uuid, logs.name, logs.style, logs.prompt_tokens, logs.completion_tokens, logs.total_tokens,
-       io.input, io.output_string, io.output_string_array
-  FROM %s AS logs
-  JOIN chat_io AS io
-    ON (
-      (COALESCE(logs.uuid, '') <> '' AND io.log_uuid = logs.uuid)
-      OR (COALESCE(logs.uuid, '') = '' AND COALESCE(io.log_uuid, '') = '' AND io.log_id = logs.id)
-    )
- WHERE logs.status = ?
-   AND (COALESCE(logs.size, 0) = 0 OR COALESCE(logs.completion_tokens, 0) = 0)
-   AND TRIM(COALESCE(io.input, '')) <> ''
-   AND (
-     LENGTH(COALESCE(io.output_string, '')) > 0
-     OR LENGTH(COALESCE(io.output_string_array, '')) > 0
-   )
-   AND io.id = (
-     SELECT MAX(io2.id)
-       FROM chat_io AS io2
-      WHERE (
-        (COALESCE(logs.uuid, '') <> '' AND io2.log_uuid = logs.uuid)
-        OR (COALESCE(logs.uuid, '') = '' AND COALESCE(io2.log_uuid, '') = '' AND io2.log_id = logs.id)
-      )
-        AND TRIM(COALESCE(io2.input, '')) <> ''
-        AND (
-          LENGTH(COALESCE(io2.output_string, '')) > 0
-          OR LENGTH(COALESCE(io2.output_string_array, '')) > 0
-        )
-   )
- ORDER BY logs.created_at ASC, logs.id ASC
- LIMIT ?`, tableName)
-
-	rows := make([]chatLogOutputSizeBackfillRow, 0, limit)
-	if err := models.DB.WithContext(ctx).Raw(sql, "success", limit).Scan(&rows).Error; err != nil {
-		return nil, err
-	}
-	return rows, nil
+	return models.QueryChatLogOutputStatsBackfillRows(ctx, tableName, limit)
 }
 
 func updateChatLogOutputStats(ctx context.Context, tableName string, row chatLogOutputSizeBackfillRow, size int, usage models.Usage) (bool, error) {

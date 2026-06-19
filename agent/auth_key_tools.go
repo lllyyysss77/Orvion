@@ -452,7 +452,7 @@ func buildUniqueTelegramAuthKeyValue(ctx context.Context, keySuffix *string, exc
 			return "", err
 		}
 		var count int64
-		query := models.DB.WithContext(ctx).Model(&models.AuthKey{}).Where("key = ?", key)
+		query := models.DB.WithContext(ctx).Model(&models.AuthKey{}).Where(models.ColumnEquals("key"), key)
 		if excludeID > 0 {
 			query = query.Where("id <> ?", excludeID)
 		}

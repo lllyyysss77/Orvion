@@ -6,16 +6,16 @@ import (
 )
 
 type Provider struct {
-	ID              uint `gorm:"primaryKey"`
-	CreatedAt       time.Time
+	ID              uint      `gorm:"primaryKey"`
+	CreatedAt       time.Time `gorm:"index"`
 	UpdatedAt       time.Time
-	Name            string
+	Name            string `gorm:"size:160;index"`
 	Config          string
 	Console         string // 控制台地址
 	ProxyURL        string `gorm:"column:proxy_url"`         // 访问上游时使用的代理地址（可选）
 	ModelsFetchMode string `gorm:"column:models_fetch_mode"` // 模型获取方式：v1_models/api_pricing
 	Capabilities    ProviderCapabilities
-	Status          int `gorm:"default:1"` // 是否启用 (0/1)
+	Status          int `gorm:"default:1;index"` // 是否启用 (0/1)
 	// 接口转换配置：enabled=1 时，客户端不支持的接口会转换到 target 对应接口。
 	InterfaceConversionEnabled int    `gorm:"column:interface_conversion_enabled"` // 0/1
 	InterfaceConversionTarget  string `gorm:"column:interface_conversion_target"`  // chat/responses/messages
@@ -31,15 +31,15 @@ type Model struct {
 	ID              uint `gorm:"primaryKey"`
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
-	Name            string
+	Name            string `gorm:"size:255;index:idx_models_status_name,priority:2;index"`
 	Remark          string
 	MaxRetry        int               // 重试次数限制
 	TimeOut         int               // 超时时间 单位秒
-	IOLog           int               // 是否记录IO (0/1)
-	Strategy        string            // 负载均衡策略 默认 lottery
+	IOLog           int               `gorm:"index"`         // 是否记录IO (0/1)
+	Strategy        string            `gorm:"size:32;index"` // 负载均衡策略 默认 lottery
 	Breaker         int               // 是否开启熔断 (0/1)
-	Status          int               // 是否启用 (0/1)
-	FallbackModelID uint              `gorm:"column:fallback_model_id;index"` // 全部提供商失败后的回退模型ID，0表示不回退
+	Status          int               `gorm:"index:idx_models_status_name,priority:1;index"` // 是否启用 (0/1)
+	FallbackModelID uint              `gorm:"column:fallback_model_id;index"`                // 全部提供商失败后的回退模型ID，0表示不回退
 	Capabilities    ModelCapabilities // 模型能力类型（JSON 数组）
 }
 
@@ -47,29 +47,29 @@ type ModelWithProvider struct {
 	ID                uint `gorm:"primaryKey"`
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
-	ModelID           uint
-	ProviderModel     string
-	ProviderID        uint
+	ModelID           uint       `gorm:"column:model_id;index:idx_mwp_model_status,priority:1;index:idx_mwp_model_provider,priority:1;index"`
+	ProviderModel     string     `gorm:"size:255;index"`
+	ProviderID        uint       `gorm:"column:provider_id;index:idx_mwp_provider_status,priority:1;index:idx_mwp_model_provider,priority:2;index"`
 	WithHeader        int        // 是否透传header (0/1)
-	Status            int        // 是否启用 (0/1)
-	AutoDisabledUntil *time.Time `gorm:"column:auto_disabled_until"`
+	Status            int        `gorm:"index:idx_mwp_model_status,priority:2;index:idx_mwp_provider_status,priority:2;index:idx_mwp_status_auto_until,priority:1;index"` // 是否启用 (0/1)
+	AutoDisabledUntil *time.Time `gorm:"column:auto_disabled_until;index:idx_mwp_status_auto_until,priority:2"`
 	CustomerHeaders   string     // 自定义headers (JSON)
 	Weight            int
 }
 
 type ChatLog struct {
-	ID                  uint `gorm:"primaryKey"`
-	CreatedAt           time.Time
+	ID                  uint      `gorm:"primaryKey"`
+	CreatedAt           time.Time `gorm:"index"`
 	UpdatedAt           time.Time
-	UUID                string `gorm:"column:uuid"`
-	Name                string `gorm:"index"`
-	ProviderModel       string `gorm:"index"`
-	ProviderName        string `gorm:"index"`
+	UUID                string `gorm:"column:uuid;size:64;index"`
+	Name                string `gorm:"size:255;index"`
+	ProviderModel       string `gorm:"size:255;index"`
+	ProviderName        string `gorm:"size:255;index"`
 	ModelWithProviderID uint   `gorm:"column:model_with_provider_id;index"`
-	Status              string `gorm:"index"` // error or success
-	Style               string // 类型
-	RequestPath         string `gorm:"column:request_path"` // 请求路径（如 /v1/chat/completions）
-	UserAgent           string `gorm:"index"`               // 用户代理
+	Status              string `gorm:"size:32;index"`                      // error or success
+	Style               string `gorm:"size:64;index"`                      // 类型
+	RequestPath         string `gorm:"column:request_path;size:128;index"` // 请求路径（如 /v1/chat/completions）
+	UserAgent           string `gorm:"size:512;index"`                     // 用户代理
 	RemoteIP            string // 访问ip
 	AuthKeyID           uint   `gorm:"index"` // 使用的AuthKey ID
 	ChatIO              int    // 是否开启IO记录 (0/1)
@@ -116,8 +116,8 @@ type ChatIO struct {
 	ID                uint `gorm:"primaryKey"`
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
-	LogId             uint   `gorm:"column:log_id"`
-	LogUUID           string `gorm:"column:log_uuid;index"`
+	LogId             uint   `gorm:"column:log_id;index"`
+	LogUUID           string `gorm:"column:log_uuid;size:64;index"`
 	Input             string
 	OutputString      string `gorm:"column:output_string"`
 	OutputStringArray string `gorm:"column:output_string_array"` // JSON 数组字符串
@@ -156,8 +156,8 @@ func (TelegramAgentSession) TableName() string {
 }
 
 type TelegramAgentToolCallLog struct {
-	ID             uint `gorm:"primaryKey"`
-	CreatedAt      time.Time
+	ID             uint      `gorm:"primaryKey"`
+	CreatedAt      time.Time `gorm:"index"`
 	UpdatedAt      time.Time
 	ChatID         int64      `gorm:"column:chat_id;index"`
 	ConversationID string     `gorm:"column:conversation_id;size:96;index"`
@@ -182,18 +182,18 @@ func (TelegramAgentToolCallLog) TableName() string {
 type TelegramAgentScheduledTask struct {
 	ID                 uint `gorm:"primaryKey"`
 	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	UpdatedAt          time.Time  `gorm:"index:idx_tg_agent_task_running_updated,priority:2"`
 	Name               string     `gorm:"column:name;size:120;index"`
 	Prompt             string     `gorm:"column:prompt"`
-	Enabled            int        `gorm:"column:enabled;index"`
+	Enabled            int        `gorm:"column:enabled;index;index:idx_tg_agent_task_due,priority:1"`
 	ScheduleType       string     `gorm:"column:schedule_type;size:32;index"` // interval/daily
 	IntervalMinutes    int        `gorm:"column:interval_minutes"`
 	TimeOfDay          string     `gorm:"column:time_of_day;size:8"`
 	Timezone           string     `gorm:"column:timezone;size:64"`
 	PushToConversation int        `gorm:"column:push_to_conversation"`
 	ChatID             int64      `gorm:"column:chat_id;index"`
-	Running            int        `gorm:"column:running;index"`
-	NextRunAt          *time.Time `gorm:"column:next_run_at;index"`
+	Running            int        `gorm:"column:running;index;index:idx_tg_agent_task_due,priority:2;index:idx_tg_agent_task_running_updated,priority:1"`
+	NextRunAt          *time.Time `gorm:"column:next_run_at;index;index:idx_tg_agent_task_due,priority:3"`
 	LastRunAt          *time.Time `gorm:"column:last_run_at"`
 	LastStatus         string     `gorm:"column:last_status;size:32;index"`
 	LastResult         string     `gorm:"column:last_result"`
@@ -211,7 +211,7 @@ type TelegramAgentSkill struct {
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 	Name         string    `gorm:"column:name;size:160;uniqueIndex"`
-	Dir          string    `gorm:"column:dir;index"`
+	Dir          string    `gorm:"column:dir;size:512;index"`
 	File         string    `gorm:"column:file"`
 	Description  string    `gorm:"column:description"`
 	Instructions string    `gorm:"column:instructions"`
@@ -241,10 +241,10 @@ type AuthKey struct {
 	ID         uint `gorm:"primaryKey"`
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
-	Name       string // 项目名称
-	Key        string
-	Status     int        // 是否启用 (0/1)
-	AllowAll   int        // 是否允许所有模型 (0/1)
+	Name       string     `gorm:"size:160;index"` // 项目名称
+	Key        string     `gorm:"size:191;index"`
+	Status     int        `gorm:"index"`                  // 是否启用 (0/1)
+	AllowAll   int        `gorm:"column:allow_all;index"` // 是否允许所有模型 (0/1)
 	Models     string     // 允许的模型列表 (JSON 数组字符串)
 	ExpiresAt  *time.Time // nil=永不过期，有值=具体过期时间
 	RpmLimit   int        `gorm:"column:rpm_limit"` // 每分钟请求数限制，0 表示无限制

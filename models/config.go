@@ -6,7 +6,7 @@ type Config struct {
 	ID        uint `gorm:"primaryKey"`
 	CreatedAt time.Time
 	UpdatedAt time.Time
-	Key       string `gorm:"uniqueIndex"` // 配置类型
+	Key       string `gorm:"size:191;uniqueIndex"` // 配置类型
 	Value     string // 配置内容
 }
 
@@ -32,8 +32,6 @@ const (
 	KeyTelegramDailyUsageReportLastSentDate = "tg_daily_usage_report_last_sent_date"
 	// KeyTelegramAgent TG 流式对话 Agent 配置。
 	KeyTelegramAgent = "telegram_agent"
-	// KeyCodexFingerprint Codex 客户端特征模拟配置。
-	KeyCodexFingerprint = "codex_fingerprint"
 )
 
 type AnthropicCountTokens struct {
@@ -45,11 +43,6 @@ type AnthropicCountTokens struct {
 type AnthropicProxyIPConfig struct {
 	Enabled bool   `json:"enabled"`
 	ProxyIP string `json:"proxy_ip"`
-}
-
-type CodexFingerprintConfig struct {
-	Enabled bool              `json:"enabled"`
-	Headers map[string]string `json:"headers"`
 }
 
 type TelegramBreakerAlertConfig struct {

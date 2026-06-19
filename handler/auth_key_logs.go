@@ -59,17 +59,6 @@ func GetAuthKeyRequestLogs(c *gin.Context) {
 		endAt = &parsed
 	}
 
-	union, err := models.BuildChatLogUnionQuery(models.ChatLogQueryScope{StartAt: startAt, EndAt: endAt}, models.ChatLogColumnsSQL())
-	if err != nil {
-		common.InternalServerError(c, "Failed to build log query: "+err.Error())
-		return
-	}
-	if union.SQL == "" {
-		response := common.NewPaginationResponse([]authKeyWrapLog{}, 0, params)
-		common.Success(c, response)
-		return
-	}
-
 	clauses := []string{"auth_key_id = ?"}
 	args := []any{authKeyID}
 	if name != "" {
@@ -94,25 +83,18 @@ func GetAuthKeyRequestLogs(c *gin.Context) {
 	}
 
 	whereSQL := strings.Join(clauses, " AND ")
-	type countRow struct {
-		Total int64 `gorm:"column:total"`
-	}
-	var count countRow
-	if err := models.DB.WithContext(c.Request.Context()).Raw(
-		"SELECT COUNT(1) AS total FROM ("+union.SQL+") AS logs WHERE "+whereSQL,
-		args...,
-	).Scan(&count).Error; err != nil {
-		common.InternalServerError(c, "Failed to count logs: "+err.Error())
-		return
-	}
-
-	logs := make([]models.ChatLog, 0)
 	offset := (params.Page - 1) * params.PageSize
-	pageArgs := append(append(make([]any, 0, len(args)+2), args...), params.PageSize, offset)
-	if err := models.DB.WithContext(c.Request.Context()).Raw(
-		"SELECT "+models.ChatLogColumnsSQL()+" FROM ("+union.SQL+") AS logs WHERE "+whereSQL+" ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
-		pageArgs...,
-	).Scan(&logs).Error; err != nil {
+	logs, total, err := models.QueryChatLogsPage(
+		c.Request.Context(),
+		models.ChatLogQueryScope{StartAt: startAt, EndAt: endAt},
+		models.ChatLogColumnsSQL(),
+		whereSQL,
+		"created_at DESC, id DESC",
+		params.PageSize,
+		offset,
+		args...,
+	)
+	if err != nil {
 		common.InternalServerError(c, "Failed to query logs: "+err.Error())
 		return
 	}
@@ -140,7 +122,7 @@ func GetAuthKeyRequestLogs(c *gin.Context) {
 		})
 	}
 
-	response := common.NewPaginationResponse(wrapLogs, count.Total, params)
+	response := common.NewPaginationResponse(wrapLogs, total, params)
 	common.Success(c, response)
 }
 
@@ -158,32 +140,16 @@ func GetAuthKeyChatIO(c *gin.Context) {
 		return
 	}
 
-	logFound := false
-	union, err := models.BuildChatLogUnionQuery(models.ChatLogQueryScope{}, "id, uuid, auth_key_id")
-	if err != nil {
-		common.InternalServerError(c, "Failed to build log query: "+err.Error())
-		return
+	clauses := []string{"auth_key_id = ?", "uuid = ?"}
+	args := []any{authKeyID, id}
+	if numericID, parseErr := strconv.ParseUint(id, 10, 64); parseErr == nil {
+		clauses = []string{"auth_key_id = ?", "(uuid = ? OR id = ?)"}
+		args = []any{authKeyID, id, numericID}
 	}
-	if union.SQL != "" {
-		clauses := []string{"auth_key_id = ?", "uuid = ?"}
-		args := []any{authKeyID, id}
-		if numericID, parseErr := strconv.ParseUint(id, 10, 64); parseErr == nil {
-			clauses = []string{"auth_key_id = ?", "(uuid = ? OR id = ?)"}
-			args = []any{authKeyID, id, numericID}
-		}
-
-		type existsRow struct {
-			Total int64 `gorm:"column:total"`
-		}
-		var exists existsRow
-		if err := models.DB.WithContext(c.Request.Context()).Raw(
-			"SELECT COUNT(1) AS total FROM ("+union.SQL+") AS logs WHERE "+strings.Join(clauses, " AND "),
-			args...,
-		).Scan(&exists).Error; err != nil {
-			common.InternalServerError(c, "Failed to verify log ownership: "+err.Error())
-			return
-		}
-		logFound = exists.Total > 0
+	logFound, err := models.QueryChatLogExists(c.Request.Context(), models.ChatLogQueryScope{}, "id, uuid, auth_key_id", strings.Join(clauses, " AND "), args...)
+	if err != nil {
+		common.InternalServerError(c, "Failed to verify log ownership: "+err.Error())
+		return
 	}
 	if !logFound {
 		common.NotFound(c, "chat io not found")

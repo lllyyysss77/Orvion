@@ -133,36 +133,28 @@ func GetProviders(c *gin.Context) {
 		query = query.Where("name LIKE ?", "%"+name+"%")
 	}
 
-	// 按“今天使用量”降序排序，使用量相同时再按创建时间和 ID 稳定排序。
-	union, err := models.BuildChatLogUnionQuery(models.ChatLogQueryScope{StartAt: &startOfDay}, "created_at, provider_name")
+	var providers []models.Provider
+	if err := query.
+		Order("providers.created_at ASC").
+		Order("providers.id DESC").
+		Find(&providers).Error; err != nil {
+		common.InternalServerError(c, err.Error())
+		return
+	}
+
+	// 按“今天使用量”降序排序，使用量相同时保留数据库稳定排序。
+	usageRows, err := models.QueryChatLogProviderUsage(ctx, models.ChatLogQueryScope{StartAt: &startOfDay}, "created_at >= ?", startOfDay)
 	if err != nil {
 		common.InternalServerError(c, err.Error())
 		return
 	}
-	usageSubQuery := models.DB
-	if union.SQL != "" {
-		usageSubQuery = models.DB.Raw(
-			`SELECT provider_name, COUNT(*) AS usage_count
-			   FROM (`+union.SQL+`) AS logs
-			  WHERE created_at >= ?
-			  GROUP BY provider_name`,
-			startOfDay,
-		)
-	} else {
-		usageSubQuery = models.DB.Raw(`SELECT '' AS provider_name, 0 AS usage_count WHERE 1 = 0`)
+	usageByName := make(map[string]int64, len(usageRows))
+	for _, row := range usageRows {
+		usageByName[strings.TrimSpace(row.ProviderName)] = row.UsageCount
 	}
-
-	query = query.
-		Joins("LEFT JOIN (?) AS usage_stats ON usage_stats.provider_name = providers.name", usageSubQuery).
-		Order("COALESCE(usage_stats.usage_count, 0) DESC").
-		Order("providers.created_at ASC").
-		Order("providers.id DESC")
-
-	var providers []models.Provider
-	if err := query.Find(&providers).Error; err != nil {
-		common.InternalServerError(c, err.Error())
-		return
-	}
+	sort.SliceStable(providers, func(i, j int) bool {
+		return usageByName[providers[i].Name] > usageByName[providers[j].Name]
+	})
 
 	items := buildProviderListItems(ctx, providers)
 	common.Success(c, items)
@@ -1090,26 +1082,19 @@ func GetModelProviderStatus(c *gin.Context) {
 	}
 
 	// 获取最近10次请求状态
-	union, err := models.BuildChatLogUnionQuery(models.ChatLogQueryScope{}, "created_at, provider_name, provider_model, name, status")
-	if err != nil {
-		common.InternalServerError(c, "Failed to build log query: "+err.Error())
-		return
-	}
 	logs := make([]models.ChatLog, 0, 10)
-	if union.SQL != "" {
-		err = models.DB.WithContext(c.Request.Context()).Raw(
-			`SELECT *
-			   FROM (`+union.SQL+`) AS logs
-			  WHERE provider_name = ?
-			    AND provider_model = ?
-			    AND name = ?
-			  ORDER BY created_at DESC
-			  LIMIT 10`,
-			provider.Name,
-			providerModel,
-			modelName,
-		).Scan(&logs).Error
-	}
+	logs, _, err = models.QueryChatLogsPage(
+		c.Request.Context(),
+		models.ChatLogQueryScope{},
+		"created_at, provider_name, provider_model, name, status",
+		"provider_name = ? AND provider_model = ? AND name = ?",
+		"created_at DESC",
+		10,
+		0,
+		provider.Name,
+		providerModel,
+		modelName,
+	)
 	if err != nil {
 		common.InternalServerError(c, "Failed to retrieve chat log: "+err.Error())
 		return
@@ -1421,43 +1406,19 @@ func parseLogQueryTime(raw string) (time.Time, error) {
 }
 
 func queryRequestLogsByMonthlyTables(ctx context.Context, params common.PaginationParams, filter chatLogQueryFilter) ([]models.ChatLog, int64, error) {
-	tables, err := models.ListChatLogMonthlyTablesInRange(models.ChatLogQueryScope{StartAt: filter.StartAt, EndAt: filter.EndAt})
-	if err != nil {
-		return nil, 0, err
-	}
-	if len(tables) == 0 {
-		return []models.ChatLog{}, 0, nil
-	}
-
 	columns := models.ChatLogColumnsSQL()
 	filterSQL, filterArgs := buildChatLogFilterSQL(filter)
-
-	selectSQL := make([]string, 0, len(tables))
-	queryArgs := make([]any, 0, len(filterArgs)*len(tables))
-	for _, tableName := range tables {
-		selectSQL = append(selectSQL, fmt.Sprintf("SELECT %s FROM %s%s", columns, tableName, filterSQL))
-		queryArgs = append(queryArgs, filterArgs...)
-	}
-
-	unionSQL := strings.Join(selectSQL, " UNION ALL ")
-
-	type countRow struct {
-		Total int64 `gorm:"column:total"`
-	}
-	var totalRow countRow
-	countSQL := fmt.Sprintf("SELECT COUNT(1) AS total FROM (%s) AS logs", unionSQL)
-	if err := models.DB.WithContext(ctx).Raw(countSQL, queryArgs...).Scan(&totalRow).Error; err != nil {
-		return nil, 0, err
-	}
-
 	offset := (params.Page - 1) * params.PageSize
-	pageArgs := append(append(make([]any, 0, len(queryArgs)+2), queryArgs...), params.PageSize, offset)
-	pageSQL := fmt.Sprintf("SELECT %s FROM (%s) AS logs ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?", columns, unionSQL)
-	logs := make([]models.ChatLog, 0, params.PageSize)
-	if err := models.DB.WithContext(ctx).Raw(pageSQL, pageArgs...).Scan(&logs).Error; err != nil {
-		return nil, 0, err
-	}
-	return logs, totalRow.Total, nil
+	return models.QueryChatLogsPage(
+		ctx,
+		models.ChatLogQueryScope{StartAt: filter.StartAt, EndAt: filter.EndAt},
+		columns,
+		filterSQL,
+		"created_at DESC, id DESC",
+		params.PageSize,
+		offset,
+		filterArgs...,
+	)
 }
 
 func buildChatLogFilterSQL(filter chatLogQueryFilter) (string, []any) {
@@ -1494,7 +1455,7 @@ func buildChatLogFilterSQL(filter chatLogQueryFilter) (string, []any) {
 	if len(clauses) == 0 {
 		return "", nil
 	}
-	return " WHERE " + strings.Join(clauses, " AND "), args
+	return strings.Join(clauses, " AND "), args
 }
 
 // GetChatIO 查询指定日志的输入输出记录
@@ -1626,25 +1587,8 @@ func parsePositiveInt(raw string, defaultValue int) int {
 
 // GetUserAgents 获取所有不重复的用户代理种类
 func GetUserAgents(c *gin.Context) {
-	var userAgents []string
-
-	union, err := models.BuildChatLogUnionQuery(models.ChatLogQueryScope{}, "user_agent")
+	userAgents, err := models.QueryChatLogDistinctUserAgents(c.Request.Context())
 	if err != nil {
-		common.InternalServerError(c, "Failed to build log query: "+err.Error())
-		return
-	}
-	if union.SQL == "" {
-		common.Success(c, userAgents)
-		return
-	}
-
-	// 查询所有不重复的非空用户代理。
-	if err := models.DB.WithContext(c.Request.Context()).Raw(
-		`SELECT DISTINCT user_agent
-		   FROM (` + union.SQL + `) AS logs
-		  WHERE user_agent IS NOT NULL AND user_agent != ''
-		  ORDER BY user_agent ASC`,
-	).Scan(&userAgents).Error; err != nil {
 		common.InternalServerError(c, "Failed to query user agents: "+err.Error())
 		return
 	}
@@ -1655,7 +1599,7 @@ func GetUserAgents(c *gin.Context) {
 // GetConfigByKey 获取特定配置
 func GetConfigByKey(c *gin.Context) {
 	key := c.Param("key")
-	config, err := gorm.G[models.Config](models.DB).Where("key = ?", key).First(c.Request.Context())
+	config, err := gorm.G[models.Config](models.DB).Where(models.ColumnEquals("key"), key).First(c.Request.Context())
 
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
@@ -1687,7 +1631,7 @@ func UpdateConfigByKey(c *gin.Context) {
 	}
 
 	// 获取或创建配置记录
-	config, err := gorm.G[models.Config](models.DB).Where("key = ?", key).First(c.Request.Context())
+	config, err := gorm.G[models.Config](models.DB).Where(models.ColumnEquals("key"), key).First(c.Request.Context())
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			// 创建新配置
@@ -1706,7 +1650,7 @@ func UpdateConfigByKey(c *gin.Context) {
 	} else {
 		// 更新配置值
 		config.Value = req.Value
-		if _, err := gorm.G[models.Config](models.DB).Where("key = ?", key).Updates(c.Request.Context(), config); err != nil {
+		if _, err := gorm.G[models.Config](models.DB).Where(models.ColumnEquals("key"), key).Updates(c.Request.Context(), config); err != nil {
 			common.InternalServerError(c, "Failed to update config: "+err.Error())
 			return
 		}
@@ -1815,57 +1759,19 @@ func CleanLogs(c *gin.Context) {
 	common.Success(c, map[string]any{"deleted_count": deletedCount})
 }
 
-type cleanupLogRef struct {
-	UUID      string
-	CreatedAt time.Time
-	TableName string
-	ID        uint
-}
+type cleanupLogRef = models.ChatLogCleanupRefRow
 
 func fetchLogsForCleanup(ctx context.Context, cleanType string, value int) ([]cleanupLogRef, error) {
 	now := time.Now()
-	var scope models.ChatLogQueryScope
 	switch cleanType {
 	case "count":
-		scope = models.ChatLogQueryScope{}
+		return models.QueryChatLogCleanupRefsByCount(ctx, value)
 	case "days":
 		cutoff := now.AddDate(0, 0, -value)
-		scope = models.ChatLogQueryScope{EndAt: &cutoff}
+		return models.QueryChatLogCleanupRefsBefore(ctx, cutoff)
 	default:
 		return nil, nil
 	}
-	union, err := models.BuildChatLogUnionQuery(scope, "id, uuid, created_at")
-	if err != nil {
-		return nil, err
-	}
-	if union.SQL == "" {
-		return nil, nil
-	}
-
-	var rows []cleanupLogRef
-	if cleanType == "count" {
-		if err := models.DB.WithContext(ctx).Raw(
-			`SELECT id, uuid, created_at, '' AS table_name
-			   FROM (`+union.SQL+`) AS logs
-			  ORDER BY created_at DESC, id DESC
-			  LIMIT -1 OFFSET ?`,
-			value,
-		).Scan(&rows).Error; err != nil {
-			return nil, err
-		}
-	} else {
-		cutoff := now.AddDate(0, 0, -value)
-		if err := models.DB.WithContext(ctx).Raw(
-			`SELECT id, uuid, created_at, '' AS table_name
-			   FROM (`+union.SQL+`) AS logs
-			  WHERE created_at < ?
-			  ORDER BY created_at DESC, id DESC`,
-			cutoff,
-		).Scan(&rows).Error; err != nil {
-			return nil, err
-		}
-	}
-	return rows, nil
 }
 
 func deleteLogsByRefs(ctx context.Context, refs []cleanupLogRef) error {

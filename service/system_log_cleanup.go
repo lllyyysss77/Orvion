@@ -56,7 +56,7 @@ func loadSystemLogCleanupConfig(ctx context.Context) (models.SystemLogCleanupCon
 	}
 
 	config, err := gorm.G[models.Config](models.DB).
-		Where("key = ?", models.KeySystemLogCleanup).
+		Where(models.ColumnEquals("key"), models.KeySystemLogCleanup).
 		First(ctx)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {

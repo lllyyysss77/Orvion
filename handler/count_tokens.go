@@ -16,7 +16,7 @@ import (
 func CountTokens(c *gin.Context) {
 	ctx := c.Request.Context()
 
-	config, err := gorm.G[models.Config](models.DB).Where("key = ?", models.KeyAnthropicCountTokens).First(ctx)
+	config, err := gorm.G[models.Config](models.DB).Where(models.ColumnEquals("key"), models.KeyAnthropicCountTokens).First(ctx)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			common.NotFound(c, "Anthropic count tokens config not found")

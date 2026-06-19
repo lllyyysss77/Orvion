@@ -89,7 +89,7 @@ func loadPriceSyncConfig(ctx context.Context) (models.ModelPriceSyncConfig, erro
 	}
 
 	config, err := gorm.G[models.Config](models.DB).
-		Where("key = ?", models.KeyModelPriceSync).
+		Where(models.ColumnEquals("key"), models.KeyModelPriceSync).
 		First(ctx)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {

@@ -9,10 +9,12 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/glebarez/sqlite"
+	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
 )
@@ -23,14 +25,17 @@ const gormSlowSQLThreshold = 200 * time.Millisecond
 
 // Init 初始化数据库连接并确保当前基础表结构存在。
 //
+// DATABASE_DRIVER 支持:
+//   - 空值/sqlite: 使用 SQLite
+//   - mysql: 使用 MySQL
+//
 // DATABASE_DSN 支持:
 //   - 空值: 默认使用 ./data/llmio.db (sqlite)
 //   - sqlite://data/llmio.db / data/llmio.db / file:data/llmio.db?cache=shared
+//   - mysql://user:password@127.0.0.1:3306/orvion?charset=utf8mb4&parseTime=true&loc=Local
+//   - user:password@tcp(127.0.0.1:3306)/orvion?charset=utf8mb4&parseTime=true&loc=Local (需 DATABASE_DRIVER=mysql)
 func Init(_ context.Context, dsn string) {
 	dsn = strings.TrimSpace(dsn)
-	if dsn == "" {
-		dsn = defaultSQLiteDSN()
-	}
 
 	dialector, err := buildDialector(dsn)
 	if err != nil {
@@ -45,7 +50,7 @@ func Init(_ context.Context, dsn string) {
 		panic(err)
 	}
 	DB = db
-	if err := configureSQLiteConnectionPool(DB); err != nil {
+	if err := configureConnectionPool(DB); err != nil {
 		panic(err)
 	}
 
@@ -70,13 +75,16 @@ func Init(_ context.Context, dsn string) {
 	if _, err := EnsureChatLogMonthlyTable(time.Now()); err != nil {
 		panic(err)
 	}
+	if err := EnsureAllChatLogMonthlyTableIndexes(); err != nil {
+		panic(err)
+	}
 }
 
 func cleanupProviderStatusSnapshots() error {
 	if DB == nil {
 		return nil
 	}
-	return DB.Where("key LIKE ?", "provider_status_snapshot:%").Delete(&Config{}).Error
+	return DB.Where(ColumnLike("key"), "provider_status_snapshot:%").Delete(&Config{}).Error
 }
 
 func newGormLogger() gormlogger.Interface {
@@ -93,6 +101,14 @@ func newGormLogger() gormlogger.Interface {
 }
 
 const sqliteScheme = "sqlite://"
+const mysqlScheme = "mysql://"
+
+type DatabaseDriver string
+
+const (
+	DatabaseDriverSQLite DatabaseDriver = "sqlite"
+	DatabaseDriverMySQL  DatabaseDriver = "mysql"
+)
 
 func defaultSQLiteDSN() string {
 	dataDir := filepath.Join(".", "data")
@@ -101,6 +117,41 @@ func defaultSQLiteDSN() string {
 }
 
 func buildDialector(dsn string) (gorm.Dialector, error) {
+	return buildDialectorWithDriver(os.Getenv("DATABASE_DRIVER"), dsn)
+}
+
+func buildDialectorWithDriver(driver string, dsn string) (gorm.Dialector, error) {
+	driver = normalizeDatabaseDriver(driver, dsn)
+	switch driver {
+	case string(DatabaseDriverMySQL):
+		mysqlDSN, err := normalizeMySQLDSN(dsn)
+		if err != nil {
+			return nil, err
+		}
+		return mysql.Open(mysqlDSN), nil
+	case string(DatabaseDriverSQLite):
+		if strings.TrimSpace(dsn) == "" {
+			dsn = defaultSQLiteDSN()
+		}
+		return buildSQLiteDialector(dsn)
+	default:
+		return nil, fmt.Errorf("unsupported database driver: %s", driver)
+	}
+}
+
+func normalizeDatabaseDriver(driver string, dsn string) string {
+	driver = strings.ToLower(strings.TrimSpace(driver))
+	if driver != "" {
+		return driver
+	}
+	trimmedDSN := strings.ToLower(strings.TrimSpace(dsn))
+	if strings.HasPrefix(trimmedDSN, mysqlScheme) {
+		return string(DatabaseDriverMySQL)
+	}
+	return string(DatabaseDriverSQLite)
+}
+
+func buildSQLiteDialector(dsn string) (gorm.Dialector, error) {
 	sqliteDSN := normalizeSQLiteDSN(dsn)
 	if sqliteDSN == "" {
 		return nil, errors.New("empty sqlite dsn")
@@ -109,6 +160,73 @@ func buildDialector(dsn string) (gorm.Dialector, error) {
 		return nil, err
 	}
 	return sqlite.Open(configureSQLiteDSN(sqliteDSN)), nil
+}
+
+func normalizeMySQLDSN(dsn string) (string, error) {
+	trimmed := strings.TrimSpace(dsn)
+	if trimmed == "" {
+		return "", errors.New("empty mysql dsn")
+	}
+	if !strings.HasPrefix(strings.ToLower(trimmed), mysqlScheme) {
+		return configureMySQLDSN(trimmed), nil
+	}
+
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return "", fmt.Errorf("invalid mysql dsn: %w", err)
+	}
+	if parsed.Host == "" {
+		return "", errors.New("mysql dsn missing host")
+	}
+	databaseName := strings.TrimPrefix(parsed.EscapedPath(), "/")
+	if databaseName == "" {
+		return "", errors.New("mysql dsn missing database name")
+	}
+	if unescaped, err := url.PathUnescape(databaseName); err == nil {
+		databaseName = unescaped
+	}
+
+	username := parsed.User.Username()
+	password, hasPassword := parsed.User.Password()
+	auth := username
+	if hasPassword {
+		auth += ":" + password
+	}
+	if auth != "" {
+		auth += "@"
+	}
+
+	query := parsed.Query()
+	ensureMySQLQueryDefaults(query)
+	return fmt.Sprintf("%stcp(%s)/%s?%s", auth, parsed.Host, databaseName, query.Encode()), nil
+}
+
+func configureMySQLDSN(dsn string) string {
+	parts := strings.SplitN(dsn, "?", 2)
+	query := url.Values{}
+	if len(parts) == 2 {
+		if parsed, err := url.ParseQuery(parts[1]); err == nil {
+			query = parsed
+		}
+	}
+	ensureMySQLQueryDefaults(query)
+	encoded := query.Encode()
+	if encoded == "" {
+		return parts[0]
+	}
+	return parts[0] + "?" + encoded
+}
+
+func ensureMySQLQueryDefaults(query url.Values) {
+	if query.Get("charset") == "" {
+		query.Set("charset", "utf8mb4")
+	}
+	if query.Get("parseTime") == "" && query.Get("parsetime") == "" {
+		query.Set("parseTime", "true")
+	}
+	if query.Get("loc") == "" {
+		query.Set("loc", "Local")
+	}
 }
 
 func normalizeSQLiteDSN(dsn string) string {
@@ -145,16 +263,35 @@ func configureSQLiteDSN(dsn string) string {
 	return appendSQLitePragmas(dsn, pragmas...)
 }
 
-func configureSQLiteConnectionPool(db *gorm.DB) error {
+func configureConnectionPool(db *gorm.DB) error {
 	sqlDB, err := db.DB()
 	if err != nil {
 		return err
 	}
-	// SQLite 单文件写锁粒度较粗，单连接队列能避免同进程内连接互相抢锁。
-	sqlDB.SetMaxOpenConns(1)
-	sqlDB.SetMaxIdleConns(1)
-	sqlDB.SetConnMaxLifetime(0)
+	switch db.Dialector.Name() {
+	case string(DatabaseDriverMySQL):
+		sqlDB.SetMaxOpenConns(readPositiveEnvInt("DATABASE_MAX_OPEN_CONNS", 50))
+		sqlDB.SetMaxIdleConns(readPositiveEnvInt("DATABASE_MAX_IDLE_CONNS", 10))
+		sqlDB.SetConnMaxLifetime(time.Duration(readPositiveEnvInt("DATABASE_CONN_MAX_LIFETIME_MINUTES", 30)) * time.Minute)
+	default:
+		// SQLite 单文件写锁粒度较粗，单连接队列能避免同进程内连接互相抢锁。
+		sqlDB.SetMaxOpenConns(1)
+		sqlDB.SetMaxIdleConns(1)
+		sqlDB.SetConnMaxLifetime(0)
+	}
 	return nil
+}
+
+func readPositiveEnvInt(key string, fallback int) int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 {
+		return fallback
+	}
+	return value
 }
 
 func sqliteQueryString(dsn string) string {

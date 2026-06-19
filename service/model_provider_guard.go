@@ -185,24 +185,15 @@ func TriggerModelProviderAutoDisableIfNeeded(ctx context.Context, modelWithProvi
 	now := time.Now()
 	windowStart := now.Add(-modelProviderAutoDisableWindow)
 
-	union, err := models.BuildChatLogUnionQuery(models.ChatLogQueryScope{StartAt: &windowStart}, "uuid, created_at, model_with_provider_id, status")
-	if err != nil {
-		return err
-	}
-	if union.SQL == "" {
-		return nil
-	}
-	var errorCount int64
-	if err := models.DB.WithContext(ctx).Raw(
-		`SELECT COUNT(1)
-		   FROM (`+union.SQL+`) AS logs
-		  WHERE model_with_provider_id = ?
-		    AND created_at >= ?
-		    AND status = ?`,
+	errorCount, err := models.QueryChatLogCount(
+		ctx,
+		models.ChatLogQueryScope{StartAt: &windowStart},
+		"model_with_provider_id = ? AND created_at >= ? AND status = ?",
 		modelWithProviderID,
 		windowStart,
 		"error",
-	).Scan(&errorCount).Error; err != nil {
+	)
+	if err != nil {
 		return err
 	}
 

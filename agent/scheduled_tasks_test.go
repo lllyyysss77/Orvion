@@ -196,12 +196,18 @@ func TestExecuteTelegramAgentScheduledTaskPushDoesNotLoadHistory(t *testing.T) {
 	if result.Text != "已推送到 Agent 对话" {
 		t.Fatalf("返回结果不符合预期: %+v", result)
 	}
-	if len(capturedMessages) != 1 {
-		t.Fatalf("推送型定时任务请求不应携带历史上下文，实际消息数=%d，内容=%#v", len(capturedMessages), capturedMessages)
+	taskMessageCount := 0
+	for _, message := range capturedMessages {
+		content, _ := message["content"].(string)
+		if strings.Contains(content, "旧问题") || strings.Contains(content, "旧回答") {
+			t.Fatalf("推送型定时任务不应加载旧上下文，实际内容=%q", content)
+		}
+		if message["role"] == "user" && strings.Contains(content, "任务名称") && strings.Contains(content, "天气播报") {
+			taskMessageCount++
+		}
 	}
-	content, _ := capturedMessages[0]["content"].(string)
-	if strings.Contains(content, "旧问题") || strings.Contains(content, "旧回答") {
-		t.Fatalf("推送型定时任务不应加载旧上下文，实际内容=%q", content)
+	if taskMessageCount != 1 {
+		t.Fatalf("推送型定时任务应只携带本轮任务消息，实际任务消息数=%d，内容=%#v", taskMessageCount, capturedMessages)
 	}
 
 	telegramSessions.Delete(chatID)

@@ -74,7 +74,7 @@ func GetAuthKeys(c *gin.Context) {
 	// 搜索过滤
 	if search := strings.TrimSpace(c.Query("search")); search != "" {
 		like := "%" + search + "%"
-		query = query.Where("name LIKE ? OR key LIKE ?", like, like)
+		query = query.Where("name LIKE ? OR "+models.ColumnLike("key"), like, like)
 	}
 
 	// 状态过滤
@@ -139,7 +139,7 @@ func CreateAuthKey(c *gin.Context) {
 		common.BadRequest(c, err.Error())
 		return
 	}
-	if count, err := gorm.G[models.AuthKey](models.DB).Where("key = ?", key).Count(ctx, "id"); err != nil {
+	if count, err := gorm.G[models.AuthKey](models.DB).Where(models.ColumnEquals("key"), key).Count(ctx, "id"); err != nil {
 		common.InternalServerError(c, "Failed to check auth key: "+err.Error())
 		return
 	} else if count > 0 {

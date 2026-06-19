@@ -15,7 +15,7 @@ Orvion 是一个多提供商 LLM 网关（Go + Gin），提供 OpenAI/Anthropic 
 ## 技术栈
 
 - 后端：Go 1.25 + Gin + GORM
-- 数据库：SQLite
+- 数据库：SQLite / MySQL
 - 前端：React + Vite + TypeScript（构建产物嵌入后端）
 
 ## 快速开始
@@ -53,20 +53,43 @@ make all
 
 ## Docker 运行
 
+### 使用 SQLite（默认）
+
 ```bash
 docker run -d \
   --name orvion \
   --restart unless-stopped \
-  --network host \
   -p 7070:7070 \
-  -e DATABASE_DSN="data/llmio.db" \
+  -e DATABASE_DRIVER="sqlite" \
+  -e DATABASE_DSN="/orvion/data/llmio.db" \
   -e TOKEN="xxxxxxxxx" \
   -e TZ="Asia/Shanghai" \
-  -v xxxxxxxxx/orvion:/orvion/data \
+  -v /你的宿主机目录/orvion:/orvion/data \
   --pull always \
   ghcr.io/raciott/orvion:latest
-
 ```
+
+SQLite 数据库文件会存放在挂载目录 `/orvion/data/llmio.db`，容器重建后数据仍保留。
+
+### 使用 MySQL
+
+```bash
+docker run -d \
+  --name orvion \
+  --restart unless-stopped \
+  -p 7070:7070 \
+  -e DATABASE_DRIVER="mysql" \
+  -e DATABASE_DSN='orvion:12345678@tcp(192.168.3.108:3306)/orvion?charset=utf8mb4&parseTime=true&loc=Local' \
+  -e TOKEN="xxxxxxxxx" \
+  -e TZ="Asia/Shanghai" \
+  -v /你的宿主机目录/orvion:/orvion/data \
+  --pull always \
+  ghcr.io/raciott/orvion:latest
+```
+
+注意：`DATABASE_DSN` 是数据库驱动连接串，不是 HTTP 地址。MySQL 地址要写成
+`user:password@tcp(host:3306)/database?...`，不要写 `http://host:3306`。
+请先在 MySQL 中创建数据库并授权用户访问。
 
 如你 fork 后自建镜像，请改为 `ghcr.io/<你的仓库路径>:<tag>`。
 
@@ -83,7 +106,13 @@ Skills 内容不打包进镜像，运行后通过页面上传文件夹/压缩包
 ### 核心环境变量
 
 - `TOKEN`：管理 API 与代理接口的管理员令牌；为空时将不校验管理员接口
+- `DATABASE_DRIVER`：数据库驱动，支持 `sqlite` / `mysql`；为空时会按 `DATABASE_DSN` 自动识别，默认 `sqlite`
 - `DATABASE_DSN`：数据库连接串；默认 SQLite `./data/llmio.db`
+  - SQLite 示例：`/orvion/data/llmio.db`、`sqlite://data/llmio.db`、`file:data/llmio.db?cache=shared`
+  - MySQL 示例：`orvion:123456@tcp(192.168.3.108:3306)/orvion?charset=utf8mb4&parseTime=true&loc=Local`
+- `DATABASE_MAX_OPEN_CONNS`：MySQL 最大打开连接数，默认 `50`
+- `DATABASE_MAX_IDLE_CONNS`：MySQL 最大空闲连接数，默认 `10`
+- `DATABASE_CONN_MAX_LIFETIME_MINUTES`：MySQL 连接最大生命周期分钟数，默认 `30`
 - `ORVION_SERVER_PORT`：服务端口，默认 `7070`
 - `LOG_LEVEL`：日志级别（`debug/info/warn/error`）
 - `LOG_FILE`：系统日志文件路径，默认 `orvion.log`
@@ -92,36 +121,28 @@ Skills 内容不打包进镜像，运行后通过页面上传文件夹/压缩包
 - `GEMINI_COMPAT_ENABLED`：Gemini 兼容降级开关，默认开启
 - `GITHUB_HTTP_PROXY`：GitHub 版本检查代理（可选）
 
-### Telegram（可选）
+### SQLite 迁移到 MySQL
 
-以下变量用于熔断告警与 TG 命令对话（也可在系统配置中写入 `breaker_alert_tg` 覆盖）：
+项目提供一次性迁移脚本，会迁移基础业务表、`chat_io`、Agent/Skills 表、
+`model_prices`，以及所有 `chat_logs_YYYYMM` 日志月表。
 
-- `BREAKER_ALERT_TG_BOT_TOKEN`
-- `BREAKER_ALERT_TG_CHAT_ID`
-- `BREAKER_ALERT_TG_API_BASE`（默认 `https://api.telegram.org`）
-- `BREAKER_ALERT_TG_PROXY_URL`（可选；显式指定 TG 请求代理）
-- `BREAKER_ALERT_TG_STATUS_IMAGE_URL`（可选；`/status` 与日报配图拉取地址）
-- `TG_AGENT_SKILLS_DIR`（可选；TG Agent Skills 本地目录，默认 `data/skills`）
+先预览迁移计划：
 
-### Provider 接口转换配置（可选）
-
-当某个上游 Provider 不支持某些接口形式时，可在 Provider 独立字段中开启接口桥接，把不支持的接口统一转换到你指定的目标接口能力。
-
-示例：
-
-```json
-{
-  "name": "my-provider",
-  "interface_conversion_enabled": true,
-  "interface_conversion_target": "messages"
-}
+```bash
+SQLITE_DSN=./data/llmio.db \
+MYSQL_DSN='orvion:123456@tcp(192.168.3.108:3306)/orvion?charset=utf8mb4&parseTime=true&loc=Local' \
+go run ./cmd/migrate_sqlite_to_mysql --dry-run
 ```
 
-说明：
+确认无误后执行迁移：
 
-- `interface_conversion_target` 取值为 `chat` / `responses` / `messages`，表示“统一转换目标能力”。
-- 仅当 `interface_conversion_enabled=true` 时生效。
-- 当某个客户端入口接口不被该 Provider 支持时，会自动转到 `interface_conversion_target` 指定的接口能力。
+```bash
+SQLITE_DSN=./data/llmio.db \
+MYSQL_DSN='orvion:123456@tcp(192.168.3.108:3306)/orvion?charset=utf8mb4&parseTime=true&loc=Local' \
+go run ./cmd/migrate_sqlite_to_mysql
+```
+
+如果 MySQL 目标库已有旧数据，并确认要重建，可加 `--clear` 清空目标表后再导入。
 
 ## 认证与鉴权
 

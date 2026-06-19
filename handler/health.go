@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"log/slog"
 	"slices"
 	"strconv"
@@ -55,15 +56,7 @@ type ProviderHealth struct {
 	Models         []ModelHealth `json:"models"`
 }
 
-type healthLogRow struct {
-	Name          string    `gorm:"column:name"`
-	ProviderName  string    `gorm:"column:provider_name"`
-	ProviderModel string    `gorm:"column:provider_model"`
-	Status        string    `gorm:"column:status"`
-	Error         string    `gorm:"column:error"`
-	ProxyTimeMs   int       `gorm:"column:proxy_time_ms"`
-	CreatedAt     time.Time `gorm:"column:created_at"`
-}
+type healthLogRow = models.ChatLogHealthRow
 
 // SystemHealth 系统健康状态
 type SystemHealth struct {
@@ -135,19 +128,10 @@ func ReadinessCheck(c *gin.Context) {
 
 	// 检查数据库连接和基本表是否存在
 	if models.DB != nil {
-		// 检查关键表是否存在
-		var count int64
-		// PostgreSQL：限定当前 schema（通常为 public）
-		tableCheckSQL := "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = current_schema() AND table_name IN ('providers', 'models', 'auth_keys')"
-		if err := models.DB.Raw(tableCheckSQL).Scan(&count).Error; err != nil {
-			ready["status"] = "not_ready"
-			ready["database"] = "table_check_failed"
-			ready["error"] = err.Error()
-			c.JSON(503, ready)
-			return
-		}
-
-		if count < 3 {
+		for _, tableName := range []string{"providers", "models", "auth_keys"} {
+			if models.DB.Migrator().HasTable(tableName) {
+				continue
+			}
 			ready["status"] = "not_ready"
 			ready["database"] = "missing_tables"
 			ready["error"] = "Required tables not found"
@@ -370,26 +354,8 @@ func checkProvidersHealth(_ int) struct {
 
 	logsByKey := make(map[logKey][]healthLogRow)
 	if len(providerNames) > 0 && len(modelNames) > 0 && len(providerModels) > 0 {
-		union, err := models.BuildChatLogUnionQuery(models.ChatLogQueryScope{StartAt: &windowStart, EndAt: &windowEnd}, "name, provider_name, provider_model, status, error, proxy_time_ms, created_at")
+		rows, err := models.QueryChatLogHealthRows(context.Background(), windowStart, windowEnd, providerNames, modelNames, providerModels)
 		if err != nil {
-			// 日志查询失败会严重影响健康统计，直接标记为不健康
-			result.Status = "unhealthy"
-			return result
-		}
-		if union.SQL == "" {
-			return result
-		}
-		sql := `
-SELECT name, provider_name, provider_model, status, error, proxy_time_ms, created_at
-FROM (` + union.SQL + `) AS logs
-WHERE created_at >= ?
-  AND created_at < ?
-  AND provider_name IN (?)
-  AND name IN (?)
-  AND provider_model IN (?)
-`
-		var rows []healthLogRow
-		if err := models.DB.Raw(sql, windowStart, windowEnd, providerNames, modelNames, providerModels).Scan(&rows).Error; err != nil {
 			// 日志查询失败会严重影响健康统计，直接标记为不健康
 			result.Status = "unhealthy"
 			return result

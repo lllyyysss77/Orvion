@@ -36,7 +36,7 @@ func IsRetryableStatus(code int) bool {
 
 func LoadAnthropicProxyIPConfig(ctx context.Context) (models.AnthropicProxyIPConfig, bool) {
 	config, err := gorm.G[models.Config](models.DB).
-		Where("key = ?", models.KeyAnthropicProxyIP).
+		Where(models.ColumnEquals("key"), models.KeyAnthropicProxyIP).
 		First(ctx)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {

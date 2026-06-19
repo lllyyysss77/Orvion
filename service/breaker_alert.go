@@ -12,7 +12,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -23,13 +22,6 @@ import (
 )
 
 const (
-	envTelegramBotToken = "BREAKER_ALERT_TG_BOT_TOKEN"
-	envTelegramChatID   = "BREAKER_ALERT_TG_CHAT_ID"
-	envTelegramAPIBase  = "BREAKER_ALERT_TG_API_BASE"
-	envTelegramProxyURL = "BREAKER_ALERT_TG_PROXY_URL"
-	// TG /status 图片拉取地址（可选，支持通过系统配置 breaker_alert_tg.status_image_url 覆盖）。
-	envTelegramStatusImageURL = "BREAKER_ALERT_TG_STATUS_IMAGE_URL"
-
 	telegramDefaultAPIBase         = "https://api.telegram.org"
 	telegramHTTPTimeout            = 25 * time.Second
 	telegramPhotoHTTPTimeout       = 35 * time.Second
@@ -121,7 +113,7 @@ type telegramSendMessageWithResultResponse struct {
 }
 
 // InitBreakerAlertNotifier 初始化熔断告警通知（Telegram）。
-// 优先读取系统配置（configs.key=breaker_alert_tg），未配置时回退环境变量。
+// 只读取系统配置（configs.key=breaker_alert_tg），避免运行时配置来源分叉。
 func InitBreakerAlertNotifier() {
 	balancers.SetBreakerOpenHook(func(event balancers.BreakerOpenEvent) {
 		notifier, ok, err := resolveTelegramNotifier(context.Background())
@@ -155,11 +147,11 @@ func resolveTelegramNotifier(ctx context.Context) (*telegramNotifier, bool, erro
 	if found {
 		return buildTelegramNotifier(cfg.BotToken, cfg.ChatID, cfg.APIBase, cfg.ProxyURL, cfg.Enabled)
 	}
-	return buildTelegramNotifierFromEnv()
+	return nil, false, nil
 }
 
 func loadTelegramBreakerAlertConfig(ctx context.Context) (models.TelegramBreakerAlertConfig, bool, error) {
-	config, err := gorm.G[models.Config](models.DB).Where("key = ?", models.KeyTelegramBreakerAlert).First(ctx)
+	config, err := gorm.G[models.Config](models.DB).Where(models.ColumnEquals("key"), models.KeyTelegramBreakerAlert).First(ctx)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return models.TelegramBreakerAlertConfig{}, false, nil
@@ -177,14 +169,6 @@ func loadTelegramBreakerAlertConfig(ctx context.Context) (models.TelegramBreaker
 		return models.TelegramBreakerAlertConfig{}, true, fmt.Errorf("解析 TG 告警配置失败: %w", err)
 	}
 	return cfg, true, nil
-}
-
-func buildTelegramNotifierFromEnv() (*telegramNotifier, bool, error) {
-	botToken := strings.TrimSpace(os.Getenv(envTelegramBotToken))
-	chatID := strings.TrimSpace(os.Getenv(envTelegramChatID))
-	apiBase := strings.TrimSpace(os.Getenv(envTelegramAPIBase))
-	proxyURL := strings.TrimSpace(os.Getenv(envTelegramProxyURL))
-	return buildTelegramNotifier(botToken, chatID, apiBase, proxyURL, true)
 }
 
 func buildTelegramNotifier(botToken string, chatID string, apiBase string, proxyURL string, enabled bool) (*telegramNotifier, bool, error) {

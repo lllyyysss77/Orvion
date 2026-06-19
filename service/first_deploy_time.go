@@ -15,7 +15,7 @@ import (
 // - 若不存在：写入一次并返回写入值
 // - 若值格式异常：优先回退到该记录的 created_at，并尝试修正 value
 func GetOrInitFirstDeployTime(ctx context.Context) (time.Time, error) {
-	cfg, err := gorm.G[models.Config](models.DB).Where("key = ?", models.KeyFirstDeployTime).First(ctx)
+	cfg, err := gorm.G[models.Config](models.DB).Where(models.ColumnEquals("key"), models.KeyFirstDeployTime).First(ctx)
 	if err != nil {
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return time.Time{}, err
@@ -35,7 +35,7 @@ func GetOrInitFirstDeployTime(ctx context.Context) (time.Time, error) {
 			return time.Time{}, err
 		}
 
-		cfg, err = gorm.G[models.Config](models.DB).Where("key = ?", models.KeyFirstDeployTime).First(ctx)
+		cfg, err = gorm.G[models.Config](models.DB).Where(models.ColumnEquals("key"), models.KeyFirstDeployTime).First(ctx)
 		if err != nil {
 			return time.Time{}, err
 		}

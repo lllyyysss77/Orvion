@@ -246,11 +246,6 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, requestP
 				header.Set("X-Forwarded-For", proxyIP)
 				header.Set("X-Real-IP", proxyIP)
 			}
-			if providersWithMeta.Endpoint == "responses" {
-				if cfg, ok := runtimesvc.LoadCodexFingerprintConfig(ctx); ok {
-					header = runtimesvc.ApplyCodexFingerprintHeaders(header, cfg, before.Stream)
-				}
-			}
 
 			var lastStatus int
 			var lastWas429 bool

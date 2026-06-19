@@ -1812,6 +1812,7 @@ func setupTelegramAgentToolTestDB(t *testing.T, name string) *gorm.DB {
 		&models.Provider{},
 		&models.ModelWithProvider{},
 		&models.AuthKey{},
+		&models.TelegramAgentMessage{},
 		&models.TelegramAgentSession{},
 		&models.TelegramAgentToolCallLog{},
 		&models.TelegramAgentScheduledTask{},

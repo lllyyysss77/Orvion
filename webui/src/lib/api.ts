@@ -901,11 +901,6 @@ export interface AnthropicProxyIPConfig {
   proxy_ip: string;
 }
 
-export interface CodexFingerprintConfig {
-  enabled: boolean;
-  headers: Record<string, string>;
-}
-
 export interface TelegramBreakerAlertConfig {
   enabled: boolean;
   bot_token: string;

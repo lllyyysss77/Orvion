@@ -154,25 +154,6 @@ type telegramStatusImageItem struct {
 	CachedAt time.Time
 }
 
-type telegramDailyUsageTopModelRow struct {
-	Name     string `gorm:"column:name"`
-	ReqCount int64  `gorm:"column:req_count"`
-}
-
-type telegramDailyUsageTopAuthKeyRow struct {
-	AuthKeyID uint  `gorm:"column:auth_key_id"`
-	ReqCount  int64 `gorm:"column:req_count"`
-}
-
-type telegramDailyUsageSlowRow struct {
-	ID        uint      `gorm:"column:id"`
-	Name      string    `gorm:"column:name"`
-	Provider  string    `gorm:"column:provider_name"`
-	Status    string    `gorm:"column:status"`
-	CreatedAt time.Time `gorm:"column:created_at"`
-	LatencyMs int       `gorm:"column:latency_ms"`
-}
-
 type telegramDailySlowRequest struct {
 	ID        uint
 	ModelName string
@@ -427,7 +408,7 @@ func dispatchTelegramDailyUsageReportWithNotifier(ctx context.Context, notifier 
 
 func loadTelegramDailyUsageReportLastSentDate(ctx context.Context) (string, error) {
 	cfg, err := gorm.G[models.Config](models.DB).
-		Where("key = ?", models.KeyTelegramDailyUsageReportLastSentDate).
+		Where(models.ColumnEquals("key"), models.KeyTelegramDailyUsageReportLastSentDate).
 		First(ctx)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -474,7 +455,7 @@ func claimTelegramDailyUsageReportScheduleDate(ctx context.Context, scheduleDate
 	claimed := false
 	err := models.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var cfg models.Config
-		err := tx.Where("key = ?", models.KeyTelegramDailyUsageReportLastSentDate).First(&cfg).Error
+		err := tx.Where(models.ColumnEquals("key"), models.KeyTelegramDailyUsageReportLastSentDate).First(&cfg).Error
 		if err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				if createErr := tx.Create(&models.Config{
@@ -493,7 +474,7 @@ func claimTelegramDailyUsageReportScheduleDate(ctx context.Context, scheduleDate
 			return nil
 		}
 		if err := tx.Model(&models.Config{}).
-			Where("key = ?", models.KeyTelegramDailyUsageReportLastSentDate).
+			Where(models.ColumnEquals("key"), models.KeyTelegramDailyUsageReportLastSentDate).
 			Update("value", scheduleDate).Error; err != nil {
 			return err
 		}
@@ -530,15 +511,7 @@ func resolveTelegramRuntimeConfig(ctx context.Context) (botToken, chatID, apiBas
 		return botToken, chatID, apiBase, proxyURL, enabled, nil
 	}
 
-	botToken = strings.TrimSpace(os.Getenv(envTelegramBotToken))
-	chatID = strings.TrimSpace(os.Getenv(envTelegramChatID))
-	apiBase = strings.TrimSpace(os.Getenv(envTelegramAPIBase))
-	proxyURL = strings.TrimSpace(os.Getenv(envTelegramProxyURL))
-	if apiBase == "" {
-		apiBase = telegramDefaultAPIBase
-	}
-	enabled = botToken != "" && chatID != ""
-	return botToken, chatID, apiBase, proxyURL, enabled, nil
+	return "", "", "", "", false, nil
 }
 
 func fetchTelegramLatestOffset(ctx context.Context, client *http.Client, endpoint string) (int64, error) {
@@ -713,16 +686,11 @@ func buildTelegramSystemStatusMessage(ctx context.Context) string {
 
 		year, month, day := now.Date()
 		startOfDay := time.Date(year, month, day, 0, 0, 0, 0, now.Location())
-		union, unionErr := models.BuildChatLogUnionQuery(models.ChatLogQueryScope{StartAt: &startOfDay}, "created_at, status, total_cost")
-		if unionErr == nil && union.SQL != "" {
-			_ = db.Raw(
-				`SELECT COUNT(1) AS total_reqs,
-				        COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END),0) AS success_reqs,
-				        COALESCE(SUM(total_cost),0) AS total_amount
-				   FROM (`+union.SQL+`) AS logs
-				  WHERE created_at >= ?`,
-				startOfDay,
-			).Row().Scan(&todayReqs, &todaySuccess, &todayAmount)
+		agg, aggErr := models.QueryChatLogMetricsAgg(ctx, models.ChatLogQueryScope{StartAt: &startOfDay}, "created_at >= ?", startOfDay)
+		if aggErr == nil {
+			todayReqs = agg.Reqs
+			todaySuccess = agg.Success
+			todayAmount = agg.Amount
 		}
 	}
 
@@ -1455,56 +1423,23 @@ func collectTelegramDailyUsageSummary(ctx context.Context, start time.Time, end 
 		return summary
 	}
 
-	db := models.DB.WithContext(ctx)
-	union, err := models.BuildChatLogUnionQuery(
-		models.ChatLogQueryScope{StartAt: &start, EndAt: &end},
-		"id, created_at, status, total_cost, name, auth_key_id, provider_name, proxy_time_ms, first_chunk_time_ms, chunk_time_ms",
-	)
-	if err != nil || union.SQL == "" {
+	dailyStats, err := models.QueryChatLogDailyUsageSummary(ctx, start, end)
+	if err != nil {
 		return summary
 	}
-	baseSQL := "FROM (" + union.SQL + ") AS logs WHERE created_at >= ? AND created_at < ?"
+	summary.TotalRequests = dailyStats.TotalRequests
+	summary.SuccessRequests = dailyStats.SuccessRequests
+	summary.TotalCost = dailyStats.TotalCost
+	summary.TopModelName = strings.TrimSpace(dailyStats.TopModelName)
+	summary.TopModelReqs = dailyStats.TopModelReqs
 
-	_ = db.Raw(
-		`SELECT COUNT(1) AS total_reqs,
-		        COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END),0) AS success_reqs,
-		        COALESCE(SUM(total_cost),0) AS total_cost `+baseSQL,
-		start,
-		end,
-	).Row().Scan(&summary.TotalRequests, &summary.SuccessRequests, &summary.TotalCost)
-
-	var topModel telegramDailyUsageTopModelRow
-	if err := db.Raw(
-		`SELECT name, COUNT(1) AS req_count `+baseSQL+`
-		  AND name <> ?
-		  GROUP BY name
-		  ORDER BY req_count DESC, name ASC
-		  LIMIT 1`,
-		start,
-		end,
-		"",
-	).Scan(&topModel).Error; err == nil {
-		summary.TopModelName = strings.TrimSpace(topModel.Name)
-		summary.TopModelReqs = topModel.ReqCount
-	}
-
-	var topAuthKey telegramDailyUsageTopAuthKeyRow
-	if err := db.Raw(
-		`SELECT auth_key_id, COUNT(1) AS req_count `+baseSQL+`
-		  AND auth_key_id > ?
-		  GROUP BY auth_key_id
-		  ORDER BY req_count DESC, auth_key_id ASC
-		  LIMIT 1`,
-		start,
-		end,
-		0,
-	).Scan(&topAuthKey).Error; err == nil {
-		summary.TopAuthKeyReqs = topAuthKey.ReqCount
-		summary.TopAuthKeyName = fmt.Sprintf("ID:%d", topAuthKey.AuthKeyID)
+	if dailyStats.TopAuthKeyID > 0 {
+		summary.TopAuthKeyReqs = dailyStats.TopAuthKeyReqs
+		summary.TopAuthKeyName = fmt.Sprintf("ID:%d", dailyStats.TopAuthKeyID)
 
 		var authKey models.AuthKey
 		if findErr := models.DB.WithContext(ctx).
-			Where("id = ?", topAuthKey.AuthKeyID).
+			Where("id = ?", dailyStats.TopAuthKeyID).
 			First(&authKey).Error; findErr == nil {
 			name := strings.TrimSpace(authKey.Name)
 			if name != "" {
@@ -1513,15 +1448,8 @@ func collectTelegramDailyUsageSummary(ctx context.Context, start time.Time, end 
 		}
 	}
 
-	var slowRow telegramDailyUsageSlowRow
-	if err := db.Raw(
-		`SELECT id, name, provider_name, status, created_at,
-		        (proxy_time_ms + first_chunk_time_ms + chunk_time_ms) AS latency_ms `+baseSQL+`
-		  ORDER BY latency_ms DESC, id DESC
-		  LIMIT 1`,
-		start,
-		end,
-	).Scan(&slowRow).Error; err == nil {
+	if dailyStats.SlowestRequest != nil {
+		slowRow := dailyStats.SlowestRequest
 		latency := slowRow.LatencyMs
 		if latency < 0 {
 			latency = 0
@@ -1570,12 +1498,6 @@ func formatTelegramLatency(latencyMs int) string {
 
 func resolveTelegramStatusCoverImageBaseURL(ctx context.Context) string {
 	fallbackURL := strings.TrimSpace(telegramDefaultStatusCoverImageURL)
-	envURL := strings.TrimSpace(os.Getenv(envTelegramStatusImageURL))
-	if normalizedEnvURL, ok := normalizeTelegramStatusImageURL(envURL); ok {
-		fallbackURL = normalizedEnvURL
-	} else if envURL != "" {
-		slog.Warn("TG 状态图片环境变量无效，回退默认地址", "env", envTelegramStatusImageURL, "value", envURL)
-	}
 
 	cfg, found, err := loadTelegramBreakerAlertConfig(ctx)
 	if err != nil {
@@ -1597,22 +1519,20 @@ func resolveTelegramStatusCoverImageBaseURL(ctx context.Context) string {
 }
 
 func resolveTelegramStatusImageProxyURL(ctx context.Context) string {
-	envProxyURL := strings.TrimSpace(os.Getenv(envTelegramProxyURL))
-
 	cfg, found, err := loadTelegramBreakerAlertConfig(ctx)
 	if err != nil {
-		slog.Warn("读取 TG 状态图片代理配置失败，回退环境变量", "error", err)
-		return envProxyURL
+		slog.Warn("读取 TG 状态图片代理配置失败", "error", err)
+		return ""
 	}
 	if !found {
-		return envProxyURL
+		return ""
 	}
 
 	configProxyURL := strings.TrimSpace(cfg.ProxyURL)
 	if configProxyURL != "" {
 		return configProxyURL
 	}
-	return envProxyURL
+	return ""
 }
 
 func normalizeTelegramStatusImageURL(raw string) (string, bool) {
@@ -2044,37 +1964,19 @@ func buildTelegramModelDetailView(ctx context.Context, modelID uint, page int, n
 		return "", nil, err
 	}
 
-	type modelProviderSuccessStat struct {
-		ModelWithProviderID uint  `gorm:"column:model_with_provider_id"`
-		TotalCount          int64 `gorm:"column:total_count"`
-		SuccessCount        int64 `gorm:"column:success_count"`
-	}
-
 	successRateByModelProvider := make(map[uint]float64, len(rows))
 	if len(rows) > 0 {
 		ids := make([]uint, 0, len(rows))
 		for _, row := range rows {
 			ids = append(ids, row.ID)
 		}
-		stats := make([]modelProviderSuccessStat, 0, len(rows))
-		union, unionErr := models.BuildChatLogUnionQuery(models.ChatLogQueryScope{}, "model_with_provider_id, status")
-		if unionErr == nil && union.SQL != "" {
-			err := models.DB.WithContext(ctx).Raw(
-				`SELECT model_with_provider_id AS model_with_provider_id,
-				        COUNT(1) AS total_count,
-				        COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END),0) AS success_count
-				   FROM (`+union.SQL+`) AS logs
-				  WHERE model_with_provider_id IN ?
-				  GROUP BY model_with_provider_id`,
-				ids,
-			).Scan(&stats).Error
-			if err == nil {
-				for _, stat := range stats {
-					if stat.TotalCount <= 0 {
-						continue
-					}
-					successRateByModelProvider[stat.ModelWithProviderID] = float64(stat.SuccessCount) / float64(stat.TotalCount) * 100
+		stats, err := models.QueryChatLogModelProviderSuccessStats(ctx, ids)
+		if err == nil {
+			for _, stat := range stats {
+				if stat.TotalCount <= 0 {
+					continue
 				}
+				successRateByModelProvider[stat.ModelWithProviderID] = float64(stat.SuccessCount) / float64(stat.TotalCount) * 100
 			}
 		}
 	}

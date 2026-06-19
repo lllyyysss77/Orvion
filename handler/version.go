@@ -180,7 +180,7 @@ func isGitHubVersionCheckEnabled(ctx context.Context) (bool, error) {
 	}
 
 	config, err := gorm.G[models.Config](models.DB).
-		Where("key = ?", models.KeyGitHubVersionCheck).
+		Where(models.ColumnEquals("key"), models.KeyGitHubVersionCheck).
 		First(ctx)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {

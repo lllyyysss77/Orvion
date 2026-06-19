@@ -12,8 +12,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -29,16 +27,6 @@ import (
 )
 
 const (
-	envTelegramAgentEnabled      = "TG_AGENT_ENABLED"
-	envTelegramAgentBaseURL      = "TG_AGENT_BASE_URL"
-	envTelegramAgentAPIKey       = "TG_AGENT_API_KEY"
-	envTelegramAgentModel        = "TG_AGENT_MODEL"
-	envTelegramAgentSystemPrompt = "TG_AGENT_SYSTEM_PROMPT"
-	envTelegramAgentMaxHistory   = "TG_AGENT_MAX_HISTORY"
-	envTelegramAgentMaxTokens    = "TG_AGENT_MAX_TOKENS"
-	envTelegramAgentEditInterval = "TG_AGENT_EDIT_INTERVAL_MS"
-	envTelegramAgentSkillsDir    = "TG_AGENT_SKILLS_DIR"
-
 	defaultTelegramAgentMaxHistoryMessages  = 20
 	defaultTelegramAgentMaxTokens           = 2048
 	defaultTelegramAgentEditInterval        = 1200 * time.Millisecond
@@ -1202,40 +1190,12 @@ func loadTelegramAgentConfig(ctx context.Context) (models.TelegramAgentConfig, e
 		SkillsDir:          telegramAgentDefaultSkillsDir,
 	}
 
-	if baseURL := strings.TrimSpace(os.Getenv(envTelegramAgentBaseURL)); baseURL != "" {
-		cfg.BaseURL = baseURL
-	}
-	if apiKey := strings.TrimSpace(os.Getenv(envTelegramAgentAPIKey)); apiKey != "" {
-		cfg.APIKey = apiKey
-	}
-	if modelName := strings.TrimSpace(os.Getenv(envTelegramAgentModel)); modelName != "" {
-		cfg.Model = modelName
-	}
-	if prompt := strings.TrimSpace(os.Getenv(envTelegramAgentSystemPrompt)); prompt != "" {
-		cfg.SystemPrompt = prompt
-	}
-	if enabledRaw := strings.TrimSpace(os.Getenv(envTelegramAgentEnabled)); enabledRaw != "" {
-		cfg.Enabled = boolPtr(parseBoolDefault(enabledRaw, true))
-	}
-	if maxHistory := parsePositiveEnvInt(envTelegramAgentMaxHistory); maxHistory > 0 {
-		cfg.MaxHistoryMessages = maxHistory
-	}
-	if maxTokens := parsePositiveEnvInt(envTelegramAgentMaxTokens); maxTokens > 0 {
-		cfg.MaxTokens = maxTokens
-	}
-	if editInterval := parsePositiveEnvInt(envTelegramAgentEditInterval); editInterval > 0 {
-		cfg.EditIntervalMs = editInterval
-	}
-	if skillsDir := strings.TrimSpace(os.Getenv(envTelegramAgentSkillsDir)); skillsDir != "" {
-		cfg.SkillsDir = skillsDir
-	}
-
 	if models.DB == nil {
 		return cfg, nil
 	}
 
 	var config models.Config
-	err := models.DB.WithContext(ctx).Where("key = ?", models.KeyTelegramAgent).First(&config).Error
+	err := models.DB.WithContext(ctx).Where(models.ColumnEquals("key"), models.KeyTelegramAgent).First(&config).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return cfg, nil
@@ -1637,29 +1597,6 @@ func compactStrings(values []string) []string {
 		}
 	}
 	return result
-}
-
-func parsePositiveEnvInt(name string) int {
-	raw := strings.TrimSpace(os.Getenv(name))
-	if raw == "" {
-		return 0
-	}
-	value, err := strconv.Atoi(raw)
-	if err != nil || value <= 0 {
-		return 0
-	}
-	return value
-}
-
-func parseBoolDefault(raw string, fallback bool) bool {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "1", "true", "on", "yes", "y":
-		return true
-	case "0", "false", "off", "no", "n":
-		return false
-	default:
-		return fallback
-	}
 }
 
 func boolPtr(value bool) *bool {

@@ -32,10 +32,12 @@ func TestDropEmptyChatLogMonthlyTablesExcept(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ensure current table: %v", err)
 	}
+	assertChatLogMonthlyIndexes(t, currentTable)
 	nextTable, err := EnsureChatLogMonthlyTable(now.AddDate(0, 1, 0))
 	if err != nil {
 		t.Fatalf("ensure next table: %v", err)
 	}
+	assertChatLogMonthlyIndexes(t, nextTable)
 	emptyOldTable, err := EnsureChatLogMonthlyTable(now.AddDate(0, -2, 0))
 	if err != nil {
 		t.Fatalf("ensure empty old table: %v", err)
@@ -69,6 +71,16 @@ func TestDropEmptyChatLogMonthlyTablesExcept(t *testing.T) {
 	}
 	if DB.Migrator().HasTable(emptyOldTable) {
 		t.Fatalf("empty old table should be dropped: %s", emptyOldTable)
+	}
+}
+
+func assertChatLogMonthlyIndexes(t *testing.T, tableName string) {
+	t.Helper()
+	for _, spec := range chatLogMonthlyIndexSpecs {
+		indexName := chatLogMonthlyIndexName(tableName, spec.Name)
+		if !DB.Migrator().HasIndex(tableName, indexName) {
+			t.Fatalf("missing chat log monthly index %s on %s", indexName, tableName)
+		}
 	}
 }
 

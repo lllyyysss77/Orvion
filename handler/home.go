@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"database/sql"
 	"sort"
 	"strconv"
 	"strings"
@@ -78,31 +77,14 @@ func Metrics(c *gin.Context) {
 	now := time.Now()
 	year, month, day := now.Date()
 	start := time.Date(year, month, day, 0, 0, 0, 0, now.Location()).AddDate(0, 0, -days)
-	union, err := models.BuildChatLogUnionQuery(models.ChatLogQueryScope{StartAt: &start}, "id, created_at, total_tokens")
+	agg, err := models.QueryChatLogMetricsAgg(c.Request.Context(), models.ChatLogQueryScope{StartAt: &start}, "created_at >= ?", start)
 	if err != nil {
-		common.InternalServerError(c, "Failed to build log query: "+err.Error())
-		return
-	}
-	if union.SQL == "" {
-		common.Success(c, MetricsRes{})
-		return
-	}
-
-	type metricsRow struct {
-		Reqs   int64         `gorm:"column:reqs"`
-		Tokens sql.NullInt64 `gorm:"column:tokens"`
-	}
-	var row metricsRow
-	if err := models.DB.WithContext(c.Request.Context()).Raw(
-		"SELECT COUNT(1) AS reqs, COALESCE(SUM(total_tokens),0) AS tokens FROM ("+union.SQL+") AS logs WHERE created_at >= ?",
-		start,
-	).Scan(&row).Error; err != nil {
 		common.InternalServerError(c, "Failed to count requests: "+err.Error())
 		return
 	}
 	common.Success(c, MetricsRes{
-		Reqs:   row.Reqs,
-		Tokens: row.Tokens.Int64,
+		Reqs:   agg.Reqs,
+		Tokens: agg.Tokens,
 	})
 }
 
@@ -113,38 +95,13 @@ func Metrics(c *gin.Context) {
 // 4) 今日请求数（从当天 00:00 开始）
 func MetricsSummary(c *gin.Context) {
 	ctx := c.Request.Context()
-	union, err := models.BuildChatLogUnionQuery(models.ChatLogQueryScope{}, "id, created_at, status, prompt_tokens, completion_tokens, total_tokens, total_cost")
+	agg, err := models.QueryChatLogMetricsAgg(ctx, models.ChatLogQueryScope{}, "")
 	if err != nil {
-		common.InternalServerError(c, "Failed to build log query: "+err.Error())
-		return
-	}
-	if union.SQL == "" {
-		common.Success(c, MetricsSummaryRes{})
-		return
-	}
-
-	type tokenAgg struct {
-		TotalReqs   int64         `gorm:"column:total_reqs"`
-		SuccessReqs int64         `gorm:"column:success_reqs"`
-		Prompt      sql.NullInt64 `gorm:"column:prompt"`
-		Completion  sql.NullInt64 `gorm:"column:completion"`
-		Total       sql.NullInt64 `gorm:"column:total"`
-	}
-	var agg tokenAgg
-	if err := models.DB.WithContext(ctx).Raw(
-		`SELECT COUNT(1) AS total_reqs,
-		        COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END),0) AS success_reqs,
-		        COALESCE(SUM(prompt_tokens),0) AS prompt,
-		        COALESCE(SUM(completion_tokens),0) AS completion,
-		        COALESCE(SUM(total_tokens),0) AS total
-		   FROM (` + union.SQL + `) AS logs
-		  `,
-	).Scan(&agg).Error; err != nil {
 		common.InternalServerError(c, "Failed to sum tokens: "+err.Error())
 		return
 	}
-	totalReqs := agg.TotalReqs
-	totalSuccess := agg.SuccessReqs
+	totalReqs := agg.Reqs
+	totalSuccess := agg.Success
 	totalFailure := totalReqs - totalSuccess
 
 	totalAmount, err := service.GetOrInitTotalConsumedAmount(ctx)
@@ -157,22 +114,8 @@ func MetricsSummary(c *gin.Context) {
 	year, month, day := now.Date()
 	startOfDay := time.Date(year, month, day, 0, 0, 0, 0, now.Location())
 
-	type todayAgg struct {
-		Reqs    int64           `gorm:"column:reqs"`
-		Success int64           `gorm:"column:success"`
-		Tokens  sql.NullInt64   `gorm:"column:tokens"`
-		Amount  sql.NullFloat64 `gorm:"column:amount"`
-	}
-	var today todayAgg
-	if err := models.DB.WithContext(ctx).Raw(
-		`SELECT COUNT(1) AS reqs,
-		        COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END),0) AS success,
-		        COALESCE(SUM(total_tokens),0) AS tokens,
-		        COALESCE(SUM(total_cost),0) AS amount
-		   FROM (`+union.SQL+`) AS logs
-		  WHERE created_at >= ?`,
-		startOfDay,
-	).Scan(&today).Error; err != nil {
+	today, err := models.QueryChatLogMetricsAgg(ctx, models.ChatLogQueryScope{StartAt: &startOfDay}, "created_at >= ?", startOfDay)
+	if err != nil {
 		common.InternalServerError(c, "Failed to sum today metrics: "+err.Error())
 		return
 	}
@@ -191,12 +134,12 @@ func MetricsSummary(c *gin.Context) {
 	common.Success(c, MetricsSummaryRes{
 		TotalReqs:        totalReqs,
 		SuccessRate:      successRate,
-		PromptTokens:     agg.Prompt.Int64,
-		CompletionTokens: agg.Completion.Int64,
-		TotalTokens:      agg.Total.Int64,
-		TodayTokens:      today.Tokens.Int64,
+		PromptTokens:     agg.Prompt,
+		CompletionTokens: agg.Output,
+		TotalTokens:      agg.Tokens,
+		TodayTokens:      today.Tokens,
 		TotalAmount:      totalAmount,
-		TodayAmount:      today.Amount.Float64,
+		TodayAmount:      today.Amount,
 		TodayReqs:        today.Reqs,
 		TodaySuccessRate: todaySuccessRate,
 		TodaySuccessReqs: today.Success,
@@ -213,41 +156,15 @@ func RequestAmountTrend(c *gin.Context) {
 	startOfDay := time.Date(year, month, day, 0, 0, 0, 0, now.Location())
 	endOfDay := startOfDay.Add(24 * time.Hour)
 	scope := models.ChatLogQueryScope{StartAt: &startOfDay, EndAt: &endOfDay}
-	union, err := models.BuildChatLogUnionQuery(scope, "id, created_at, total_cost")
+	rows, err := models.QueryChatLogHourAmount(c.Request.Context(), scope, startOfDay, endOfDay)
 	if err != nil {
-		common.InternalServerError(c, "Failed to build log query: "+err.Error())
-		return
-	}
-	if union.SQL == "" {
-		common.Success(c, RequestAmountRes{Range: "today", Points: make([]RequestAmountPoint, 0, 24)})
-		return
-	}
-
-	type hourRow struct {
-		HourBucket int     `gorm:"column:hour_bucket"`
-		Requests   int64   `gorm:"column:requests"`
-		Amount     float64 `gorm:"column:amount"`
-	}
-	rows := make([]hourRow, 0)
-	hourExpr := "CAST(strftime('%H', created_at, 'localtime') AS INTEGER)"
-	if err := models.DB.Raw(
-		`SELECT `+hourExpr+` AS hour_bucket,
-		        COUNT(*) AS requests,
-		        COALESCE(SUM(total_cost),0) AS amount
-		   FROM (`+union.SQL+`) AS logs
-		  WHERE created_at >= ? AND created_at < ?
-		  GROUP BY hour_bucket
-		  ORDER BY hour_bucket`,
-		startOfDay,
-		endOfDay,
-	).Scan(&rows).Error; err != nil {
 		common.InternalServerError(c, "Failed to query trend: "+err.Error())
 		return
 	}
 
 	totalRequests := int64(0)
 	totalAmount := 0.0
-	hourMap := make(map[int]hourRow, len(rows))
+	hourMap := make(map[int]models.ChatLogHourAmountRow, len(rows))
 	for _, row := range rows {
 		hourMap[row.HourBucket] = row
 		totalRequests += row.Requests
@@ -283,33 +200,8 @@ func RequestAmountTrend(c *gin.Context) {
 func ModelUsageSummary(c *gin.Context) {
 	ctx := c.Request.Context()
 
-	type modelUsageRow struct {
-		Model       string  `gorm:"column:model"`
-		TotalTokens int64   `gorm:"column:total_tokens"`
-		TotalCost   float64 `gorm:"column:total_cost"`
-	}
-
-	rows := make([]modelUsageRow, 0)
-	union, err := models.BuildChatLogUnionQuery(models.ChatLogQueryScope{}, "name, total_tokens, total_cost")
+	rows, err := models.QueryChatLogModelUsage(ctx)
 	if err != nil {
-		common.InternalServerError(c, "Failed to build log query: "+err.Error())
-		return
-	}
-	if union.SQL == "" {
-		common.Success(c, []ModelUsageItem{})
-		return
-	}
-	if err := models.DB.WithContext(ctx).Raw(
-		`SELECT COALESCE(NULLIF(TRIM(name), ''), 'unknown') AS model,
-		        COALESCE(SUM(total_tokens), 0) AS total_tokens,
-		        COALESCE(SUM(total_cost), 0) AS total_cost
-		   FROM (` + union.SQL + `) AS logs
-		  
-		  GROUP BY model
-		 HAVING COALESCE(SUM(total_tokens), 0) > 0
-		     OR COALESCE(SUM(total_cost), 0) > 0
-		  ORDER BY total_cost DESC, total_tokens DESC, model ASC`,
-	).Scan(&rows).Error; err != nil {
 		common.InternalServerError(c, "Failed to query model usage summary: "+err.Error())
 		return
 	}
@@ -345,35 +237,8 @@ func DailyModelCostTrend(c *gin.Context) {
 	endOfDay := time.Date(year, month, day, 0, 0, 0, 0, now.Location()).Add(24 * time.Hour)
 	start := endOfDay.AddDate(0, 0, -days)
 
-	dateExpr := "strftime('%Y-%m-%d', created_at, 'localtime')"
-
-	type modelDayRow struct {
-		DayBucket string  `gorm:"column:day_bucket"`
-		Model     string  `gorm:"column:model"`
-		Amount    float64 `gorm:"column:amount"`
-	}
-
-	rows := make([]modelDayRow, 0)
-	union, err := models.BuildChatLogUnionQuery(models.ChatLogQueryScope{StartAt: &start, EndAt: &endOfDay}, "created_at, name, total_cost")
+	rows, err := models.QueryChatLogDailyModelCost(ctx, start, endOfDay)
 	if err != nil {
-		common.InternalServerError(c, "Failed to build log query: "+err.Error())
-		return
-	}
-	if union.SQL == "" {
-		common.Success(c, DailyModelCostRes{Range: "recent", Dates: []string{}, Labels: []string{}, Totals: []float64{}, Series: []DailyModelCostSeries{}})
-		return
-	}
-	if err := models.DB.WithContext(ctx).Raw(
-		`SELECT `+dateExpr+` AS day_bucket,
-		        COALESCE(NULLIF(TRIM(name), ''), 'unknown') AS model,
-		        COALESCE(SUM(total_cost), 0) AS amount
-		   FROM (`+union.SQL+`) AS logs
-		  WHERE created_at >= ? AND created_at < ?
-		  GROUP BY day_bucket, model
-		  ORDER BY day_bucket ASC, model ASC`,
-		start,
-		endOfDay,
-	).Scan(&rows).Error; err != nil {
 		common.InternalServerError(c, "Failed to query daily model cost: "+err.Error())
 		return
 	}
@@ -520,26 +385,19 @@ type Count struct {
 }
 
 func Counts(c *gin.Context) {
-	results := make([]Count, 0)
-	union, err := models.BuildChatLogUnionQuery(models.ChatLogQueryScope{}, "name")
+	rows, err := models.QueryChatLogModelCounts(c.Request.Context(), models.ChatLogQueryScope{})
 	if err != nil {
 		common.InternalServerError(c, err.Error())
 		return
 	}
-	if union.SQL == "" {
-		common.Success(c, results)
-		return
+	results := make([]Count, 0, len(rows))
+	for _, row := range rows {
+		results = append(results, Count{
+			Model: row.Model,
+			Calls: row.Calls,
+		})
 	}
-	if err := models.DB.Raw(
-		`SELECT name AS model, COUNT(*) AS calls
-		   FROM (` + union.SQL + `) AS logs
-		  
-		  GROUP BY name
-		  ORDER BY calls DESC`,
-	).Scan(&results).Error; err != nil {
-		common.InternalServerError(c, err.Error())
-		return
-	}
+
 	const topN = 5
 	if len(results) > topN {
 		var othersCalls int64
@@ -562,28 +420,8 @@ type ProjectCount struct {
 }
 
 func ProjectCounts(c *gin.Context) {
-	type authKeyCount struct {
-		AuthKeyID uint  `gorm:"column:auth_key_id"`
-		Calls     int64 `gorm:"column:calls"`
-	}
-
-	rows := make([]authKeyCount, 0)
-	union, err := models.BuildChatLogUnionQuery(models.ChatLogQueryScope{}, "auth_key_id")
+	rows, err := models.QueryChatLogAuthKeyCounts(c.Request.Context(), models.ChatLogQueryScope{})
 	if err != nil {
-		common.InternalServerError(c, err.Error())
-		return
-	}
-	if union.SQL == "" {
-		common.Success(c, []ProjectCount{})
-		return
-	}
-	if err := models.DB.Raw(
-		`SELECT auth_key_id, COUNT(*) AS calls
-		   FROM (` + union.SQL + `) AS logs
-		  
-		  GROUP BY auth_key_id
-		  ORDER BY calls DESC`,
-	).Scan(&rows).Error; err != nil {
 		common.InternalServerError(c, err.Error())
 		return
 	}

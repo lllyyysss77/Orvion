@@ -152,7 +152,7 @@ func databaseTableKind(tableName string) string {
 
 func countDatabaseTableRows(ctx context.Context, tableName string) (int64, error) {
 	var total int64
-	sqlText := "SELECT COUNT(1) FROM " + quoteDatabaseTableName(tableName)
+	sqlText := "SELECT COUNT(1) FROM " + models.QuoteTableName(tableName)
 	if err := models.DB.WithContext(ctx).Raw(sqlText).Scan(&total).Error; err != nil {
 		return 0, err
 	}
@@ -161,7 +161,7 @@ func countDatabaseTableRows(ctx context.Context, tableName string) (int64, error
 
 func queryDatabaseTableRows(ctx context.Context, tableName string, params common.PaginationParams) ([]string, []map[string]any, error) {
 	offset := (params.Page - 1) * params.PageSize
-	sqlText := "SELECT * FROM " + quoteDatabaseTableName(tableName) + " LIMIT ? OFFSET ?"
+	sqlText := "SELECT * FROM " + models.QuoteTableName(tableName) + " LIMIT ? OFFSET ?"
 	sqlRows, err := models.DB.WithContext(ctx).Raw(sqlText, params.PageSize, offset).Rows()
 	if err != nil {
 		return nil, nil, err
@@ -217,14 +217,5 @@ func normalizeDatabaseCellValue(value any) any {
 		return typed.Format(time.RFC3339Nano)
 	default:
 		return typed
-	}
-}
-
-func quoteDatabaseTableName(tableName string) string {
-	switch models.DB.Dialector.Name() {
-	case "mysql":
-		return "`" + strings.ReplaceAll(tableName, "`", "``") + "`"
-	default:
-		return `"` + strings.ReplaceAll(tableName, `"`, `""`) + `"`
 	}
 }

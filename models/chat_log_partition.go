@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 const (
@@ -17,7 +19,15 @@ const (
 var (
 	chatLogMonthlyTableRegexp = regexp.MustCompile(`^chat_logs_(\d{6})$`)
 	chatLogMonthlyTableCache  sync.Map
-	chatLogColumnList         = []string{
+	chatLogMonthlyIndexSpecs  = []chatLogMonthlyIndexSpec{
+		{Name: "created_id", Columns: []string{"created_at", "id"}},
+		{Name: "status_created", Columns: []string{"status", "created_at"}},
+		{Name: "auth_created", Columns: []string{"auth_key_id", "created_at"}},
+		{Name: "model_created", Columns: []string{"name", "created_at"}},
+		{Name: "provider_created", Columns: []string{"provider_name", "created_at"}},
+		{Name: "mwp_status", Columns: []string{"model_with_provider_id", "status"}},
+	}
+	chatLogColumnList = []string{
 		"id",
 		"created_at",
 		"updated_at",
@@ -50,6 +60,11 @@ var (
 	}
 )
 
+type chatLogMonthlyIndexSpec struct {
+	Name    string
+	Columns []string
+}
+
 // ChatLogQueryScope 描述跨月表查询范围；为空时查询全部已存在月表。
 type ChatLogQueryScope struct {
 	StartAt *time.Time
@@ -60,6 +75,124 @@ type ChatLogQueryScope struct {
 type ChatLogUnionQuery struct {
 	SQL    string
 	Tables []string
+}
+
+type CountRow struct {
+	Total int64 `gorm:"column:total"`
+}
+
+type ChatLogMetricsAgg struct {
+	Reqs    int64   `gorm:"column:reqs"`
+	Success int64   `gorm:"column:success"`
+	Prompt  int64   `gorm:"column:prompt"`
+	Output  int64   `gorm:"column:completion"`
+	Tokens  int64   `gorm:"column:tokens"`
+	Amount  float64 `gorm:"column:amount"`
+	TimeMs  int64   `gorm:"column:time_ms"`
+}
+
+type ChatLogHourAmountRow struct {
+	HourBucket int     `gorm:"column:hour_bucket"`
+	Requests   int64   `gorm:"column:requests"`
+	Amount     float64 `gorm:"column:amount"`
+}
+
+type ChatLogModelUsageRow struct {
+	Model       string  `gorm:"column:model"`
+	TotalTokens int64   `gorm:"column:total_tokens"`
+	TotalCost   float64 `gorm:"column:total_cost"`
+}
+
+type ChatLogDailyModelCostRow struct {
+	DayBucket string  `gorm:"column:day_bucket"`
+	Model     string  `gorm:"column:model"`
+	Amount    float64 `gorm:"column:amount"`
+}
+
+type ChatLogModelCountRow struct {
+	Model string `gorm:"column:model"`
+	Calls int64  `gorm:"column:calls"`
+}
+
+type ChatLogAuthKeyCountRow struct {
+	AuthKeyID uint  `gorm:"column:auth_key_id"`
+	Calls     int64 `gorm:"column:calls"`
+}
+
+type ChatLogProviderUsageRow struct {
+	ProviderName string `gorm:"column:provider_name"`
+	UsageCount   int64  `gorm:"column:usage_count"`
+}
+
+type ChatLogAuthKeySummaryAgg struct {
+	TotalRequests   int64   `gorm:"column:total_requests"`
+	SuccessRequests int64   `gorm:"column:success_requests"`
+	Prompt          int64   `gorm:"column:prompt"`
+	Completion      int64   `gorm:"column:completion"`
+	Total           int64   `gorm:"column:total"`
+	TotalCost       float64 `gorm:"column:total_cost"`
+	TotalTime       int64   `gorm:"column:total_time"`
+}
+
+type ChatLogAuthKeyTokenAgg struct {
+	Model      string `gorm:"column:model"`
+	Completion int64  `gorm:"column:completion"`
+}
+
+type ChatLogDailyUsageSummary struct {
+	TotalRequests   int64
+	SuccessRequests int64
+	TotalCost       float64
+	TopModelName    string
+	TopModelReqs    int64
+	TopAuthKeyID    uint
+	TopAuthKeyReqs  int64
+	SlowestRequest  *ChatLogSlowRequestRow
+}
+
+type ChatLogSlowRequestRow struct {
+	ID        uint      `gorm:"column:id"`
+	Name      string    `gorm:"column:name"`
+	Provider  string    `gorm:"column:provider_name"`
+	Status    string    `gorm:"column:status"`
+	CreatedAt time.Time `gorm:"column:created_at"`
+	LatencyMs int       `gorm:"column:latency_ms"`
+}
+
+type ChatLogHealthRow struct {
+	Name          string    `gorm:"column:name"`
+	ProviderName  string    `gorm:"column:provider_name"`
+	ProviderModel string    `gorm:"column:provider_model"`
+	Status        string    `gorm:"column:status"`
+	Error         string    `gorm:"column:error"`
+	ProxyTimeMs   int       `gorm:"column:proxy_time_ms"`
+	CreatedAt     time.Time `gorm:"column:created_at"`
+}
+
+type ChatLogModelProviderSuccessStat struct {
+	ModelWithProviderID uint  `gorm:"column:model_with_provider_id"`
+	TotalCount          int64 `gorm:"column:total_count"`
+	SuccessCount        int64 `gorm:"column:success_count"`
+}
+
+type ChatLogOutputStatsBackfillRow struct {
+	ID                uint   `gorm:"column:id"`
+	UUID              string `gorm:"column:uuid"`
+	Name              string `gorm:"column:name"`
+	Style             string `gorm:"column:style"`
+	Input             string `gorm:"column:input"`
+	OutputString      string `gorm:"column:output_string"`
+	OutputStringArray string `gorm:"column:output_string_array"`
+	PromptTokens      int64  `gorm:"column:prompt_tokens"`
+	CompletionTokens  int64  `gorm:"column:completion_tokens"`
+	TotalTokens       int64  `gorm:"column:total_tokens"`
+}
+
+type ChatLogCleanupRefRow struct {
+	ID        uint      `gorm:"column:id"`
+	UUID      string    `gorm:"column:uuid"`
+	CreatedAt time.Time `gorm:"column:created_at"`
+	TableName string    `gorm:"column:table_name"`
 }
 
 // ChatLogRef 是月表日志的稳定引用。ID 仅在对应月表内唯一，UUID 跨月表唯一。
@@ -90,11 +223,83 @@ func EnsureChatLogMonthlyTable(t time.Time) (string, error) {
 	if _, ok := chatLogMonthlyTableCache.Load(tableName); ok {
 		return tableName, nil
 	}
-	if err := DB.Table(tableName).AutoMigrate(&ChatLog{}); err != nil {
+	if err := ensureChatLogMonthlyTableSchema(DB, tableName); err != nil {
 		return "", err
 	}
 	chatLogMonthlyTableCache.Store(tableName, struct{}{})
 	return tableName, nil
+}
+
+// EnsureAllChatLogMonthlyTableIndexes 为历史日志月表补齐索引。
+func EnsureAllChatLogMonthlyTableIndexes() error {
+	tables, err := ListChatLogMonthlyTables()
+	if err != nil {
+		return err
+	}
+	for _, tableName := range tables {
+		if err := ensureChatLogMonthlyTableSchema(DB, tableName); err != nil {
+			return err
+		}
+		chatLogMonthlyTableCache.Store(tableName, struct{}{})
+	}
+	return nil
+}
+
+// EnsureChatLogMonthlyTableSchemaForDB 为指定连接上的日志月表补齐表结构与索引。
+func EnsureChatLogMonthlyTableSchemaForDB(db *gorm.DB, tableName string) error {
+	return ensureChatLogMonthlyTableSchema(db, tableName)
+}
+
+func ensureChatLogMonthlyTableSchema(db *gorm.DB, tableName string) error {
+	if db == nil {
+		return fmt.Errorf("数据库未初始化")
+	}
+	if !IsChatLogMonthlyTableName(tableName) {
+		return fmt.Errorf("非法日志月表名: %s", tableName)
+	}
+	if err := db.Table(tableName).AutoMigrate(&ChatLog{}); err != nil {
+		return err
+	}
+	return ensureChatLogMonthlyTableIndexes(db, tableName)
+}
+
+func ensureChatLogMonthlyTableIndexes(db *gorm.DB, tableName string) error {
+	for _, spec := range chatLogMonthlyIndexSpecs {
+		indexName := chatLogMonthlyIndexName(tableName, spec.Name)
+		if db.Migrator().HasIndex(tableName, indexName) {
+			continue
+		}
+		columns := make([]string, 0, len(spec.Columns))
+		for _, column := range spec.Columns {
+			columns = append(columns, quoteIdentifierForDB(db, column))
+		}
+		sql := fmt.Sprintf(
+			"CREATE INDEX %s ON %s (%s)",
+			quoteIdentifierForDB(db, indexName),
+			quoteIdentifierForDB(db, tableName),
+			strings.Join(columns, ", "),
+		)
+		if err := db.Exec(sql).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func chatLogMonthlyIndexName(tableName string, suffix string) string {
+	name := "idx_" + strings.TrimSpace(tableName) + "_" + strings.TrimSpace(suffix)
+	name = strings.NewReplacer("`", "_", `"`, "_", ".", "_", "-", "_").Replace(name)
+	if len(name) > 63 {
+		return name[:63]
+	}
+	return name
+}
+
+func quoteIdentifierForDB(db *gorm.DB, name string) string {
+	if db != nil && db.Dialector != nil && strings.EqualFold(strings.TrimSpace(db.Dialector.Name()), string(DatabaseDriverMySQL)) {
+		return "`" + strings.ReplaceAll(name, "`", "``") + "`"
+	}
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
 // CreateMonthlyChatLog 在对应月表写入日志记录。
@@ -284,7 +489,7 @@ func BuildChatLogUnionQuery(scope ChatLogQueryScope, columns string) (ChatLogUni
 		if !IsChatLogMonthlyTableName(tableName) {
 			continue
 		}
-		selectSQL = append(selectSQL, fmt.Sprintf("SELECT %s FROM %s", columns, tableName))
+		selectSQL = append(selectSQL, fmt.Sprintf("SELECT %s FROM %s", columns, QuoteTableName(tableName)))
 	}
 	return ChatLogUnionQuery{
 		SQL:    strings.Join(selectSQL, " UNION ALL "),
@@ -297,10 +502,7 @@ func QueryChatLogCount(ctx context.Context, scope ChatLogQueryScope, whereSQL st
 	if err != nil || union.SQL == "" {
 		return 0, err
 	}
-	sql := "SELECT COUNT(1) AS total FROM (" + union.SQL + ") AS logs"
-	if strings.TrimSpace(whereSQL) != "" {
-		sql += " WHERE " + whereSQL
-	}
+	sql := "SELECT COUNT(1) AS total FROM (" + union.SQL + ") AS logs" + normalizeWhereSQL(whereSQL)
 	type row struct {
 		Total int64 `gorm:"column:total"`
 	}
@@ -311,15 +513,57 @@ func QueryChatLogCount(ctx context.Context, scope ChatLogQueryScope, whereSQL st
 	return total.Total, nil
 }
 
+func QueryChatLogExists(ctx context.Context, scope ChatLogQueryScope, columns string, whereSQL string, args ...any) (bool, error) {
+	total, err := QueryChatLogCountWithColumns(ctx, scope, columns, whereSQL, args...)
+	return total > 0, err
+}
+
+func QueryChatLogCountWithColumns(ctx context.Context, scope ChatLogQueryScope, columns string, whereSQL string, args ...any) (int64, error) {
+	union, err := BuildChatLogUnionQuery(scope, columns)
+	if err != nil || union.SQL == "" {
+		return 0, err
+	}
+	sql := "SELECT COUNT(1) AS total FROM (" + union.SQL + ") AS logs" + normalizeWhereSQL(whereSQL)
+	var total CountRow
+	if err := DB.WithContext(ctx).Raw(sql, args...).Scan(&total).Error; err != nil {
+		return 0, err
+	}
+	return total.Total, nil
+}
+
+func QueryChatLogsPage(ctx context.Context, scope ChatLogQueryScope, columns string, whereSQL string, orderSQL string, limit int, offset int, args ...any) ([]ChatLog, int64, error) {
+	union, err := BuildChatLogUnionQuery(scope, columns)
+	if err != nil || union.SQL == "" {
+		return []ChatLog{}, 0, err
+	}
+
+	sqlWhere := normalizeWhereSQL(whereSQL)
+
+	var total CountRow
+	countSQL := "SELECT COUNT(1) AS total FROM (" + union.SQL + ") AS logs" + sqlWhere
+	if err := DB.WithContext(ctx).Raw(countSQL, args...).Scan(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	if strings.TrimSpace(orderSQL) == "" {
+		orderSQL = "created_at DESC, id DESC"
+	}
+	pageArgs := append(append(make([]any, 0, len(args)+2), args...), limit, offset)
+	pageSQL := "SELECT " + columns + " FROM (" + union.SQL + ") AS logs" + sqlWhere + " ORDER BY " + orderSQL + " LIMIT ? OFFSET ?"
+	logs := make([]ChatLog, 0, limit)
+	if err := DB.WithContext(ctx).Raw(pageSQL, pageArgs...).Scan(&logs).Error; err != nil {
+		return nil, 0, err
+	}
+	return logs, total.Total, nil
+}
+
 func QueryChatLogFloatSum(ctx context.Context, scope ChatLogQueryScope, column string, whereSQL string, args ...any) (float64, error) {
 	union, err := BuildChatLogUnionQuery(scope, column+", created_at, status, auth_key_id, provider_name, name, style")
 	if err != nil || union.SQL == "" {
 		return 0, err
 	}
 	sql := fmt.Sprintf("SELECT COALESCE(SUM(%s),0) AS total FROM (%s) AS logs", column, union.SQL)
-	if strings.TrimSpace(whereSQL) != "" {
-		sql += " WHERE " + whereSQL
-	}
+	sql += normalizeWhereSQL(whereSQL)
 	type row struct {
 		Total float64 `gorm:"column:total"`
 	}
@@ -330,9 +574,443 @@ func QueryChatLogFloatSum(ctx context.Context, scope ChatLogQueryScope, column s
 	return total.Total, nil
 }
 
+func QueryChatLogMetricsAgg(ctx context.Context, scope ChatLogQueryScope, whereSQL string, args ...any) (ChatLogMetricsAgg, error) {
+	union, err := BuildChatLogUnionQuery(scope, "id, created_at, status, prompt_tokens, completion_tokens, total_tokens, total_cost, proxy_time_ms")
+	if err != nil || union.SQL == "" {
+		return ChatLogMetricsAgg{}, err
+	}
+
+	sql := `SELECT COUNT(1) AS reqs,
+	               COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END),0) AS success,
+	               COALESCE(SUM(prompt_tokens),0) AS prompt,
+	               COALESCE(SUM(completion_tokens),0) AS completion,
+	               COALESCE(SUM(total_tokens),0) AS tokens,
+		               COALESCE(SUM(total_cost),0) AS amount,
+		               COALESCE(SUM(proxy_time_ms),0) AS time_ms
+		          FROM (` + union.SQL + `) AS logs`
+	sql += normalizeWhereSQL(whereSQL)
+
+	var agg ChatLogMetricsAgg
+	if err := DB.WithContext(ctx).Raw(sql, args...).Scan(&agg).Error; err != nil {
+		return ChatLogMetricsAgg{}, err
+	}
+	return agg, nil
+}
+
+func QueryChatLogModelCounts(ctx context.Context, scope ChatLogQueryScope) ([]ChatLogModelCountRow, error) {
+	union, err := BuildChatLogUnionQuery(scope, "name")
+	if err != nil || union.SQL == "" {
+		return []ChatLogModelCountRow{}, err
+	}
+
+	rows := make([]ChatLogModelCountRow, 0)
+	if err := DB.WithContext(ctx).Raw(
+		`SELECT name AS model, COUNT(*) AS calls
+		   FROM (` + union.SQL + `) AS logs
+		  GROUP BY name
+		  ORDER BY calls DESC`,
+	).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func QueryChatLogAuthKeyCounts(ctx context.Context, scope ChatLogQueryScope) ([]ChatLogAuthKeyCountRow, error) {
+	union, err := BuildChatLogUnionQuery(scope, "auth_key_id")
+	if err != nil || union.SQL == "" {
+		return []ChatLogAuthKeyCountRow{}, err
+	}
+
+	rows := make([]ChatLogAuthKeyCountRow, 0)
+	if err := DB.WithContext(ctx).Raw(
+		`SELECT auth_key_id, COUNT(*) AS calls
+		   FROM (` + union.SQL + `) AS logs
+		  GROUP BY auth_key_id
+		  ORDER BY calls DESC`,
+	).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func QueryChatLogProviderUsage(ctx context.Context, scope ChatLogQueryScope, whereSQL string, args ...any) ([]ChatLogProviderUsageRow, error) {
+	union, err := BuildChatLogUnionQuery(scope, "created_at, provider_name")
+	if err != nil || union.SQL == "" {
+		return []ChatLogProviderUsageRow{}, err
+	}
+
+	rows := make([]ChatLogProviderUsageRow, 0)
+	if err := DB.WithContext(ctx).Raw(
+		`SELECT provider_name, COUNT(*) AS usage_count
+		   FROM (`+union.SQL+`) AS logs`+normalizeWhereSQL(whereSQL)+`
+		  GROUP BY provider_name`,
+		args...,
+	).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func QueryChatLogAuthKeySummary(ctx context.Context, authKeyID uint) (ChatLogAuthKeySummaryAgg, error) {
+	union, err := BuildChatLogUnionQuery(ChatLogQueryScope{}, "auth_key_id, status, prompt_tokens, completion_tokens, total_tokens, total_cost, proxy_time_ms")
+	if err != nil || union.SQL == "" {
+		return ChatLogAuthKeySummaryAgg{}, err
+	}
+
+	var agg ChatLogAuthKeySummaryAgg
+	if err := DB.WithContext(ctx).Raw(
+		`SELECT COUNT(1) AS total_requests,
+		        COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END),0) AS success_requests,
+		        COALESCE(SUM(prompt_tokens),0) AS prompt,
+		        COALESCE(SUM(completion_tokens),0) AS completion,
+		        COALESCE(SUM(total_tokens),0) AS total,
+		        COALESCE(SUM(total_cost),0) AS total_cost,
+		        COALESCE(SUM(proxy_time_ms),0) AS total_time
+		   FROM (`+union.SQL+`) AS logs
+		  WHERE auth_key_id = ?`,
+		authKeyID,
+	).Scan(&agg).Error; err != nil {
+		return ChatLogAuthKeySummaryAgg{}, err
+	}
+	return agg, nil
+}
+
+func QueryChatLogAuthKeyCompletionByModel(ctx context.Context, authKeyID uint) ([]ChatLogAuthKeyTokenAgg, error) {
+	union, err := BuildChatLogUnionQuery(ChatLogQueryScope{}, "auth_key_id, name, completion_tokens")
+	if err != nil || union.SQL == "" {
+		return []ChatLogAuthKeyTokenAgg{}, err
+	}
+
+	rows := make([]ChatLogAuthKeyTokenAgg, 0)
+	if err := DB.WithContext(ctx).Raw(
+		`SELECT LOWER(name) AS model, COALESCE(SUM(completion_tokens),0) AS completion
+		   FROM (`+union.SQL+`) AS logs
+		  WHERE auth_key_id = ?
+		  GROUP BY LOWER(name)`,
+		authKeyID,
+	).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func QueryChatLogDailyUsageSummary(ctx context.Context, startAt time.Time, endAt time.Time) (ChatLogDailyUsageSummary, error) {
+	union, err := BuildChatLogUnionQuery(
+		ChatLogQueryScope{StartAt: &startAt, EndAt: &endAt},
+		"id, created_at, status, total_cost, name, auth_key_id, provider_name, proxy_time_ms, first_chunk_time_ms, chunk_time_ms",
+	)
+	if err != nil || union.SQL == "" {
+		return ChatLogDailyUsageSummary{}, err
+	}
+
+	baseSQL := "FROM (" + union.SQL + ") AS logs WHERE created_at >= ? AND created_at < ?"
+	var summary ChatLogDailyUsageSummary
+	if err := DB.WithContext(ctx).Raw(
+		`SELECT COUNT(1) AS total_requests,
+		        COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END),0) AS success_requests,
+		        COALESCE(SUM(total_cost),0) AS total_cost `+baseSQL,
+		startAt,
+		endAt,
+	).Scan(&summary).Error; err != nil {
+		return ChatLogDailyUsageSummary{}, err
+	}
+
+	type topModelRow struct {
+		Name     string `gorm:"column:name"`
+		ReqCount int64  `gorm:"column:req_count"`
+	}
+	var topModel topModelRow
+	if err := DB.WithContext(ctx).Raw(
+		`SELECT name, COUNT(1) AS req_count `+baseSQL+`
+		  AND name <> ?
+		  GROUP BY name
+		  ORDER BY req_count DESC, name ASC
+		  LIMIT 1`,
+		startAt,
+		endAt,
+		"",
+	).Scan(&topModel).Error; err != nil {
+		return ChatLogDailyUsageSummary{}, err
+	}
+	summary.TopModelName = strings.TrimSpace(topModel.Name)
+	summary.TopModelReqs = topModel.ReqCount
+
+	type topAuthKeyRow struct {
+		AuthKeyID uint  `gorm:"column:auth_key_id"`
+		ReqCount  int64 `gorm:"column:req_count"`
+	}
+	var topAuthKey topAuthKeyRow
+	if err := DB.WithContext(ctx).Raw(
+		`SELECT auth_key_id, COUNT(1) AS req_count `+baseSQL+`
+		  AND auth_key_id > ?
+		  GROUP BY auth_key_id
+		  ORDER BY req_count DESC, auth_key_id ASC
+		  LIMIT 1`,
+		startAt,
+		endAt,
+		0,
+	).Scan(&topAuthKey).Error; err != nil {
+		return ChatLogDailyUsageSummary{}, err
+	}
+	summary.TopAuthKeyID = topAuthKey.AuthKeyID
+	summary.TopAuthKeyReqs = topAuthKey.ReqCount
+
+	var slowest ChatLogSlowRequestRow
+	if err := DB.WithContext(ctx).Raw(
+		`SELECT id, name, provider_name, status, created_at,
+		        (COALESCE(proxy_time_ms,0) + COALESCE(first_chunk_time_ms,0) + COALESCE(chunk_time_ms,0)) AS latency_ms `+baseSQL+`
+		  ORDER BY latency_ms DESC, id DESC
+		  LIMIT 1`,
+		startAt,
+		endAt,
+	).Scan(&slowest).Error; err != nil {
+		return ChatLogDailyUsageSummary{}, err
+	}
+	if slowest.ID > 0 {
+		summary.SlowestRequest = &slowest
+	}
+	return summary, nil
+}
+
+func QueryChatLogHealthRows(ctx context.Context, startAt time.Time, endAt time.Time, providerNames []string, modelNames []string, providerModels []string) ([]ChatLogHealthRow, error) {
+	if len(providerNames) == 0 || len(modelNames) == 0 || len(providerModels) == 0 {
+		return []ChatLogHealthRow{}, nil
+	}
+	union, err := BuildChatLogUnionQuery(ChatLogQueryScope{StartAt: &startAt, EndAt: &endAt}, "name, provider_name, provider_model, status, error, proxy_time_ms, created_at")
+	if err != nil || union.SQL == "" {
+		return []ChatLogHealthRow{}, err
+	}
+
+	rows := make([]ChatLogHealthRow, 0)
+	if err := DB.WithContext(ctx).Raw(
+		`SELECT name, provider_name, provider_model, status, error, proxy_time_ms, created_at
+		   FROM (`+union.SQL+`) AS logs
+		  WHERE created_at >= ?
+		    AND created_at < ?
+		    AND provider_name IN ?
+		    AND name IN ?
+		    AND provider_model IN ?`,
+		startAt,
+		endAt,
+		providerNames,
+		modelNames,
+		providerModels,
+	).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func QueryChatLogModelProviderSuccessStats(ctx context.Context, ids []uint) ([]ChatLogModelProviderSuccessStat, error) {
+	if len(ids) == 0 {
+		return []ChatLogModelProviderSuccessStat{}, nil
+	}
+	union, err := BuildChatLogUnionQuery(ChatLogQueryScope{}, "model_with_provider_id, status")
+	if err != nil || union.SQL == "" {
+		return []ChatLogModelProviderSuccessStat{}, err
+	}
+
+	stats := make([]ChatLogModelProviderSuccessStat, 0, len(ids))
+	if err := DB.WithContext(ctx).Raw(
+		`SELECT model_with_provider_id AS model_with_provider_id,
+		        COUNT(1) AS total_count,
+		        COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END),0) AS success_count
+		   FROM (`+union.SQL+`) AS logs
+		  WHERE model_with_provider_id IN ?
+		  GROUP BY model_with_provider_id`,
+		ids,
+	).Scan(&stats).Error; err != nil {
+		return nil, err
+	}
+	return stats, nil
+}
+
+func QueryChatLogDistinctUserAgents(ctx context.Context) ([]string, error) {
+	union, err := BuildChatLogUnionQuery(ChatLogQueryScope{}, "user_agent")
+	if err != nil || union.SQL == "" {
+		return []string{}, err
+	}
+
+	userAgents := make([]string, 0)
+	if err := DB.WithContext(ctx).Raw(
+		`SELECT DISTINCT user_agent
+		   FROM (` + union.SQL + `) AS logs
+		  WHERE user_agent IS NOT NULL AND user_agent != ''
+		  ORDER BY user_agent ASC`,
+	).Scan(&userAgents).Error; err != nil {
+		return nil, err
+	}
+	return userAgents, nil
+}
+
+func QueryChatLogOutputStatsBackfillRows(ctx context.Context, tableName string, limit int) ([]ChatLogOutputStatsBackfillRow, error) {
+	if limit <= 0 || !IsChatLogMonthlyTableName(tableName) {
+		return []ChatLogOutputStatsBackfillRow{}, nil
+	}
+
+	rows := make([]ChatLogOutputStatsBackfillRow, 0, limit)
+	if err := DB.WithContext(ctx).Raw(
+		`SELECT logs.id, logs.uuid, logs.name, logs.style, logs.prompt_tokens, logs.completion_tokens, logs.total_tokens,
+		        io.input, io.output_string, io.output_string_array
+		   FROM `+QuoteTableName(tableName)+` AS logs
+		   JOIN chat_io AS io
+		     ON (
+		       (COALESCE(logs.uuid, '') <> '' AND io.log_uuid = logs.uuid)
+		       OR (COALESCE(logs.uuid, '') = '' AND COALESCE(io.log_uuid, '') = '' AND io.log_id = logs.id)
+		     )
+		  WHERE logs.status = ?
+		    AND (COALESCE(logs.size, 0) = 0 OR COALESCE(logs.completion_tokens, 0) = 0)
+		    AND TRIM(COALESCE(io.input, '')) <> ''
+		    AND (
+		      LENGTH(COALESCE(io.output_string, '')) > 0
+		      OR LENGTH(COALESCE(io.output_string_array, '')) > 0
+		    )
+		    AND io.id = (
+		      SELECT MAX(io2.id)
+		        FROM chat_io AS io2
+		       WHERE (
+		         (COALESCE(logs.uuid, '') <> '' AND io2.log_uuid = logs.uuid)
+		         OR (COALESCE(logs.uuid, '') = '' AND COALESCE(io2.log_uuid, '') = '' AND io2.log_id = logs.id)
+		       )
+		         AND TRIM(COALESCE(io2.input, '')) <> ''
+		         AND (
+		           LENGTH(COALESCE(io2.output_string, '')) > 0
+		           OR LENGTH(COALESCE(io2.output_string_array, '')) > 0
+		         )
+		    )
+		  ORDER BY logs.created_at ASC, logs.id ASC
+		  LIMIT ?`,
+		"success",
+		limit,
+	).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func QueryChatLogCleanupRefsByCount(ctx context.Context, keepLatest int) ([]ChatLogCleanupRefRow, error) {
+	union, err := BuildChatLogUnionQuery(ChatLogQueryScope{}, "id, uuid, created_at")
+	if err != nil || union.SQL == "" {
+		return []ChatLogCleanupRefRow{}, err
+	}
+
+	limitOffsetSQL, limitOffsetArgs := CountOffsetSQL(keepLatest)
+	rows := make([]ChatLogCleanupRefRow, 0)
+	if err := DB.WithContext(ctx).Raw(
+		`SELECT id, uuid, created_at, '' AS table_name
+		   FROM (`+union.SQL+`) AS logs
+		  ORDER BY created_at DESC, id DESC
+		  `+limitOffsetSQL,
+		limitOffsetArgs...,
+	).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func QueryChatLogCleanupRefsBefore(ctx context.Context, cutoff time.Time) ([]ChatLogCleanupRefRow, error) {
+	union, err := BuildChatLogUnionQuery(ChatLogQueryScope{EndAt: &cutoff}, "id, uuid, created_at")
+	if err != nil || union.SQL == "" {
+		return []ChatLogCleanupRefRow{}, err
+	}
+
+	rows := make([]ChatLogCleanupRefRow, 0)
+	if err := DB.WithContext(ctx).Raw(
+		`SELECT id, uuid, created_at, '' AS table_name
+		   FROM (`+union.SQL+`) AS logs
+		  WHERE created_at < ?
+		  ORDER BY created_at DESC, id DESC`,
+		cutoff,
+	).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func QueryChatLogHourAmount(ctx context.Context, scope ChatLogQueryScope, startAt time.Time, endAt time.Time) ([]ChatLogHourAmountRow, error) {
+	union, err := BuildChatLogUnionQuery(scope, "id, created_at, total_cost")
+	if err != nil || union.SQL == "" {
+		return []ChatLogHourAmountRow{}, err
+	}
+
+	hourExpr := HourBucketExpr("created_at")
+	rows := make([]ChatLogHourAmountRow, 0)
+	if err := DB.WithContext(ctx).Raw(
+		`SELECT `+hourExpr+` AS hour_bucket,
+		        COUNT(*) AS requests,
+		        COALESCE(SUM(total_cost),0) AS amount
+		   FROM (`+union.SQL+`) AS logs
+		  WHERE created_at >= ? AND created_at < ?
+		  GROUP BY hour_bucket
+		  ORDER BY hour_bucket`,
+		startAt,
+		endAt,
+	).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func QueryChatLogModelUsage(ctx context.Context) ([]ChatLogModelUsageRow, error) {
+	union, err := BuildChatLogUnionQuery(ChatLogQueryScope{}, "name, total_tokens, total_cost")
+	if err != nil || union.SQL == "" {
+		return []ChatLogModelUsageRow{}, err
+	}
+
+	rows := make([]ChatLogModelUsageRow, 0)
+	if err := DB.WithContext(ctx).Raw(
+		`SELECT COALESCE(NULLIF(TRIM(name), ''), 'unknown') AS model,
+		        COALESCE(SUM(total_tokens), 0) AS total_tokens,
+		        COALESCE(SUM(total_cost), 0) AS total_cost
+		   FROM (` + union.SQL + `) AS logs
+		  GROUP BY model
+		 HAVING COALESCE(SUM(total_tokens), 0) > 0
+		     OR COALESCE(SUM(total_cost), 0) > 0
+		  ORDER BY total_cost DESC, total_tokens DESC, model ASC`,
+	).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func QueryChatLogDailyModelCost(ctx context.Context, startAt time.Time, endAt time.Time) ([]ChatLogDailyModelCostRow, error) {
+	union, err := BuildChatLogUnionQuery(ChatLogQueryScope{StartAt: &startAt, EndAt: &endAt}, "created_at, name, total_cost")
+	if err != nil || union.SQL == "" {
+		return []ChatLogDailyModelCostRow{}, err
+	}
+
+	dateExpr := DateBucketExpr("created_at")
+	rows := make([]ChatLogDailyModelCostRow, 0)
+	if err := DB.WithContext(ctx).Raw(
+		`SELECT `+dateExpr+` AS day_bucket,
+		        COALESCE(NULLIF(TRIM(name), ''), 'unknown') AS model,
+		        COALESCE(SUM(total_cost), 0) AS amount
+		   FROM (`+union.SQL+`) AS logs
+		  WHERE created_at >= ? AND created_at < ?
+		  GROUP BY day_bucket, model
+		  ORDER BY day_bucket ASC, model ASC`,
+		startAt,
+		endAt,
+	).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
 // ChatLogColumnsSQL 返回 chat_logs 列清单 SQL 片段。
 func ChatLogColumnsSQL() string {
 	return strings.Join(chatLogColumnList, ", ")
+}
+
+func normalizeWhereSQL(whereSQL string) string {
+	trimmed := strings.TrimSpace(whereSQL)
+	if trimmed == "" {
+		return ""
+	}
+	if strings.HasPrefix(strings.ToUpper(trimmed), "WHERE ") {
+		return " " + trimmed
+	}
+	return " WHERE " + trimmed
 }
 
 func chatLogMonthSet(scope ChatLogQueryScope) map[string]struct{} {
