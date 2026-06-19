@@ -42,8 +42,9 @@ import {
   updateModel,
   updateModelStatus,
   deleteModel,
+  testModelConnectivity,
 } from "@/lib/api";
-import type { Model } from "@/lib/api";
+import type { Model, ModelConnectivityTestResult } from "@/lib/api";
 import { Switch } from "@/components/ui/switch";
 import { ModelProvidersPanel } from "@/routes/model-providers";
 import {
@@ -71,13 +72,29 @@ import {
   ArrowUpDown,
   MessageSquare,
   SlidersHorizontal,
+  PlugZap,
+  Zap,
+  Loader2,
+  CircleCheck,
+  CircleAlert,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { resolveModelIcon } from "@/lib/model-icon";
 
 const capabilityValues = ["chat", "vision", "video", "embedding", "rerank"] as const;
 type ModelCapability = (typeof capabilityValues)[number];
-type ModelColumnKey = "model" | "input" | "output" | "capabilities" | "status" | "actions";
+type ModelColumnKey = "model" | "input" | "output" | "capabilities" | "connectivity" | "status" | "actions";
+type ConnectivityState = {
+  status: "idle" | "testing" | "success" | "partial" | "error";
+  result?: ModelConnectivityTestResult;
+  error?: string;
+};
+
+const resolveConnectivityStatus = (result: ModelConnectivityTestResult): ConnectivityState["status"] => {
+  if (result.ok) return "success";
+  if (result.available > 0) return "partial";
+  return "error";
+};
 
 const MODEL_FILTER_STORAGE_KEY = "orvion_models_filters_v1";
 const MODEL_COLUMNS_STORAGE_KEY = "orvion_models_columns_v1";
@@ -107,8 +124,11 @@ const defaultModelColumns: ModelColumnVisibility = {
   output: true,
   capabilities: true,
   status: true,
+  connectivity: true,
   actions: true,
 };
+
+const modelColumnOrder: ModelColumnKey[] = ["model", "input", "output", "capabilities", "status", "connectivity", "actions"];
 
 const defaultModelWidths: ModelWidthState = {
   model: "default",
@@ -329,6 +349,7 @@ export default function ModelsPage() {
   const [providerPanelOpen, setProviderPanelOpen] = useState(false);
   const [providerPanelModel, setProviderPanelModel] = useState<Model | null>(null);
   const [statusUpdatingIds, setStatusUpdatingIds] = useState<number[]>([]);
+  const [connectivityStates, setConnectivityStates] = useState<Record<number, ConnectivityState>>({});
   const listRef = useRef<HTMLDivElement | null>(null);
   const fallbackModelSearchInputRef = useRef<HTMLInputElement | null>(null);
   const familyTabsRef = useRef<HTMLDivElement | null>(null);
@@ -559,6 +580,7 @@ export default function ModelsPage() {
     estimateSize: () => 84,
     overscan: 8,
   });
+  const currentPageConnectivityTesting = visibleModels.some((model) => connectivityStates[model.ID]?.status === "testing");
 
   const desktopGridTemplate = useMemo(() => {
     const modelWidth = widthSettings.model === "compact"
@@ -573,9 +595,10 @@ export default function ModelsPage() {
       output: priceWidth,
       capabilities: "minmax(11rem,1fr)",
       status: "9rem",
-      actions: "19rem",
+      connectivity: "4.75rem",
+      actions: "16rem",
     };
-    const enabledColumns = (Object.keys(columnVisibility) as ModelColumnKey[]).filter((key) => columnVisibility[key]);
+    const enabledColumns = modelColumnOrder.filter((key) => columnVisibility[key]);
     return enabledColumns.map((key) => map[key]).join(" ");
   }, [columnVisibility, widthSettings]);
 
@@ -768,6 +791,82 @@ export default function ModelsPage() {
     }
   };
 
+  const handleTestConnectivity = async (model: Model) => {
+    if (connectivityStates[model.ID]?.status === "testing") return;
+
+    setConnectivityStates((prev) => ({
+      ...prev,
+      [model.ID]: { status: "testing" },
+    }));
+    try {
+      const result = await testModelConnectivity(model.ID);
+      const nextStatus = resolveConnectivityStatus(result);
+      setConnectivityStates((prev) => ({
+        ...prev,
+        [model.ID]: { status: nextStatus, result, error: result.error },
+      }));
+      if (result.ok) {
+        toast.success(`${model.Name} 连通测试完成：${result.available}/${result.total} 可用`);
+      } else if (result.total > 0) {
+        toast.error(`${model.Name} 连通测试完成：${result.available}/${result.total} 可用`);
+      } else {
+        toast.error(`${model.Name} 连通失败：${result.error || "未知错误"}`);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setConnectivityStates((prev) => ({
+        ...prev,
+        [model.ID]: { status: "error", error: message },
+      }));
+      toast.error(`${model.Name} 连通失败：${message}`);
+    }
+  };
+
+  const handleTestCurrentPageConnectivity = async () => {
+    const targets = visibleModels.filter((model) => connectivityStates[model.ID]?.status !== "testing");
+    if (targets.length === 0) {
+      toast.info("当前页模型正在测试中");
+      return;
+    }
+
+    setConnectivityStates((prev) => {
+      const next = { ...prev };
+      targets.forEach((model) => {
+        next[model.ID] = { status: "testing" };
+      });
+      return next;
+    });
+
+    const settled = await Promise.all(targets.map(async (model) => {
+      try {
+        const result = await testModelConnectivity(model.ID);
+        const nextStatus = resolveConnectivityStatus(result);
+        setConnectivityStates((prev) => ({
+          ...prev,
+          [model.ID]: { status: nextStatus, result, error: result.error },
+        }));
+        return nextStatus;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setConnectivityStates((prev) => ({
+          ...prev,
+          [model.ID]: { status: "error", error: message },
+        }));
+        return "error" as const;
+      }
+    }));
+
+    const successCount = settled.filter((status) => status === "success").length;
+    const partialCount = settled.filter((status) => status === "partial").length;
+    const errorCount = settled.filter((status) => status === "error").length;
+    const summary = `当前页连通性完成：全部可用 ${successCount}，部分可用 ${partialCount}，失败 ${errorCount}`;
+    if (errorCount === 0 && partialCount === 0) {
+      toast.success(summary);
+    } else {
+      toast.error(summary);
+    }
+  };
+
   const handleToggleColumn = (column: ModelColumnKey, checked: boolean) => {
     setColumnVisibility((prev) => {
       const next = { ...prev, [column]: checked };
@@ -849,20 +948,23 @@ export default function ModelsPage() {
               <PopoverContent align="end" className="w-72 p-3 space-y-3">
                 <div className="text-xs font-semibold text-foreground">列显示</div>
                 <div className="grid grid-cols-2 gap-2">
-                  {([
-                    ["model", "模型"],
-                    ["input", "输入价格"],
-                    ["output", "输出价格"],
-                    ["capabilities", "能力"],
-                    ["status", "状态"],
-                    ["actions", "操作"],
-                  ] as [ModelColumnKey, string][]).map(([key, label]) => (
+                  {modelColumnOrder.map((key) => (
                     <label key={key} className="inline-flex items-center gap-2 text-xs text-foreground">
                       <Checkbox
                         checked={columnVisibility[key]}
                         onCheckedChange={(checked) => handleToggleColumn(key, checked === true)}
                       />
-                      <span>{label}</span>
+                      <span>
+                        {{
+                          model: "模型",
+                          input: "输入价格",
+                          output: "输出价格",
+                          capabilities: "能力",
+                          status: "状态",
+                          connectivity: "连通",
+                          actions: "操作",
+                        }[key]}
+                      </span>
                     </label>
                   ))}
                 </div>
@@ -1011,6 +1113,28 @@ export default function ModelsPage() {
                 {columnVisibility.output ? <div className="text-center">输出</div> : null}
                 {columnVisibility.capabilities ? <div className="text-center">能力</div> : null}
                 {columnVisibility.status ? <div className="text-center">状态</div> : null}
+                {columnVisibility.connectivity ? (
+                  <div className="flex items-center justify-center gap-1.5">
+                    <span>连通</span>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          disabled={currentPageConnectivityTesting || visibleModels.length === 0}
+                          className="h-5 rounded-full border-amber-200 bg-amber-50 px-1.5 text-amber-700 shadow-none hover:bg-amber-100 disabled:opacity-50"
+                          aria-label="并发测试当前页模型连通性"
+                          onClick={() => void handleTestCurrentPageConnectivity()}
+                        >
+                          <Zap className={cn("size-3", currentPageConnectivityTesting && "animate-pulse")} />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent side="top">
+                        {currentPageConnectivityTesting ? "当前页模型连通性测试中" : "并发测试当前页所有模型"}
+                      </TooltipContent>
+                    </Tooltip>
+                  </div>
+                ) : null}
                 {columnVisibility.actions ? <div className="text-right">操作</div> : null}
               </div>
               <div ref={listRef} className="flex-1 min-h-0 overflow-y-auto">
@@ -1136,6 +1260,81 @@ export default function ModelsPage() {
                             aria-label={`${model.Name} 状态切换`}
                           />
                         </div>
+                      </div>
+                      ) : null}
+
+                      {columnVisibility.connectivity ? (
+                      <div className="min-w-0 xl:flex xl:w-full xl:items-center xl:justify-center">
+                        <div className="mb-1 text-[11px] font-medium text-muted-foreground xl:hidden">连通性</div>
+                        {(() => {
+                          const state = connectivityStates[model.ID] ?? { status: "idle" as const };
+                          const testing = state.status === "testing";
+                          const success = state.status === "success";
+                          const partial = state.status === "partial";
+                          const error = state.status === "error";
+                          const providerResults = state.result?.results ?? [];
+                          const tooltipLines = [
+                            state.result?.prompt ? `提示词：${state.result.prompt}` : "",
+                            state.result?.total ? `结果：可用 ${state.result.available} / 不可用 ${state.result.unavailable} / 总计 ${state.result.total}` : "",
+                            state.result?.latency_ms ? `总耗时：${state.result.latency_ms}ms` : "",
+                            state.error ? `错误：${state.error}` : "",
+                          ].filter(Boolean);
+                          const Icon = testing ? Loader2 : success ? CircleCheck : partial || error ? CircleAlert : PlugZap;
+                          const label = testing
+                            ? "测试中"
+                            : state.result?.total
+                            ? `${state.result.available}/${state.result.total}`
+                            : error
+                            ? "失败"
+                            : "";
+                          return (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  disabled={testing}
+                                  aria-label={`${model.Name} 连通性测试`}
+                                  className={cn(
+                                    "h-8 rounded-full text-xs leading-none",
+                                    label ? "min-w-[3.75rem] gap-1.5 px-2.5" : "w-8 min-w-8 justify-center px-0",
+                                    success && "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-50",
+                                    partial && "border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-50",
+                                    error && "border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-50"
+                                  )}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    void handleTestConnectivity(model);
+                                  }}
+                                >
+                                  <Icon className={cn("size-3.5", testing && "animate-spin")} />
+                                  {label ? <span>{label}</span> : null}
+                                </Button>
+                              </TooltipTrigger>
+                              <TooltipContent side="top" className="max-w-80">
+                                {tooltipLines.length > 0 || providerResults.length > 0 ? (
+                                  <div className="space-y-1 text-xs">
+                                    {tooltipLines.map((line) => (
+                                      <div key={line}>{line}</div>
+                                    ))}
+                                    {providerResults.map((item, index) => (
+                                      <div
+                                        key={`${item.provider}-${item.provider_model}-${index}`}
+                                        className={cn(item.ok ? "text-white" : "text-rose-600 dark:text-rose-300")}
+                                      >
+                                        {item.ok ? "可用" : "不可用"}：{item.provider} / {item.provider_model}
+                                        {item.latency_ms ? `，${item.latency_ms}ms` : ""}
+                                        {item.error ? `，${item.error}` : ""}
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <span>点击测试模型连通性</span>
+                                )}
+                              </TooltipContent>
+                            </Tooltip>
+                          );
+                        })()}
                       </div>
                       ) : null}
 

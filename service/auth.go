@@ -266,7 +266,7 @@ func flushPendingKeyUpdates(ctx context.Context) {
 			updates["total_cost"] = gorm.Expr("COALESCE(total_cost, 0) + ?", item.Cost)
 		}
 		if err := models.DB.Model(&models.AuthKey{}).WithContext(ctx).Where("id = ?", keyID).Updates(updates).Error; err != nil {
-			slog.Error("Failed to update auth key usage count", "error", err, "auth_key_id", keyID)
+			slog.Error("Failed to update auth key usage count", "error", err)
 		}
 	}
 }

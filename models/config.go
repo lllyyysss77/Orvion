@@ -32,6 +32,8 @@ const (
 	KeyTelegramDailyUsageReportLastSentDate = "tg_daily_usage_report_last_sent_date"
 	// KeyTelegramAgent TG 流式对话 Agent 配置。
 	KeyTelegramAgent = "telegram_agent"
+	// KeyCodexFingerprint Codex 客户端特征模拟配置。
+	KeyCodexFingerprint = "codex_fingerprint"
 )
 
 type AnthropicCountTokens struct {
@@ -43,6 +45,11 @@ type AnthropicCountTokens struct {
 type AnthropicProxyIPConfig struct {
 	Enabled bool   `json:"enabled"`
 	ProxyIP string `json:"proxy_ip"`
+}
+
+type CodexFingerprintConfig struct {
+	Enabled bool              `json:"enabled"`
+	Headers map[string]string `json:"headers"`
 }
 
 type TelegramBreakerAlertConfig struct {

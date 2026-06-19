@@ -195,7 +195,6 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 						"error", pollErr,
 						"model", log.Name,
 						"provider", log.ProviderName,
-						"model_with_provider_id", log.ModelWithProviderID,
 					)
 				}
 				body = polledBody

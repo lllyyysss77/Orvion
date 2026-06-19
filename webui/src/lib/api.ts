@@ -40,6 +40,26 @@ export interface Model {
   CacheWritePrice?: number | null;
 }
 
+export interface ModelConnectivityTestResult {
+  ok: boolean;
+  model: string;
+  prompt: string;
+  latency_ms: number;
+  total: number;
+  available: number;
+  unavailable: number;
+  results: ModelConnectivityProviderTestResult[];
+  error?: string;
+}
+
+export interface ModelConnectivityProviderTestResult {
+  ok: boolean;
+  provider: string;
+  provider_model: string;
+  latency_ms: number;
+  error?: string;
+}
+
 export interface AuthKeySummary {
   name: string;
   keyMasked: string;
@@ -537,6 +557,12 @@ export async function deleteModel(id: number): Promise<void> {
   });
 }
 
+export async function testModelConnectivity(id: number): Promise<ModelConnectivityTestResult> {
+  return apiRequest<ModelConnectivityTestResult>(`/models/${id}/connectivity`, {
+    method: 'POST',
+  });
+}
+
 // Auth key API
 export type AuthKeyPayload = {
   name: string;
@@ -873,6 +899,11 @@ export interface AnthropicCountTokens {
 export interface AnthropicProxyIPConfig {
   enabled: boolean;
   proxy_ip: string;
+}
+
+export interface CodexFingerprintConfig {
+  enabled: boolean;
+  headers: Record<string, string>;
 }
 
 export interface TelegramBreakerAlertConfig {

@@ -111,13 +111,11 @@ func balanceChatWithFallback(c *gin.Context, start time.Time, style string, requ
 	slog.Info("已确认模型回退目标",
 		"model", before.Model,
 		"fallback_model", fallbackModel.Name,
-		"fallback_model_id", fallbackModel.ID,
 		"endpoint", providersWithMeta.Endpoint,
 	)
 	slog.Warn("模型全部提供商失败，尝试回退模型",
 		"model", before.Model,
 		"fallback_model", fallbackModel.Name,
-		"fallback_model_id", fallbackModel.ID,
 	)
 	return balanceChatWithFallback(c, start, style, requestPath, fallbackBefore, fallbackMeta, reqMeta, false, visited)
 }
@@ -221,7 +219,7 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, requestP
 					return nil, nil, err
 				}
 				if !canProceed {
-					slog.Info("Auth key blocked by limiter", "auth_key_id", authKeyID, "reason", reason)
+					slog.Info("Auth key blocked by limiter", "reason", reason)
 					balancer.Reduce(id)
 					continue
 				}
@@ -247,6 +245,11 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, requestP
 			if proxyIP != "" {
 				header.Set("X-Forwarded-For", proxyIP)
 				header.Set("X-Real-IP", proxyIP)
+			}
+			if providersWithMeta.Endpoint == "responses" {
+				if cfg, ok := runtimesvc.LoadCodexFingerprintConfig(ctx); ok {
+					header = runtimesvc.ApplyCodexFingerprintHeaders(header, cfg, before.Stream)
+				}
 			}
 
 			var lastStatus int
@@ -328,7 +331,6 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, requestP
 						"model", before.Model,
 						"provider", provider.Name,
 						"provider_model", modelWithProvider.ProviderModel,
-						"model_with_provider_id", modelWithProvider.ID,
 						"provider_attempt", providerAttempt+1,
 						"global_attempt", attempt,
 						"error", err,
@@ -353,7 +355,6 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, requestP
 						"model", before.Model,
 						"provider", provider.Name,
 						"provider_model", modelWithProvider.ProviderModel,
-						"model_with_provider_id", modelWithProvider.ID,
 						"status_code", res.StatusCode,
 						"provider_attempt", providerAttempt+1,
 						"global_attempt", attempt,
@@ -404,7 +405,6 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, requestP
 					"model", before.Model,
 					"provider", provider.Name,
 					"provider_model", modelWithProvider.ProviderModel,
-					"model_with_provider_id", modelWithProvider.ID,
 				)
 				balancer.Reduce(id)
 			} else {
@@ -413,7 +413,6 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, requestP
 					"model", before.Model,
 					"provider", provider.Name,
 					"provider_model", modelWithProvider.ProviderModel,
-					"model_with_provider_id", modelWithProvider.ID,
 					"last_status", lastStatus,
 				)
 				balancer.Delete(id)
@@ -666,8 +665,6 @@ func providersWithMetaByModel(ctx context.Context, endpoint string, model models
 		}
 		slog.Warn("当前模型无可用提供商，准备尝试回退模型",
 			"model", model.Name,
-			"model_id", model.ID,
-			"fallback_model_id", model.FallbackModelID,
 			"endpoint", endpoint,
 		)
 	}

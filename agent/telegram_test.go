@@ -1076,6 +1076,19 @@ func TestTelegramAgentToolRunningStatus(t *testing.T) {
 	}
 }
 
+func TestTelegramAgentEditableMessageContentStatusOverridesAnswer(t *testing.T) {
+	content := telegramAgentEditableMessageContent("前置回答内容", "ultimate-search 正在搜索 广州天气...")
+	if content != "ultimate-search 正在搜索 广州天气..." {
+		t.Fatalf("工具状态应覆盖占位消息内容，实际为: %s", content)
+	}
+	if got := telegramAgentEditableMessageContent("最终回答", ""); got != "最终回答" {
+		t.Fatalf("无状态时应显示回答内容，实际为: %s", got)
+	}
+	if got := telegramAgentEditableMessageContent("", ""); got != "正在思考..." {
+		t.Fatalf("空内容时应显示默认占位，实际为: %s", got)
+	}
+}
+
 func TestTelegramAgentFunctionToolProviderUpdateContinuesToolLoop(t *testing.T) {
 	db := setupTelegramAgentToolTestDB(t, "tg_agent_tool_provider_config_stop_loop")
 	ctx := context.Background()

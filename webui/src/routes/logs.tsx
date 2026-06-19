@@ -252,7 +252,20 @@ const LogCard = memo(({ isAuthKeyMode, log, onOpenDetail, onViewChatIO }: LogCar
   ];
 
   return (
-    <div className="rounded-2xl border border-border/60 bg-card/90 shadow-sm px-4 py-3">
+    <div
+      role="button"
+      tabIndex={0}
+      className="group rounded-2xl border border-border/60 bg-card/90 px-4 py-3 text-left shadow-sm transition-[border-color,box-shadow,transform,background-color] duration-200 hover:-translate-y-0.5 hover:border-primary/30 hover:bg-card hover:shadow-[0_16px_34px_rgba(98,71,47,0.12)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+      onClick={() => onOpenDetail(log)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onOpenDetail(log);
+        }
+      }}
+      aria-label={`查看日志详情：${log.Name}`}
+      title="点击查看日志详情"
+    >
       <div className="flex items-start justify-between gap-3">
         <div className="flex flex-1 items-start gap-3 min-w-0">
           <ModelIcon name={log.Name || ""} />
@@ -290,7 +303,11 @@ const LogCard = memo(({ isAuthKeyMode, log, onOpenDetail, onViewChatIO }: LogCar
             variant="ghost"
             size="icon"
             className="h-8 w-8"
-            onClick={() => onOpenDetail(log)}
+            onClick={(event) => {
+              event.stopPropagation();
+              onOpenDetail(log);
+            }}
+            onKeyDown={(event) => event.stopPropagation()}
             aria-label="查看详情"
             title="查看详情"
           >
@@ -300,7 +317,11 @@ const LogCard = memo(({ isAuthKeyMode, log, onOpenDetail, onViewChatIO }: LogCar
             variant="ghost"
             size="icon"
             className="h-8 w-8"
-            onClick={() => onViewChatIO(log)}
+            onClick={(event) => {
+              event.stopPropagation();
+              onViewChatIO(log);
+            }}
+            onKeyDown={(event) => event.stopPropagation()}
             disabled={!canViewChatIO}
             aria-label="查看 IO"
             title="查看 IO"
@@ -700,84 +721,86 @@ export default function LogsPage() {
       {/* 详情弹窗 */}
       {selectedLog && (
         <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
-          <DialogContent className="w-[92vw] sm:w-auto sm:max-w-2xl max-h-[95vh] p-0 flex flex-col">
-            <div className="px-5 py-4 border-b">
-              <DialogHeader className="p-0">
-                <DialogTitle className="flex items-center gap-2">
-                  日志详情
-                  <span className="text-xs text-muted-foreground font-normal">#{selectedLog.ID}</span>
-                </DialogTitle>
-              </DialogHeader>
-              <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                <span>{new Date(selectedLog.CreatedAt).toLocaleString()}</span>
-                <span className={selectedLog.Status === "success" ? "text-emerald-600" : "text-rose-600"}>
-                  {selectedLog.Status}
-                </span>
-                {selectedLog.key_name ? (
-                  <span className="rounded-full bg-muted/60 px-2 py-0.5">{selectedLog.key_name}</span>
-                ) : null}
+          <DialogContent className="w-[92vw] overflow-hidden border-border/70 bg-card/95 p-0 shadow-[0_24px_80px_rgba(52,42,31,0.26)] backdrop-blur-xl sm:w-auto sm:max-w-2xl max-h-[95vh] flex flex-col">
+              <div className="relative overflow-hidden border-b px-5 py-4">
+                <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-primary/45 to-transparent" />
+                <div className="pointer-events-none absolute -right-10 -top-16 h-36 w-36 rounded-full bg-primary/10 blur-2xl" />
+                <DialogHeader className="p-0">
+                  <DialogTitle className="flex items-center gap-2">
+                    日志详情
+                    <span className="text-xs text-muted-foreground font-normal">#{selectedLog.ID}</span>
+                  </DialogTitle>
+                </DialogHeader>
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                  <span>{new Date(selectedLog.CreatedAt).toLocaleString()}</span>
+                  <span className={selectedLog.Status === "success" ? "text-emerald-600" : "text-rose-600"}>
+                    {selectedLog.Status}
+                  </span>
+                  {selectedLog.key_name ? (
+                    <span className="rounded-full bg-muted/60 px-2 py-0.5">{selectedLog.key_name}</span>
+                  ) : null}
+                </div>
               </div>
-            </div>
-            <div className="overflow-y-auto px-5 py-4 flex-1 space-y-4 text-sm">
-              {selectedLog.Error && (
-                <div className="rounded-xl border border-destructive/40 bg-destructive/10 p-3">
-                  <p className="text-xs text-destructive uppercase tracking-wide mb-1">错误信息</p>
-                  <div className="text-destructive whitespace-pre-wrap break-words text-sm">
-                    {selectedLog.Error}
+              <div className="overflow-y-auto px-5 py-4 flex-1 space-y-4 text-sm">
+                {selectedLog.Error && (
+                  <div className="rounded-xl border border-destructive/40 bg-destructive/10 p-3">
+                    <p className="text-xs text-destructive uppercase tracking-wide mb-1">错误信息</p>
+                    <div className="text-destructive whitespace-pre-wrap break-words text-sm">
+                      {selectedLog.Error}
+                    </div>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <DetailCard label="模型名称" value={selectedLog.Name} />
+                  {!isAuthKeyMode ? (
+                    <>
+                      <DetailCard label="提供商" value={selectedLog.ProviderName || "-"} />
+                      <DetailCard label="提供商模型" value={selectedLog.ProviderModel || "-"} mono />
+                    </>
+                  ) : null}
+                  <DetailCard label="响应大小" value={selectedLog.Size ? formatBytes(selectedLog.Size) : "-"} />
+                  <div className="sm:col-span-2">
+                    <DetailCard label="请求路径" value={getLogRequestPath(selectedLog)} mono />
                   </div>
                 </div>
-              )}
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <DetailCard label="模型名称" value={selectedLog.Name} />
-                {!isAuthKeyMode ? (
-                  <>
-                    <DetailCard label="提供商" value={selectedLog.ProviderName || "-"} />
-                    <DetailCard label="提供商模型" value={selectedLog.ProviderModel || "-"} mono />
-                  </>
-                ) : null}
-                <DetailCard label="响应大小" value={selectedLog.Size ? formatBytes(selectedLog.Size) : "-"} />
-                <div className="sm:col-span-2">
-                  <DetailCard label="请求路径" value={getLogRequestPath(selectedLog)} mono />
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+                  {(() => {
+                    const d = getLogDurationsMs(selectedLog);
+                    return (
+                      <>
+                        <DetailCard label="首包耗时" value={formatDurationValue(d.first)} />
+                        <DetailCard label="完成耗时" value={formatDurationValue(d.chunk)} />
+                        <DetailCard label="TPS" value={formatTpsValue(selectedLog.Tps)} />
+                        <DetailCard label="价格" value={formatCostValue(selectedLog.total_cost)} />
+                        <DetailCard label="缓存命中率" value={formatPercentValue(getCacheHitRateFromLog(selectedLog))} />
+                      </>
+                    );
+                  })()}
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  {(() => {
+                    const cachedTokens = getCachedTokensFromLog(selectedLog);
+                    return (
+                      <>
+                        <DetailCard label="输入" value={formatTokenValue(selectedLog.prompt_tokens)} />
+                        <DetailCard label="输出" value={formatTokenValue(selectedLog.completion_tokens)} />
+                        <DetailCard label="总计" value={formatTokenValue(selectedLog.total_tokens)} />
+                        <DetailCard label="缓存" value={formatTokenValue(cachedTokens)} />
+                      </>
+                    );
+                  })()}
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <DetailCard label="远端 IP" value={selectedLog.RemoteIP || "-"} mono />
+                  <DetailCard label="用户代理" value={selectedLog.UserAgent || "-"} mono />
+                  <DetailCard label="记录 IO" value={selectedLog.ChatIO ? "是" : "否"} />
+                  <DetailCard label="重试次数" value={selectedLog.Retry ?? 0} />
                 </div>
               </div>
-
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-                {(() => {
-                  const d = getLogDurationsMs(selectedLog);
-                  return (
-                    <>
-                      <DetailCard label="首包耗时" value={formatDurationValue(d.first)} />
-                      <DetailCard label="完成耗时" value={formatDurationValue(d.chunk)} />
-                      <DetailCard label="TPS" value={formatTpsValue(selectedLog.Tps)} />
-                      <DetailCard label="价格" value={formatCostValue(selectedLog.total_cost)} />
-                      <DetailCard label="缓存命中率" value={formatPercentValue(getCacheHitRateFromLog(selectedLog))} />
-                    </>
-                  );
-                })()}
-              </div>
-
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                {(() => {
-                  const cachedTokens = getCachedTokensFromLog(selectedLog);
-                  return (
-                    <>
-                      <DetailCard label="输入" value={formatTokenValue(selectedLog.prompt_tokens)} />
-                      <DetailCard label="输出" value={formatTokenValue(selectedLog.completion_tokens)} />
-                      <DetailCard label="总计" value={formatTokenValue(selectedLog.total_tokens)} />
-                      <DetailCard label="缓存" value={formatTokenValue(cachedTokens)} />
-                    </>
-                  );
-                })()}
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <DetailCard label="远端 IP" value={selectedLog.RemoteIP || "-"} mono />
-                <DetailCard label="用户代理" value={selectedLog.UserAgent || "-"} mono />
-                <DetailCard label="记录 IO" value={selectedLog.ChatIO ? "是" : "否"} />
-                <DetailCard label="重试次数" value={selectedLog.Retry ?? 0} />
-              </div>
-            </div>
           </DialogContent>
         </Dialog>
       )}

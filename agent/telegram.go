@@ -226,18 +226,7 @@ func runTelegramAgentConversationWithHistoryMode(ctx context.Context, client Tel
 	lastEditedText := ""
 
 	edit := func(force bool) error {
-		content := strings.TrimSpace(answer.String())
-		status := strings.TrimSpace(statusText)
-		if status != "" {
-			if content != "" {
-				content += "\n\n" + status
-			} else {
-				content = status
-			}
-		}
-		if content == "" {
-			content = "正在思考..."
-		}
+		content := telegramAgentEditableMessageContent(answer.String(), statusText)
 		content = trimTelegramMessage(content)
 		if content == lastEditedText {
 			return nil
@@ -320,6 +309,16 @@ func runTelegramAgentConversationWithHistoryMode(ctx context.Context, client Tel
 		slog.Warn("保存 TG Agent 上下文失败", "chat_id", chatID, "error", err)
 	}
 	return nil
+}
+
+func telegramAgentEditableMessageContent(answer string, status string) string {
+	if status = strings.TrimSpace(status); status != "" {
+		return status
+	}
+	if answer = strings.TrimSpace(answer); answer != "" {
+		return answer
+	}
+	return "正在思考..."
 }
 
 func runTelegramAgentToolResultFollowup(ctx context.Context, client TelegramClient, chatID int64, cfg models.TelegramAgentConfig, action telegramToolAction, toolResult string) error {

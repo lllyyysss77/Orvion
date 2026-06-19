@@ -55,7 +55,6 @@ func ScheduleModelProviderAutoDisableCheck(modelWithProviderID uint) {
 	if err != nil {
 		slog.Warn("读取模型关联提供商失败，跳过自动关闭检查",
 			"error", err,
-			"model_with_provider_id", modelWithProviderID,
 		)
 		return
 	}
@@ -92,8 +91,6 @@ func ScheduleModelProviderAutoDisableCheck(modelWithProviderID uint) {
 		delete(autoDisableProviders, providerID)
 		autoDisableProviderMu.Unlock()
 		slog.Warn("模型关联提供商自动关闭检查队列已满，丢弃检查任务",
-			"model_with_provider_id", modelWithProviderID,
-			"provider_id", providerID,
 			"queue_size", modelProviderAutoDisableQueueSize,
 		)
 	}
@@ -129,7 +126,6 @@ func modelProviderAutoDisableWorkerHandle(ctx context.Context, workerID int, mod
 		slog.Error("检查模型关联提供商自动关闭失败",
 			"error", err,
 			"worker", workerID,
-			"model_with_provider_id", modelWithProviderID,
 		)
 	}
 }
@@ -229,7 +225,6 @@ func TriggerModelProviderAutoDisableIfNeeded(ctx context.Context, modelWithProvi
 
 	if result.RowsAffected > 0 {
 		slog.Warn("模型关联提供商因短时间错误过多被自动关闭",
-			"model_with_provider_id", modelWithProviderID,
 			"resume_at", resumeAt.Format(time.RFC3339),
 			"threshold", modelProviderAutoDisableThreshold,
 			"error_count", errorCount,
@@ -247,7 +242,6 @@ func TriggerModelProviderAutoDisableIfNeeded(ctx context.Context, modelWithProvi
 				}
 				slog.Warn("发送模型关联提供商自动关闭 TG 告警失败",
 					"error", err,
-					"model_with_provider_id", modelWithProviderID,
 				)
 			}
 		})

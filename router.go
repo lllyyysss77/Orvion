@@ -195,6 +195,7 @@ func registerProviderRoutes(api *gin.RouterGroup) {
 func registerModelRoutes(api *gin.RouterGroup) {
 	api.GET("/models", adminhandler.GetModels)
 	api.GET("/models/select", adminhandler.GetModelList)
+	api.POST("/models/:id/connectivity", adminhandler.TestModelConnectivity)
 	api.POST("/models", adminhandler.CreateModel)
 	api.PUT("/models/:id", adminhandler.UpdateModel)
 	api.PATCH("/models/:id/status", adminhandler.UpdateModelStatus)

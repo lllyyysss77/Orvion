@@ -1178,7 +1178,7 @@ func UpdateModelProvider(c *gin.Context) {
 		common.BadRequest(c, "Invalid request body: "+err.Error())
 		return
 	}
-	slog.Info("UpdateModelProvider", "req", req)
+	slog.Info("UpdateModelProvider")
 
 	// 将 CustomerHeaders 转换为 JSON 字符串
 	customerHeadersJSON := ""

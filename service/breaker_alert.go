@@ -133,7 +133,7 @@ func InitBreakerAlertNotifier() {
 			return
 		}
 		if err := notifier.SendBreakerOpen(event); err != nil {
-			slog.Warn("发送熔断告警失败", "error", err, "model_with_provider_id", event.Key)
+			slog.Warn("发送熔断告警失败", "error", err)
 		}
 	})
 
@@ -284,7 +284,6 @@ func (n *telegramNotifier) SendBreakerOpen(event balancers.BreakerOpenEvent) err
 	content := strings.Join([]string{
 		"【Orvion 熔断告警】",
 		fmt.Sprintf("时间：%s", event.At.Format("2006-01-02 15:04:05")),
-		fmt.Sprintf("模型关联ID：%d", event.Key),
 		fmt.Sprintf("前置状态：%s", event.PrevState.String()),
 		fmt.Sprintf("触发原因：%s", event.Reason),
 		fmt.Sprintf("失败计数：%d", event.FailCount),
@@ -309,7 +308,6 @@ func SendModelProviderAutoDisableAlert(ctx context.Context, event ModelProviderA
 	lines := []string{
 		"【Orvion 模型提供商熔断】",
 		fmt.Sprintf("时间：%s", time.Now().Format("2006-01-02 15:04:05")),
-		fmt.Sprintf("模型关联ID：%d", event.ModelWithProviderID),
 	}
 	if strings.TrimSpace(detail.ModelName) != "" {
 		lines = append(lines, fmt.Sprintf("模型：%s", detail.ModelName))
@@ -346,7 +344,7 @@ func loadModelProviderAutoDisableAlertDetail(ctx context.Context, modelWithProvi
 		Joins("LEFT JOIN providers ON providers.id = model_with_providers.provider_id").
 		Where("model_with_providers.id = ?", modelWithProviderID).
 		Scan(&detail).Error; err != nil {
-		slog.Warn("读取模型提供商熔断告警详情失败", "error", err, "model_with_provider_id", modelWithProviderID)
+		slog.Warn("读取模型提供商熔断告警详情失败", "error", err)
 		return modelProviderAutoDisableAlertDetail{}
 	}
 	return detail

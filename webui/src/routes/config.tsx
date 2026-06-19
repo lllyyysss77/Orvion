@@ -28,6 +28,7 @@ import {
   configAPI,
   getModelOptions,
   type AnthropicProxyIPConfig,
+  type CodexFingerprintConfig,
   type Model,
   type TelegramBreakerAlertConfig,
   type TelegramAgentConfig,
@@ -38,7 +39,7 @@ import {
   type LoadingUIConfig,
 } from '@/lib/api';
 import { toast } from 'sonner';
-import { Settings, Network, Coins, FileClock, Type, Send, Github, Sparkles, Bot, Maximize2, Eye, EyeOff, RefreshCw } from 'lucide-react';
+import { Settings, Network, Coins, FileClock, Type, Send, Github, Sparkles, Bot, Maximize2, Eye, EyeOff, RefreshCw, Fingerprint } from 'lucide-react';
 import {
   applyLoadingUIStyleSetting,
   loadingUIValues,
@@ -52,6 +53,27 @@ const anthropicProxySchema = z.object({
 }).refine((data) => !data.enabled || data.proxy_ip.length > 0, {
   message: '启用代理 IP 时必须填写代理 IP',
   path: ['proxy_ip'],
+});
+
+const codexFingerprintSchema = z.object({
+  enabled: z.boolean(),
+  headers_json: z.string().trim(),
+}).refine((data) => {
+  if (!data.enabled && data.headers_json.length === 0) return true;
+  try {
+    const parsed = JSON.parse(data.headers_json || '{}') as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
+    const entries = Object.entries(parsed as Record<string, unknown>);
+    if (data.enabled && entries.length === 0) return false;
+    return entries.every(([key, value]) => (
+      key.trim().length > 0 && typeof value === 'string' && value.trim().length > 0
+    ));
+  } catch {
+    return false;
+  }
+}, {
+  message: '启用时必须填写合法的请求头 JSON 对象，值必须为字符串',
+  path: ['headers_json'],
 });
 
 const priceSyncSchema = z.object({
@@ -127,6 +149,7 @@ const loadingUISchema = z.object({
 });
 
 type AnthropicProxyForm = z.infer<typeof anthropicProxySchema>;
+type CodexFingerprintForm = z.infer<typeof codexFingerprintSchema>;
 type TelegramBreakerAlertForm = z.infer<typeof telegramBreakerAlertSchema>;
 type TelegramAgentForm = z.infer<typeof telegramAgentSchema>;
 type PriceSyncForm = z.infer<typeof priceSyncSchema>;
@@ -138,6 +161,26 @@ type LoadingUIForm = z.infer<typeof loadingUISchema>;
 const UI_FONT_STORAGE_KEY = "orvion_ui_font";
 const TELEGRAM_AGENT_AUTO_MODEL_VALUE = "__auto_model__";
 const TELEGRAM_AGENT_CONFIG_CHANGED_EVENT = "telegram-agent-config-changed";
+
+const defaultCodexFingerprintHeaders: Record<string, string> = {
+  "Originator": "codex-tui",
+  "User-Agent": "codex-tui/0.135.0 (Mac OS 26.5.0; arm64) iTerm.app/3.6.10 (codex-tui; 0.135.0)",
+};
+
+const stringifyHeadersJSON = (headers: Record<string, string>) => JSON.stringify(headers, null, 2);
+
+const resolveCodexFingerprintHeaders = (headers: unknown): Record<string, string> => {
+  if (!headers || typeof headers !== 'object' || Array.isArray(headers)) {
+    return defaultCodexFingerprintHeaders;
+  }
+  const nextHeaders: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    if (typeof value === 'string' && key.trim().length > 0 && value.trim().length > 0) {
+      nextHeaders[key] = value;
+    }
+  }
+  return Object.keys(nextHeaders).length > 0 ? nextHeaders : defaultCodexFingerprintHeaders;
+};
 
 const telegramAgentDefaultValues: TelegramAgentForm = {
   enabled: true,
@@ -199,6 +242,7 @@ export default function ConfigPage() {
   const [telegramAgentModelDropdownOpen, setTelegramAgentModelDropdownOpen] = useState(false);
   const [displayConfigSaving, setDisplayConfigSaving] = useState(false);
   const [coreConfigSaving, setCoreConfigSaving] = useState(false);
+  const [codexFingerprintSaving, setCodexFingerprintSaving] = useState(false);
   const embeddingModelOptions = useMemo(() => {
     const filtered = modelOptions.filter((model) => (model.Capabilities ?? []).includes('embedding'));
     return filtered.length > 0 ? filtered : modelOptions;
@@ -208,6 +252,14 @@ export default function ConfigPage() {
     defaultValues: {
       enabled: false,
       proxy_ip: '',
+    },
+  });
+
+  const codexFingerprintForm = useForm<CodexFingerprintForm>({
+    resolver: zodResolver(codexFingerprintSchema),
+    defaultValues: {
+      enabled: false,
+      headers_json: stringifyHeadersJSON(defaultCodexFingerprintHeaders),
     },
   });
 
@@ -281,6 +333,19 @@ export default function ConfigPage() {
       }
     } catch (error) {
       console.error('Failed to load config:', error);
+    }
+
+    try {
+      const codexFingerprintResponse = await configAPI.getConfig('codex_fingerprint');
+      if (codexFingerprintResponse.value) {
+        const cfg = JSON.parse(codexFingerprintResponse.value) as CodexFingerprintConfig;
+        codexFingerprintForm.reset({
+          enabled: Boolean(cfg.enabled),
+          headers_json: stringifyHeadersJSON(resolveCodexFingerprintHeaders(cfg.headers)),
+        });
+      }
+    } catch (error) {
+      console.error('Failed to load codex fingerprint config:', error);
     }
 
     try {
@@ -400,7 +465,7 @@ export default function ConfigPage() {
     }
 
     setLoading(false);
-  }, [githubVersionCheckForm, loadingUIForm, priceSyncForm, proxyForm, systemLogCleanupForm, telegramAgentForm, telegramBreakerAlertForm, uiFontForm]);
+  }, [codexFingerprintForm, githubVersionCheckForm, loadingUIForm, priceSyncForm, proxyForm, systemLogCleanupForm, telegramAgentForm, telegramBreakerAlertForm, uiFontForm]);
 
   useEffect(() => {
     void fetchConfig();
@@ -532,6 +597,39 @@ export default function ConfigPage() {
       toast.error('保存核心配置失败');
     } finally {
       setCoreConfigSaving(false);
+    }
+  };
+
+  const onCodexFingerprintSubmit = async () => {
+    const codexFingerprintValid = await codexFingerprintForm.trigger();
+    if (!codexFingerprintValid) {
+      return;
+    }
+
+    const codexFingerprintValues = codexFingerprintForm.getValues();
+    let codexFingerprintHeaders: Record<string, string>;
+    try {
+      codexFingerprintHeaders = codexFingerprintValues.headers_json.trim()
+        ? JSON.parse(codexFingerprintValues.headers_json) as Record<string, string>
+        : {};
+    } catch {
+      toast.error('Codex 指纹请求头 JSON 不合法');
+      return;
+    }
+    const codexFingerprintPayload: CodexFingerprintConfig = {
+      enabled: codexFingerprintValues.enabled,
+      headers: codexFingerprintHeaders,
+    };
+
+    try {
+      setCodexFingerprintSaving(true);
+      await configAPI.updateConfig('codex_fingerprint', codexFingerprintPayload);
+      toast.success('Codex 指纹模拟配置已保存');
+    } catch (error) {
+      console.error('Failed to save codex fingerprint config:', error);
+      toast.error('保存 Codex 指纹模拟配置失败');
+    } finally {
+      setCodexFingerprintSaving(false);
     }
   };
 
@@ -1162,6 +1260,7 @@ export default function ConfigPage() {
                   </div>
                 </Form>
               </div>
+
             </CardContent>
             <CardFooter className="flex justify-between">
               <Button type="button" variant="outline" onClick={handleRunPriceSync} disabled={priceSyncing}>
@@ -1169,6 +1268,62 @@ export default function ConfigPage() {
               </Button>
               <Button type="button" onClick={() => void onCoreConfigSubmit()} disabled={coreConfigSaving}>
                 {coreConfigSaving ? '保存中...' : '保存配置'}
+              </Button>
+            </CardFooter>
+          </Card>
+
+          <Card className="rounded-2xl border border-border/60 bg-card/90 shadow-[0_18px_45px_rgba(0,0,0,0.08)]">
+            <CardHeader className="pb-2">
+              <CardTitle className="flex items-center gap-2 text-sm font-semibold">
+                <Fingerprint className="size-4 text-emerald-600" />
+                Codex 指纹模拟
+              </CardTitle>
+              <CardDescription className="text-xs">
+                仅对 /v1/responses 与 compact 请求替换上游客户端特征头。
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <Form {...codexFingerprintForm}>
+                <div className="space-y-3">
+                  <FormField
+                    control={codexFingerprintForm.control}
+                    name="enabled"
+                    render={({ field }) => (
+                      <FormItem className="flex h-9 items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/50 px-3">
+                        <FormLabel className="text-xs text-muted-foreground">启用模拟</FormLabel>
+                        <FormControl>
+                          <Switch
+                            checked={field.value === true}
+                            onCheckedChange={(checked) => field.onChange(checked === true)}
+                          />
+                        </FormControl>
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={codexFingerprintForm.control}
+                    name="headers_json"
+                    render={({ field }) => (
+                      <FormItem className="space-y-1">
+                        <FormLabel className="text-xs text-muted-foreground">客户端特征头 JSON</FormLabel>
+                        <FormControl>
+                          <Textarea
+                            className="h-56 min-h-0 resize-y bg-background font-mono text-xs leading-5"
+                            spellCheck={false}
+                            {...field}
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </div>
+              </Form>
+            </CardContent>
+            <CardFooter className="justify-end">
+              <Button type="button" onClick={() => void onCodexFingerprintSubmit()} disabled={codexFingerprintSaving}>
+                {codexFingerprintSaving ? '保存中...' : '保存配置'}
               </Button>
             </CardFooter>
           </Card>
