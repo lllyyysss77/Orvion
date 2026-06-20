@@ -1250,9 +1250,6 @@ func mergeTelegramAgentConfig(base models.TelegramAgentConfig, override models.T
 	if override.SkillsEnabled != nil {
 		base.SkillsEnabled = override.SkillsEnabled
 	}
-	if strings.TrimSpace(override.SkillsEmbeddingModel) != "" {
-		base.SkillsEmbeddingModel = strings.TrimSpace(override.SkillsEmbeddingModel)
-	}
 	return base
 }
 

@@ -55,18 +55,17 @@ type TelegramBreakerAlertConfig struct {
 }
 
 type TelegramAgentConfig struct {
-	Enabled              *bool    `json:"enabled,omitempty"`
-	BaseURL              string   `json:"base_url"`
-	APIKey               string   `json:"api_key"`
-	Model                string   `json:"model"`
-	SystemPrompt         string   `json:"system_prompt"`
-	MaxHistoryMessages   int      `json:"max_history_messages"`
-	MaxTokens            int      `json:"max_tokens"`
-	Temperature          *float64 `json:"temperature,omitempty"`
-	EditIntervalMs       int      `json:"edit_interval_ms"`
-	SkillsEnabled        *bool    `json:"skills_enabled,omitempty"`
-	SkillsDir            string   `json:"-"`
-	SkillsEmbeddingModel string   `json:"skills_embedding_model,omitempty"`
+	Enabled            *bool    `json:"enabled,omitempty"`
+	BaseURL            string   `json:"base_url"`
+	APIKey             string   `json:"api_key"`
+	Model              string   `json:"model"`
+	SystemPrompt       string   `json:"system_prompt"`
+	MaxHistoryMessages int      `json:"max_history_messages"`
+	MaxTokens          int      `json:"max_tokens"`
+	Temperature        *float64 `json:"temperature,omitempty"`
+	EditIntervalMs     int      `json:"edit_interval_ms"`
+	SkillsEnabled      *bool    `json:"skills_enabled,omitempty"`
+	SkillsDir          string   `json:"-"`
 }
 
 type ModelPriceSyncConfig struct {

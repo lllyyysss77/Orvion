@@ -1597,9 +1597,9 @@ func TestTelegramAgentSkillManagementListToggleAndImport(t *testing.T) {
 		SkillsDir:     root,
 	}
 
-	listResult, err := ListTelegramAgentSkillsForManagement(ctx, cfg, "部署 pipeline", TelegramAgentSkillSearchEmbedding)
+	listResult, err := ListTelegramAgentSkillsForManagement(ctx, cfg, "deploy")
 	if err != nil {
-		t.Fatalf("embedding 检索 Skill 失败: %v", err)
+		t.Fatalf("关键词检索 Skill 失败: %v", err)
 	}
 	if len(listResult.Skills) != 1 || listResult.Skills[0].Name != "deploy" {
 		t.Fatalf("期望检索到 deploy Skill，实际为: %+v", listResult.Skills)

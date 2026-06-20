@@ -147,7 +147,7 @@ type ChatLogDailyUsageSummary struct {
 	TopModelReqs    int64
 	TopAuthKeyID    uint
 	TopAuthKeyReqs  int64
-	SlowestRequest  *ChatLogSlowRequestRow
+	SlowestRequest  *ChatLogSlowRequestRow `gorm:"-"`
 }
 
 type ChatLogSlowRequestRow struct {
@@ -498,7 +498,7 @@ func BuildChatLogUnionQuery(scope ChatLogQueryScope, columns string) (ChatLogUni
 }
 
 func QueryChatLogCount(ctx context.Context, scope ChatLogQueryScope, whereSQL string, args ...any) (int64, error) {
-	union, err := BuildChatLogUnionQuery(scope, "id, created_at, status, auth_key_id, provider_name, name, style")
+	union, err := BuildChatLogUnionQuery(scope, "id, created_at, status, auth_key_id, provider_name, name, style, model_with_provider_id")
 	if err != nil || union.SQL == "" {
 		return 0, err
 	}
@@ -722,12 +722,14 @@ func QueryChatLogDailyUsageSummary(ctx context.Context, startAt time.Time, endAt
 	var topModel topModelRow
 	if err := DB.WithContext(ctx).Raw(
 		`SELECT name, COUNT(1) AS req_count `+baseSQL+`
+		  AND status = ?
 		  AND name <> ?
 		  GROUP BY name
 		  ORDER BY req_count DESC, name ASC
 		  LIMIT 1`,
 		startAt,
 		endAt,
+		"success",
 		"",
 	).Scan(&topModel).Error; err != nil {
 		return ChatLogDailyUsageSummary{}, err
@@ -742,12 +744,14 @@ func QueryChatLogDailyUsageSummary(ctx context.Context, startAt time.Time, endAt
 	var topAuthKey topAuthKeyRow
 	if err := DB.WithContext(ctx).Raw(
 		`SELECT auth_key_id, COUNT(1) AS req_count `+baseSQL+`
+		  AND status = ?
 		  AND auth_key_id > ?
 		  GROUP BY auth_key_id
 		  ORDER BY req_count DESC, auth_key_id ASC
 		  LIMIT 1`,
 		startAt,
 		endAt,
+		"success",
 		0,
 	).Scan(&topAuthKey).Error; err != nil {
 		return ChatLogDailyUsageSummary{}, err

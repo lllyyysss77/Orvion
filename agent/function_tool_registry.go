@@ -304,17 +304,12 @@ func telegramAgentSkillFunctionToolDefinitions(ctx context.Context, cfg models.T
 
 	listProperties := map[string]any{
 		"query": map[string]any{"type": "string", "description": "Skill 名称、描述、触发词或自然语言需求，可为空。"},
-		"search_mode": map[string]any{
-			"type":        "string",
-			"description": "检索方式。keyword 表示关键词匹配；embedding 表示向量相似度检索，配置了远端向量模型时会使用远端向量模型。",
-			"enum":        []string{TelegramAgentSkillSearchKeyword, TelegramAgentSkillSearchEmbedding},
-		},
 		"limit": map[string]any{"type": "integer", "description": "最多返回条数，默认 20，最大 50。"},
 	}
 	definitions := []telegramAgentFunctionToolDefinition{
 		{
 			Name:        telegramAgentToolListSkills,
-			Description: "查看本地 Agent Skills 列表。Skills 来自本地目录中的 skills.md 或 SKILL.md；支持 keyword 与 embedding 检索。" + catalogText,
+			Description: "查看本地 Agent Skills 列表。Skills 来自本地目录中的 skills.md 或 SKILL.md，支持按名称、描述、触发词和说明关键词过滤。" + catalogText,
 			Properties:  listProperties,
 			Handler:     telegramAgentFunctionListSkills,
 		},

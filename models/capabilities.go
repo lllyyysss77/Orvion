@@ -19,8 +19,7 @@ var defaultProviderCapabilities = ProviderCapabilities{
 	ProviderCapabilityClaude,
 }
 
-// ModelCapabilities 兼容旧数据与 JSON 数组的模型能力字段。
-// 允许数据库中存在 "chat" 或 "chat,vision" 等旧格式。
+// ModelCapabilities 模型能力字段，数据库中使用 JSON 数组保存。
 type ModelCapabilities []string
 
 func (m *ModelCapabilities) Scan(value any) error {
@@ -54,17 +53,14 @@ func (m *ModelCapabilities) parse(raw string) error {
 		*m = nil
 		return nil
 	}
-	if strings.HasPrefix(trimmed, "[") {
-		var parsed []string
-		if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
-			*m = sanitizeCapabilities([]string{trimmed})
-			return nil
-		}
-		*m = sanitizeCapabilities(parsed)
-		return nil
+	if !strings.HasPrefix(trimmed, "[") {
+		return fmt.Errorf("capabilities must be JSON array")
 	}
-	parts := strings.Split(trimmed, ",")
-	*m = sanitizeCapabilities(parts)
+	var parsed []string
+	if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
+		return err
+	}
+	*m = sanitizeCapabilities(parsed)
 	return nil
 }
 
@@ -73,12 +69,10 @@ func sanitizeCapabilities(values []string) ModelCapabilities {
 	out := make([]string, 0, len(values))
 	for _, raw := range values {
 		value := strings.ToLower(strings.TrimSpace(raw))
-		if value == "" {
-			continue
-		}
 		switch value {
-		case "embeddings", "embed":
-			value = "embedding"
+		case "chat", "vision", "video", "embedding", "rerank":
+		default:
+			continue
 		}
 		if _, ok := seen[value]; ok {
 			continue
@@ -89,8 +83,7 @@ func sanitizeCapabilities(values []string) ModelCapabilities {
 	return out
 }
 
-// ProviderCapabilities 提供商支持的接口能力。
-// 允许数据库中存在 "chat,openai" 或 JSON 数组格式。
+// ProviderCapabilities 提供商支持的接口能力，数据库中使用 JSON 数组保存。
 type ProviderCapabilities []string
 
 func (p *ProviderCapabilities) Scan(value any) error {
@@ -124,25 +117,22 @@ func (p *ProviderCapabilities) parse(raw string) error {
 		*p = nil
 		return nil
 	}
-	if strings.HasPrefix(trimmed, "[") {
-		var parsed []string
-		if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
-			*p = sanitizeProviderCapabilities([]string{trimmed})
-			return nil
-		}
-		*p = sanitizeProviderCapabilities(parsed)
-		return nil
+	if !strings.HasPrefix(trimmed, "[") {
+		return fmt.Errorf("provider capabilities must be JSON array")
 	}
-	parts := strings.Split(trimmed, ",")
-	*p = sanitizeProviderCapabilities(parts)
+	var parsed []string
+	if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
+		return err
+	}
+	*p = sanitizeProviderCapabilities(parsed)
 	return nil
 }
 
 func NormalizeProviderCapabilities(values []string) ProviderCapabilities {
-	caps := sanitizeProviderCapabilities(values)
-	if len(caps) == 0 {
+	if len(values) == 0 {
 		return append(ProviderCapabilities{}, defaultProviderCapabilities...)
 	}
+	caps := sanitizeProviderCapabilities(values)
 	return caps
 }
 
@@ -152,16 +142,8 @@ func sanitizeProviderCapabilities(values []string) ProviderCapabilities {
 	for _, raw := range values {
 		value := strings.ToLower(strings.TrimSpace(raw))
 		switch value {
-		case "chat", "chat_completions", "completions":
-			value = ProviderCapabilityChat
-		case "openai", "responses", "response":
-			value = ProviderCapabilityOpenAI
-		case "claude", "anthropic", "messages", "message":
-			value = ProviderCapabilityClaude
+		case ProviderCapabilityChat, ProviderCapabilityOpenAI, ProviderCapabilityClaude:
 		default:
-			value = ""
-		}
-		if value == "" {
 			continue
 		}
 		if _, ok := seen[value]; ok {

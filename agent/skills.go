@@ -49,7 +49,7 @@ func listTelegramAgentSkills(ctx context.Context, cfg models.TelegramAgentConfig
 	if !telegramAgentSkillsEnabled(cfg) {
 		return "Skills 未启用。请先在 TG Agent 配置中启用 Skills 并设置本地目录。", nil
 	}
-	result, err := ListTelegramAgentSkillsForManagement(ctx, cfg, args.Query, args.SearchMode)
+	result, err := ListTelegramAgentSkillsForManagement(ctx, cfg, args.Query)
 	if err != nil {
 		return "", err
 	}
@@ -69,9 +69,6 @@ func listTelegramAgentSkills(ctx context.Context, cfg models.TelegramAgentConfig
 	}
 
 	lines := []string{fmt.Sprintf("Skills 列表（显示 %d/%d 个）", limit, len(result.Skills))}
-	if result.SearchMode == TelegramAgentSkillSearchEmbedding && strings.TrimSpace(args.Query) != "" {
-		lines = append(lines, "检索方式：embedding")
-	}
 	for index, skill := range result.Skills[:limit] {
 		status := "启用"
 		if !skill.Enabled {
@@ -83,9 +80,6 @@ func listTelegramAgentSkills(ctx context.Context, cfg models.TelegramAgentConfig
 			"   描述："+emptyTextFallback(skill.Description, "无"),
 			fmt.Sprintf("   脚本：%d 个", len(skill.Scripts)),
 		)
-		if skill.Score > 0 {
-			lines = append(lines, fmt.Sprintf("   相似度：%.3f", skill.Score))
-		}
 		if len(skill.Triggers) > 0 {
 			lines = append(lines, "   触发词："+strings.Join(skill.Triggers, "、"))
 		}

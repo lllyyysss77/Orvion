@@ -471,6 +471,10 @@ func CreateProvider(c *gin.Context) {
 	}
 
 	normalizedCapabilities := normalizeProviderCapabilities(req.Capabilities)
+	if len(normalizedCapabilities) == 0 {
+		common.BadRequest(c, "capabilities must include at least one of chat/openai/claude")
+		return
+	}
 	conversionEnabled := 0
 	conversionTarget := ""
 	if req.InterfaceConversionEnabled {
@@ -542,6 +546,10 @@ func UpdateProvider(c *gin.Context) {
 	}
 
 	normalizedCapabilities := normalizeProviderCapabilities(req.Capabilities)
+	if len(normalizedCapabilities) == 0 {
+		common.BadRequest(c, "capabilities must include at least one of chat/openai/claude")
+		return
+	}
 	conversionEnabled := 0
 	conversionTarget := ""
 	if req.InterfaceConversionEnabled {
@@ -1808,12 +1816,10 @@ func normalizeModelCapabilities(values []string) []string {
 	result := make([]string, 0, len(values))
 	for _, raw := range values {
 		value := strings.ToLower(strings.TrimSpace(raw))
-		if value == "" {
-			continue
-		}
 		switch value {
-		case "embeddings", "embed":
-			value = "embedding"
+		case "chat", "vision", "video", "embedding", "rerank":
+		default:
+			continue
 		}
 		if _, ok := seen[value]; ok {
 			continue

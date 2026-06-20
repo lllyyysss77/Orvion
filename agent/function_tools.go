@@ -62,7 +62,6 @@ type telegramAgentOpenAIFunctionCall struct {
 
 type telegramAgentToolCallArgs struct {
 	Query                      string                              `json:"query"`
-	SearchMode                 string                              `json:"search_mode"`
 	Limit                      int                                 `json:"limit"`
 	Level                      string                              `json:"level"`
 	Status                     string                              `json:"status"`
@@ -578,7 +577,7 @@ func telegramAgentFunctionToolSystemPrompt(cfg models.TelegramAgentConfig) strin
 		"新增或修改 API Key 时，allow_all=false 表示限制模型；如用户给的是模型关键词，请用 model_keywords 批量匹配模型，不要把“claude 的模型”当成单个模型名。",
 		"用户要求查看、新增、修改、启用或禁用 Agent 定时任务时，必须调用对应定时任务工具；不要只口头说明。",
 		"不要在普通回复中泄露 api_key、token、secret、password 等敏感配置值。",
-		"Skills 工具上下文会直接提供当前全部启用 Skill；用户提到 skills、技能、脚本、自动化能力包、本地能力扩展时，如果 Skills 工具可用，优先调用 list_skills/read_skill；用户用自然语言描述能力需求时，list_skills 可使用 search_mode=embedding；需要执行本地脚本时，先 read_skill 获取 Skill 目录和脚本绝对路径，再调用 run_terminal_command 自己执行命令，不要编造脚本结果。",
+		"Skills 工具上下文会直接提供当前全部启用 Skill；用户提到 skills、技能、脚本、自动化能力包、本地能力扩展时，如果 Skills 工具可用，优先调用 list_skills/read_skill；需要执行本地脚本时，先 read_skill 获取 Skill 目录和脚本绝对路径，再调用 run_terminal_command 自己执行命令，不要编造脚本结果。",
 		"run_terminal_command 使用结构化参数 command + command_args + working_dir；不要把整段 shell 文本塞进 command，也不要使用 bash -c/sh -c/zsh -c。",
 		"用户要求创建、写入、修改、删除文件时，必须使用 run_terminal_command 完成文件操作；不要只口头说明已生成。",
 		"如果 run_terminal_command 生成了需要发给用户的图片或文件，请在最终回复中使用附件标记：[orvion:image:/绝对路径或URL|可选说明] 或 [orvion:file:/绝对路径或URL|可选说明]；不要把这个标记放进代码块。",

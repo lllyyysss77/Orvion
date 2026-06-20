@@ -31,7 +31,6 @@ func GetSkills(c *gin.Context) {
 		c.Request.Context(),
 		cfg,
 		c.Query("query"),
-		c.DefaultQuery("search_mode", agent.TelegramAgentSkillSearchKeyword),
 	)
 	if err != nil {
 		common.InternalServerError(c, err.Error())
@@ -156,7 +155,6 @@ func ReloadSkills(c *gin.Context) {
 		c.Request.Context(),
 		cfg,
 		c.Query("query"),
-		c.DefaultQuery("search_mode", agent.TelegramAgentSkillSearchKeyword),
 	)
 	if err != nil {
 		common.InternalServerError(c, err.Error())

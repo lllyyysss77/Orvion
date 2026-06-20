@@ -99,7 +99,6 @@ function App() {
                   <Route path="auth-keys" element={<AuthKeysPage />} />
                   <Route path="skills" element={<AgentFeatureGate><SkillsPage /></AgentFeatureGate>} />
                   <Route path="action" element={<AgentFeatureGate><TelegramAgentPage /></AgentFeatureGate>} />
-                  <Route path="tg-agent" element={<Navigate to="/action" replace />} />
                   <Route path="tg-agent-schedules" element={<AgentFeatureGate><TelegramAgentSchedulesPage /></AgentFeatureGate>} />
                 </Route>
               </Routes>

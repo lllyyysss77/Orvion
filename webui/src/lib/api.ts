@@ -921,7 +921,6 @@ export interface TelegramAgentConfig {
   temperature?: number;
   edit_interval_ms: number;
   skills_enabled?: boolean;
-  skills_embedding_model?: string;
 }
 
 export interface SkillScript {
@@ -940,7 +939,6 @@ export interface SkillItem {
   instructions: string;
   triggers: string[];
   scripts: SkillScript[];
-  score?: number;
 }
 
 export interface SkillFileNode {
@@ -978,7 +976,6 @@ export interface SkillListResponse {
   total: number;
   skills_enabled: boolean;
   query: string;
-  search_mode: "keyword" | "embedding";
   scanned_at: string;
   message?: string;
 }
@@ -1004,7 +1001,6 @@ const normalizeSkillItem = (raw: unknown): SkillItem => {
     instructions: typeof record.instructions === "string" ? record.instructions : "",
     triggers: Array.isArray(record.triggers) ? record.triggers.filter((item): item is string => typeof item === "string") : [],
     scripts: Array.isArray(record.scripts) ? record.scripts.map(normalizeSkillScript) : [],
-    score: typeof record.score === "number" ? record.score : undefined,
   };
 };
 
@@ -1078,18 +1074,16 @@ export const configAPI = {
 };
 
 export const skillAPI = {
-  list: (params: { query?: string; search_mode?: "keyword" | "embedding" } = {}) => {
+  list: (params: { query?: string } = {}) => {
     const searchParams = new URLSearchParams();
     if (params.query) searchParams.append("query", params.query);
-    if (params.search_mode) searchParams.append("search_mode", params.search_mode);
     const query = searchParams.toString();
     return apiRequest<SkillListResponse>(query ? `/skills?${query}` : "/skills").then(normalizeSkillListResponse);
   },
 
-  reload: (params: { query?: string; search_mode?: "keyword" | "embedding" } = {}) => {
+  reload: (params: { query?: string } = {}) => {
     const searchParams = new URLSearchParams();
     if (params.query) searchParams.append("query", params.query);
-    if (params.search_mode) searchParams.append("search_mode", params.search_mode);
     const query = searchParams.toString();
     return apiRequest<SkillListResponse>(query ? `/skills/reload?${query}` : "/skills/reload", {
       method: "POST",

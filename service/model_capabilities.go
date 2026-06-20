@@ -94,12 +94,10 @@ func normalizeModelCapabilities(values []string) map[string]struct{} {
 	out := make(map[string]struct{}, len(values))
 	for _, raw := range values {
 		value := strings.ToLower(strings.TrimSpace(raw))
-		if value == "" {
-			continue
-		}
 		switch value {
-		case "embeddings", "embed":
-			value = ModelCapabilityEmbedding
+		case ModelCapabilityChat, ModelCapabilityVision, ModelCapabilityVideo, ModelCapabilityEmbedding, ModelCapabilityRerank:
+		default:
+			continue
 		}
 		out[value] = struct{}{}
 	}

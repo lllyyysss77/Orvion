@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm, type FieldErrors } from 'react-hook-form';
 import { z } from 'zod';
@@ -26,9 +26,7 @@ import {
 } from '@/components/ui/dialog';
 import {
   configAPI,
-  getModelOptions,
   type AnthropicProxyIPConfig,
-  type Model,
   type TelegramBreakerAlertConfig,
   type TelegramAgentConfig,
   type ProviderModel,
@@ -87,7 +85,6 @@ const telegramBreakerAlertSchema = z.object({
 const telegramAgentSchema = z.object({
   enabled: z.boolean(),
   skills_enabled: z.boolean(),
-  skills_embedding_model: z.string().trim(),
   base_url: z.string().trim(),
   api_key: z.string().trim(),
   model: z.string().trim(),
@@ -136,13 +133,11 @@ type GitHubVersionCheckForm = z.infer<typeof githubVersionCheckSchema>;
 type LoadingUIForm = z.infer<typeof loadingUISchema>;
 
 const UI_FONT_STORAGE_KEY = "orvion_ui_font";
-const TELEGRAM_AGENT_AUTO_MODEL_VALUE = "__auto_model__";
 const TELEGRAM_AGENT_CONFIG_CHANGED_EVENT = "telegram-agent-config-changed";
 
 const telegramAgentDefaultValues: TelegramAgentForm = {
   enabled: true,
   skills_enabled: false,
-  skills_embedding_model: '',
   base_url: '',
   api_key: '',
   model: '',
@@ -187,7 +182,6 @@ const applyUIFontSetting = (font: UIFontForm["font"]) => {
 
 export default function ConfigPage() {
   const [loading, setLoading] = useState(true);
-  const [modelOptions, setModelOptions] = useState<Model[]>([]);
   const [priceSyncing, setPriceSyncing] = useState(false);
   const [tgTesting, setTgTesting] = useState(false);
   const [telegramAgentSaving, setTelegramAgentSaving] = useState(false);
@@ -199,10 +193,6 @@ export default function ConfigPage() {
   const [telegramAgentModelDropdownOpen, setTelegramAgentModelDropdownOpen] = useState(false);
   const [displayConfigSaving, setDisplayConfigSaving] = useState(false);
   const [coreConfigSaving, setCoreConfigSaving] = useState(false);
-  const embeddingModelOptions = useMemo(() => {
-    const filtered = modelOptions.filter((model) => (model.Capabilities ?? []).includes('embedding'));
-    return filtered.length > 0 ? filtered : modelOptions;
-  }, [modelOptions]);
   const proxyForm = useForm<AnthropicProxyForm>({
     resolver: zodResolver(anthropicProxySchema),
     defaultValues: {
@@ -308,7 +298,6 @@ export default function ConfigPage() {
         const nextTelegramAgentConfig = {
           enabled: agentCfg.enabled !== false,
           skills_enabled: agentCfg.skills_enabled === true,
-          skills_embedding_model: agentCfg.skills_embedding_model || '',
           base_url: agentCfg.base_url || '',
           api_key: agentCfg.api_key || '',
           model: agentCfg.model || '',
@@ -323,14 +312,6 @@ export default function ConfigPage() {
       }
     } catch (error) {
       console.error('Failed to load telegram agent config:', error);
-    }
-
-    try {
-      const modelOptionsResponse = await getModelOptions();
-      setModelOptions(modelOptionsResponse);
-    } catch (error) {
-      console.error('Failed to load model options:', error);
-      setModelOptions([]);
     }
 
     try {
@@ -433,7 +414,6 @@ export default function ConfigPage() {
   const onTelegramAgentSubmit = async (values: TelegramAgentForm) => {
     const payload: TelegramAgentConfig = {
       ...values,
-      skills_embedding_model: values.skills_embedding_model.trim(),
       base_url: values.base_url.trim(),
       api_key: values.api_key.trim(),
       model: values.model.trim(),
@@ -888,7 +868,7 @@ export default function ConfigPage() {
                     />
                   </div>
 
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(10rem,0.45fr)_minmax(0,1fr)]">
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <FormField
                       control={telegramAgentForm.control}
                       name="skills_enabled"
@@ -901,35 +881,6 @@ export default function ConfigPage() {
                               onCheckedChange={(checked) => field.onChange(checked === true)}
                             />
                           </FormControl>
-                        </FormItem>
-                      )}
-                    />
-
-                    <FormField
-                      control={telegramAgentForm.control}
-                      name="skills_embedding_model"
-                      render={({ field }) => (
-                        <FormItem className="min-w-0 space-y-1">
-                          <FormLabel className="sr-only">Skills 向量模型</FormLabel>
-                          <FormControl>
-                            <Select
-                              value={field.value || TELEGRAM_AGENT_AUTO_MODEL_VALUE}
-                              onValueChange={(value) => field.onChange(value === TELEGRAM_AGENT_AUTO_MODEL_VALUE ? '' : value)}
-                            >
-                              <SelectTrigger className="h-9 w-full min-w-0 bg-background [&>span]:truncate">
-                                <SelectValue placeholder="选择向量模型" />
-                              </SelectTrigger>
-                              <SelectContent className="max-h-60">
-                                <SelectItem value={TELEGRAM_AGENT_AUTO_MODEL_VALUE}>本地向量检索</SelectItem>
-                                {embeddingModelOptions.map((model) => (
-                                  <SelectItem key={`skills-embedding-${model.ID}-${model.Name}`} value={model.Name}>
-                                    {model.Name}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                          </FormControl>
-                          <FormMessage />
                         </FormItem>
                       )}
                     />

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ChevronRight,
   FileCode2,
@@ -34,23 +34,18 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import Loading from "@/components/loading";
 import {
   configAPI,
-  getModelOptions,
   skillAPI,
-  type Model,
   type SkillFileContent,
   type SkillFileNode,
   type SkillItem,
   type TelegramAgentConfig,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
-
-const AUTO_VECTOR_MODEL = "__local_vector__";
 
 const defaultTelegramAgentConfig: TelegramAgentConfig = {
   enabled: true,
@@ -60,19 +55,14 @@ const defaultTelegramAgentConfig: TelegramAgentConfig = {
   max_tokens: 2048,
   edit_interval_ms: 1200,
   skills_enabled: false,
-  skills_embedding_model: "",
 };
-
-type SearchMode = "keyword" | "embedding";
 
 export default function SkillsPage() {
   const [loading, setLoading] = useState(true);
   const [skills, setSkills] = useState<SkillItem[]>([]);
   const [query, setQuery] = useState("");
-  const [searchMode, setSearchMode] = useState<SearchMode>("keyword");
   const [skillsEnabled, setSkillsEnabled] = useState(false);
   const [agentConfig, setAgentConfig] = useState<TelegramAgentConfig>(defaultTelegramAgentConfig);
-  const [modelOptions, setModelOptions] = useState<Model[]>([]);
   const [savingConfig, setSavingConfig] = useState(false);
   const [reloading, setReloading] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
@@ -92,26 +82,27 @@ export default function SkillsPage() {
   const [deleting, setDeleting] = useState(false);
   const zipInputRef = useRef<HTMLInputElement | null>(null);
 
-  const embeddingModelOptions = useMemo(() => {
-    const filtered = modelOptions.filter((model) => (model.Capabilities ?? []).includes("embedding"));
-    return filtered.length > 0 ? filtered : modelOptions;
-  }, [modelOptions]);
-
   const loadConfig = useCallback(async () => {
     const response = await configAPI.getConfig("telegram_agent");
     const parsed = response.value ? JSON.parse(response.value) as Partial<TelegramAgentConfig> : {};
     const next = {
-      ...defaultTelegramAgentConfig,
-      ...parsed,
+      enabled: parsed.enabled,
+      base_url: parsed.base_url,
+      api_key: parsed.api_key,
+      model: parsed.model || defaultTelegramAgentConfig.model,
+      system_prompt: parsed.system_prompt || defaultTelegramAgentConfig.system_prompt,
+      max_history_messages: Number(parsed.max_history_messages || defaultTelegramAgentConfig.max_history_messages),
+      max_tokens: Number(parsed.max_tokens || defaultTelegramAgentConfig.max_tokens),
+      temperature: parsed.temperature,
+      edit_interval_ms: Number(parsed.edit_interval_ms || defaultTelegramAgentConfig.edit_interval_ms),
       skills_enabled: parsed.skills_enabled === true,
-      skills_embedding_model: parsed.skills_embedding_model || "",
     };
     setAgentConfig(next);
     setSkillsEnabled(next.skills_enabled === true);
   }, []);
 
-  const loadSkills = useCallback(async (nextQuery = "", nextMode: SearchMode = "keyword") => {
-    const response = await skillAPI.list({ query: nextQuery.trim(), search_mode: nextMode });
+  const loadSkills = useCallback(async (nextQuery = "") => {
+    const response = await skillAPI.list({ query: nextQuery.trim() });
     setSkills(response.skills ?? []);
     setSkillsEnabled(response.skills_enabled === true);
   }, []);
@@ -119,7 +110,7 @@ export default function SkillsPage() {
   const loadPage = useCallback(async () => {
     try {
       setLoading(true);
-      await Promise.all([loadConfig(), getModelOptions().then(setModelOptions)]);
+      await loadConfig();
       await loadSkills();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "加载 Skills 失败");
@@ -134,7 +125,7 @@ export default function SkillsPage() {
 
   const handleSearch = async () => {
     try {
-      await loadSkills(query, searchMode);
+      await loadSkills(query);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "检索 Skills 失败");
     }
@@ -143,7 +134,7 @@ export default function SkillsPage() {
   const handleReload = async () => {
     try {
       setReloading(true);
-      const response = await skillAPI.reload({ query: query.trim(), search_mode: searchMode });
+      const response = await skillAPI.reload({ query: query.trim() });
       setSkills(response.skills ?? []);
       setSkillsEnabled(response.skills_enabled === true);
       toast.success(response.message || "Skills 已热重载");
@@ -156,16 +147,23 @@ export default function SkillsPage() {
 
   const handleSaveConfig = async () => {
     const nextConfig: TelegramAgentConfig = {
-      ...agentConfig,
+      enabled: agentConfig.enabled,
+      base_url: agentConfig.base_url,
+      api_key: agentConfig.api_key,
+      model: agentConfig.model,
+      system_prompt: agentConfig.system_prompt,
+      max_history_messages: agentConfig.max_history_messages,
+      max_tokens: agentConfig.max_tokens,
+      temperature: agentConfig.temperature,
+      edit_interval_ms: agentConfig.edit_interval_ms,
       skills_enabled: skillsEnabled,
-      skills_embedding_model: (agentConfig.skills_embedding_model || "").trim(),
     };
     try {
       setSavingConfig(true);
       await configAPI.updateConfig("telegram_agent", nextConfig);
       setAgentConfig(nextConfig);
       toast.success("Skills 配置已保存");
-      await loadSkills(query, searchMode);
+      await loadSkills(query);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "保存 Skills 配置失败");
     } finally {
@@ -245,7 +243,7 @@ export default function SkillsPage() {
       setFileContent(updated);
       setDraftContent(updated.content ?? "");
       toast.success("Skill 文件已保存");
-      await loadSkills(query, searchMode);
+      await loadSkills(query);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "保存 Skill 文件失败");
     } finally {
@@ -265,7 +263,7 @@ export default function SkillsPage() {
         handleEditorOpenChange(false);
       }
       setDeleteTarget(null);
-      await loadSkills(query, searchMode);
+      await loadSkills(query);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "移除 Skill 失败");
     } finally {
@@ -289,7 +287,7 @@ export default function SkillsPage() {
       setUploadFiles([]);
       setImportName("");
       setUploadOpen(false);
-      await loadSkills(query, searchMode);
+      await loadSkills(query);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "上传 Skill 失败");
     } finally {
@@ -310,7 +308,7 @@ export default function SkillsPage() {
             <Sparkles className="size-5 text-emerald-600" />
             <h2 className="text-2xl font-semibold tracking-tight">Skills 管理</h2>
           </div>
-          <p className="mt-1 text-sm text-muted-foreground">管理本地能力包、脚本执行和 Agent 语义检索。</p>
+          <p className="mt-1 text-sm text-muted-foreground">管理本地能力包、脚本执行和 Agent 工具上下文。</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button variant="outline" className="h-9 gap-2" onClick={handleReload} disabled={reloading}>
@@ -325,30 +323,11 @@ export default function SkillsPage() {
       </div>
 
       <Card className="rounded-2xl border border-border/60 bg-card/90">
-        <CardContent className="grid grid-cols-1 gap-3 p-4 lg:grid-cols-[minmax(9rem,0.55fr)_minmax(0,1fr)_minmax(0,1fr)_auto]">
+        <CardContent className="grid grid-cols-1 gap-3 p-4 lg:grid-cols-[minmax(9rem,0.45fr)_minmax(0,1fr)_auto]">
           <div className="flex h-9 items-center justify-between rounded-lg border border-border/60 bg-muted/50 px-3">
             <Label className="text-xs text-muted-foreground">启用 Skills</Label>
             <Switch checked={skillsEnabled} onCheckedChange={setSkillsEnabled} />
           </div>
-          <Select
-            value={agentConfig.skills_embedding_model || AUTO_VECTOR_MODEL}
-            onValueChange={(value) => setAgentConfig((current) => ({
-              ...current,
-              skills_embedding_model: value === AUTO_VECTOR_MODEL ? "" : value,
-            }))}
-          >
-            <SelectTrigger className="h-9 bg-background">
-              <SelectValue placeholder="选择向量模型" />
-            </SelectTrigger>
-            <SelectContent className="max-h-72">
-              <SelectItem value={AUTO_VECTOR_MODEL}>本地向量检索</SelectItem>
-              {embeddingModelOptions.map((model) => (
-                <SelectItem key={`skill-vector-${model.ID}-${model.Name}`} value={model.Name}>
-                  {model.Name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
           <div className="flex min-w-0 gap-2">
             <Input
               className="h-9"
@@ -359,15 +338,6 @@ export default function SkillsPage() {
               }}
               placeholder="搜索 Skill"
             />
-            <Select value={searchMode} onValueChange={(value) => setSearchMode(value as SearchMode)}>
-              <SelectTrigger className="h-9 w-[7.5rem] shrink-0 bg-background">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="keyword">关键词</SelectItem>
-                <SelectItem value="embedding">Embedding</SelectItem>
-              </SelectContent>
-            </Select>
           </div>
           <div className="flex gap-2">
             <Button variant="outline" className="h-9 gap-2" onClick={handleSearch}>
@@ -428,7 +398,6 @@ export default function SkillsPage() {
                     {skill.enabled ? "启用" : "禁用"}
                   </Badge>
                   <Badge variant="outline" className="rounded-md">{skill.scripts.length} 个脚本</Badge>
-                  {skill.score ? <Badge variant="outline" className="rounded-md">相似度 {skill.score.toFixed(3)}</Badge> : null}
                   {skill.triggers.slice(0, 2).map((trigger) => (
                     <Badge key={trigger} variant="secondary" className="rounded-md">{trigger}</Badge>
                   ))}

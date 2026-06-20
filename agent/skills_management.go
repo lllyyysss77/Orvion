@@ -6,31 +6,20 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"hash/fnv"
 	"io"
 	"io/fs"
-	"math"
-	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
-	"unicode"
 	"unicode/utf8"
 
-	"github.com/racio/orvion/consts"
 	"github.com/racio/orvion/models"
-	"github.com/racio/orvion/providers"
-	runtimesvc "github.com/racio/orvion/service/runtime"
 	"gorm.io/gorm"
 )
 
 const (
-	TelegramAgentSkillSearchKeyword   = "keyword"
-	TelegramAgentSkillSearchEmbedding = "embedding"
-
-	telegramAgentSkillEmbeddingDims       = 256
 	telegramAgentSkillFileMaxBytes        = 1024 * 1024
 	telegramAgentSkillMaxFileNodes        = 2000
 	telegramAgentDynamicSkillContextLimit = 5
@@ -53,7 +42,6 @@ type TelegramAgentSkillView struct {
 	Instructions string                         `json:"instructions"`
 	Triggers     []string                       `json:"triggers"`
 	Scripts      []TelegramAgentSkillScriptView `json:"scripts"`
-	Score        float64                        `json:"score,omitempty"`
 }
 
 type TelegramAgentSkillListResult struct {
@@ -61,7 +49,6 @@ type TelegramAgentSkillListResult struct {
 	Total         int                      `json:"total"`
 	SkillsEnabled bool                     `json:"skills_enabled"`
 	Query         string                   `json:"query"`
-	SearchMode    string                   `json:"search_mode"`
 	ScannedAt     time.Time                `json:"scanned_at"`
 }
 
@@ -111,12 +98,12 @@ type TelegramAgentSkillDeleteResult struct {
 	Message string `json:"message"`
 }
 
-func ListTelegramAgentSkillsForManagement(ctx context.Context, cfg models.TelegramAgentConfig, query string, searchMode string) (TelegramAgentSkillListResult, error) {
+func ListTelegramAgentSkillsForManagement(ctx context.Context, cfg models.TelegramAgentConfig, query string) (TelegramAgentSkillListResult, error) {
 	skills, err := scanTelegramAgentSkills(ctx, cfg)
 	if err != nil {
 		return TelegramAgentSkillListResult{}, err
 	}
-	filtered, err := filterTelegramAgentSkillViews(ctx, cfg, skills, query, searchMode)
+	filtered, err := filterTelegramAgentSkillViews(skills, query)
 	if err != nil {
 		return TelegramAgentSkillListResult{}, err
 	}
@@ -125,13 +112,12 @@ func ListTelegramAgentSkillsForManagement(ctx context.Context, cfg models.Telegr
 		Total:         len(filtered),
 		SkillsEnabled: telegramAgentSkillsEnabled(cfg),
 		Query:         strings.TrimSpace(query),
-		SearchMode:    normalizeTelegramAgentSkillSearchMode(searchMode),
 		ScannedAt:     time.Now(),
 	}, nil
 }
 
-func ReloadTelegramAgentSkillsForManagement(ctx context.Context, cfg models.TelegramAgentConfig, query string, searchMode string) (TelegramAgentSkillReloadResult, error) {
-	result, err := ListTelegramAgentSkillsForManagement(ctx, cfg, query, searchMode)
+func ReloadTelegramAgentSkillsForManagement(ctx context.Context, cfg models.TelegramAgentConfig, query string) (TelegramAgentSkillReloadResult, error) {
+	result, err := ListTelegramAgentSkillsForManagement(ctx, cfg, query)
 	if err != nil {
 		return TelegramAgentSkillReloadResult{}, err
 	}
@@ -359,7 +345,7 @@ func ReadTelegramAgentSkillForManagement(ctx context.Context, cfg models.Telegra
 	if err != nil {
 		return TelegramAgentSkillView{}, err
 	}
-	return toTelegramAgentSkillView(skill, 0), nil
+	return toTelegramAgentSkillView(skill), nil
 }
 
 func ListTelegramAgentSkillFilesForManagement(ctx context.Context, cfg models.TelegramAgentConfig, name string) (TelegramAgentSkillFileTreeResult, error) {
@@ -373,7 +359,7 @@ func ListTelegramAgentSkillFilesForManagement(ctx context.Context, cfg models.Te
 		return TelegramAgentSkillFileTreeResult{}, err
 	}
 	return TelegramAgentSkillFileTreeResult{
-		Skill: toTelegramAgentSkillView(skill, 0),
+		Skill: toTelegramAgentSkillView(skill),
 		Root:  skill.Dir,
 		Files: files,
 	}, nil
@@ -497,7 +483,7 @@ func SetTelegramAgentSkillEnabled(ctx context.Context, cfg models.TelegramAgentC
 	}
 	if models.DB == nil {
 		skill.Enabled = enabled
-		return toTelegramAgentSkillView(skill, 0), nil
+		return toTelegramAgentSkillView(skill), nil
 	}
 	if err := models.DB.WithContext(ctx).Model(&models.TelegramAgentSkill{}).
 		Where("name = ?", skill.Name).
@@ -508,7 +494,7 @@ func SetTelegramAgentSkillEnabled(ctx context.Context, cfg models.TelegramAgentC
 	if err != nil {
 		return TelegramAgentSkillView{}, err
 	}
-	return toTelegramAgentSkillView(skill, 0), nil
+	return toTelegramAgentSkillView(skill), nil
 }
 
 func boolToTelegramSkillEnabledInt(enabled bool) int {
@@ -549,7 +535,7 @@ func ImportTelegramAgentSkill(ctx context.Context, cfg models.TelegramAgentConfi
 	if _, err := os.Stat(target); err == nil {
 		if !req.Overwrite {
 			if skill, parseErr := parseTelegramAgentSkillFromDir(target); parseErr == nil {
-				return toTelegramAgentSkillView(skill, 0), nil
+				return toTelegramAgentSkillView(skill), nil
 			}
 			return TelegramAgentSkillView{}, fmt.Errorf("Skill 已存在：%s", skillName)
 		}
@@ -588,7 +574,7 @@ func ImportTelegramAgentSkill(ctx context.Context, cfg models.TelegramAgentConfi
 		}
 		skill.Enabled = record.Enabled != 0
 	}
-	return toTelegramAgentSkillView(skill, 0), nil
+	return toTelegramAgentSkillView(skill), nil
 }
 
 func parseTelegramAgentSkillFromDir(dir string) (telegramAgentSkill, error) {
@@ -651,40 +637,13 @@ func scanTelegramAgentSkillsFromRoot(root string) ([]telegramAgentSkill, error) 
 	return skills, nil
 }
 
-func filterTelegramAgentSkillViews(ctx context.Context, cfg models.TelegramAgentConfig, skills []telegramAgentSkill, query string, searchMode string) ([]TelegramAgentSkillView, error) {
+func filterTelegramAgentSkillViews(skills []telegramAgentSkill, query string) ([]TelegramAgentSkillView, error) {
 	query = strings.TrimSpace(query)
-	mode := normalizeTelegramAgentSkillSearchMode(searchMode)
 	if query == "" {
 		views := make([]TelegramAgentSkillView, 0, len(skills))
 		for _, skill := range skills {
-			views = append(views, toTelegramAgentSkillView(skill, 0))
+			views = append(views, toTelegramAgentSkillView(skill))
 		}
-		return views, nil
-	}
-
-	if mode == TelegramAgentSkillSearchEmbedding {
-		queryVector, err := buildTelegramAgentSkillEmbedding(ctx, cfg, query)
-		if err != nil {
-			return nil, err
-		}
-		views := make([]TelegramAgentSkillView, 0, len(skills))
-		for _, skill := range skills {
-			skillVector, err := buildTelegramAgentSkillEmbedding(ctx, cfg, telegramAgentSkillSearchText(skill))
-			if err != nil {
-				return nil, err
-			}
-			score := telegramAgentSkillCosine(queryVector, skillVector)
-			if score <= 0 {
-				continue
-			}
-			views = append(views, toTelegramAgentSkillView(skill, score))
-		}
-		sort.SliceStable(views, func(i, j int) bool {
-			if views[i].Score == views[j].Score {
-				return strings.ToLower(views[i].Name) < strings.ToLower(views[j].Name)
-			}
-			return views[i].Score > views[j].Score
-		})
 		return views, nil
 	}
 
@@ -692,13 +651,13 @@ func filterTelegramAgentSkillViews(ctx context.Context, cfg models.TelegramAgent
 	views := make([]TelegramAgentSkillView, 0, len(skills))
 	for _, skill := range skills {
 		if telegramAgentSkillMatches(skill, keyword) {
-			views = append(views, toTelegramAgentSkillView(skill, 0))
+			views = append(views, toTelegramAgentSkillView(skill))
 		}
 	}
 	return views, nil
 }
 
-func toTelegramAgentSkillView(skill telegramAgentSkill, score float64) TelegramAgentSkillView {
+func toTelegramAgentSkillView(skill telegramAgentSkill) TelegramAgentSkillView {
 	scripts := make([]TelegramAgentSkillScriptView, 0, len(skill.Scripts))
 	for _, script := range skill.Scripts {
 		scripts = append(scripts, TelegramAgentSkillScriptView{
@@ -718,7 +677,6 @@ func toTelegramAgentSkillView(skill telegramAgentSkill, score float64) TelegramA
 		Instructions: skill.Instructions,
 		Triggers:     append([]string{}, skill.Triggers...),
 		Scripts:      scripts,
-		Score:        score,
 	}
 }
 
@@ -792,302 +750,12 @@ func isTelegramAgentSkillTextFile(raw []byte) bool {
 	return bytes.IndexByte(raw, 0) < 0 && utf8.Valid(raw)
 }
 
-func normalizeTelegramAgentSkillSearchMode(value string) string {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case TelegramAgentSkillSearchEmbedding:
-		return TelegramAgentSkillSearchEmbedding
-	default:
-		return TelegramAgentSkillSearchKeyword
-	}
-}
-
 func telegramAgentSkillSearchText(skill telegramAgentSkill) string {
 	parts := []string{skill.Name, skill.Description, strings.Join(skill.Triggers, " "), skill.Instructions}
 	for _, script := range skill.Scripts {
 		parts = append(parts, script.Name, script.Description, strings.Join(script.Usage, " "))
 	}
 	return strings.Join(parts, "\n")
-}
-
-func buildTelegramAgentSkillEmbedding(ctx context.Context, cfg models.TelegramAgentConfig, text string) ([]float64, error) {
-	if strings.TrimSpace(cfg.SkillsEmbeddingModel) == "" {
-		return telegramAgentSkillLocalEmbeddingVector(text), nil
-	}
-	vector, err := buildTelegramAgentRemoteSkillEmbedding(ctx, cfg, text)
-	if err != nil {
-		return nil, err
-	}
-	if len(vector) == 0 {
-		return nil, errors.New("远端向量模型返回空 embedding")
-	}
-	return normalizeTelegramAgentSkillVector(vector), nil
-}
-
-func buildTelegramAgentRemoteSkillEmbedding(ctx context.Context, cfg models.TelegramAgentConfig, text string) ([]float64, error) {
-	selected, err := selectTelegramAgentEmbeddingModelProvider(ctx, cfg.SkillsEmbeddingModel)
-	if err != nil {
-		return nil, err
-	}
-	body, requestCtx, err := buildTelegramAgentEmbeddingRequestBody(ctx, selected.ProviderStyle, text)
-	if err != nil {
-		return nil, err
-	}
-	provider, err := providers.NewForStyleWithProxy(selected.ProviderStyle, selected.ProviderConfig, selected.ProviderProxy)
-	if err != nil {
-		return nil, err
-	}
-	header := runtimesvc.BuildHeaders(nil, selected.WithHeader, selected.CustomerHeaders, false)
-	req, err := provider.BuildReq(requestCtx, header, selected.ProviderModel, body)
-	if err != nil {
-		return nil, err
-	}
-	timeout := time.Duration(selected.TimeoutSeconds) * time.Second
-	if timeout <= 0 {
-		timeout = 30 * time.Second
-	}
-	client, err := providers.GetClientWithProxy(timeout, selected.ProviderProxy)
-	if err != nil {
-		return nil, err
-	}
-	res, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer res.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(res.Body, 2*1024*1024))
-	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%s/%s embeddings 返回状态 %d: %s", selected.ProviderName, selected.ProviderModel, res.StatusCode, strings.TrimSpace(string(raw)))
-	}
-	vector := parseTelegramAgentEmbeddingVector(selected.ProviderStyle, raw)
-	if len(vector) == 0 {
-		return nil, errors.New("无法解析远端向量模型响应")
-	}
-	return vector, nil
-}
-
-func selectTelegramAgentEmbeddingModelProvider(ctx context.Context, modelName string) (selectedModelProvider, error) {
-	if models.DB == nil {
-		return selectedModelProvider{}, errors.New("数据库未初始化")
-	}
-	modelName = strings.TrimSpace(modelName)
-	if modelName == "" {
-		return selectedModelProvider{}, errors.New("未配置 Skills 向量模型")
-	}
-
-	var model models.Model
-	if err := models.DB.WithContext(ctx).Where("status = ? AND name = ?", 1, modelName).First(&model).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return selectedModelProvider{}, fmt.Errorf("未找到可用向量模型：%s", modelName)
-		}
-		return selectedModelProvider{}, err
-	}
-
-	var associations []models.ModelWithProvider
-	now := time.Now()
-	if err := models.DB.WithContext(ctx).
-		Where("model_id = ? AND status = ?", model.ID, 1).
-		Where("(auto_disabled_until IS NULL OR auto_disabled_until <= ?)", now).
-		Order("weight DESC, id ASC").
-		Find(&associations).Error; err != nil {
-		return selectedModelProvider{}, err
-	}
-	if len(associations) == 0 {
-		return selectedModelProvider{}, fmt.Errorf("向量模型 %s 没有可用提供商", model.Name)
-	}
-
-	providerIDs := make([]uint, 0, len(associations))
-	for _, item := range associations {
-		providerIDs = append(providerIDs, item.ProviderID)
-	}
-	var providerList []models.Provider
-	if err := models.DB.WithContext(ctx).
-		Where("id IN ?", providerIDs).
-		Where("status = ?", 1).
-		Find(&providerList).Error; err != nil {
-		return selectedModelProvider{}, err
-	}
-	providerByID := make(map[uint]models.Provider, len(providerList))
-	for _, provider := range providerList {
-		providerByID[provider.ID] = provider
-	}
-
-	for _, association := range associations {
-		provider, ok := providerByID[association.ProviderID]
-		if !ok {
-			continue
-		}
-		if !models.ProviderSupportsEndpoint(provider.Capabilities, "embeddings") {
-			continue
-		}
-		style := providers.ResolveStyle("", provider.Config)
-		if style != consts.StyleOpenAI && style != consts.StyleGemini {
-			continue
-		}
-
-		customHeaders := map[string]string{}
-		if strings.TrimSpace(association.CustomerHeaders) != "" {
-			_ = json.Unmarshal([]byte(association.CustomerHeaders), &customHeaders)
-		}
-		timeoutSeconds := model.TimeOut
-		if timeoutSeconds <= 0 {
-			timeoutSeconds = 30
-		}
-		return selectedModelProvider{
-			ModelName:       model.Name,
-			ProviderModel:   association.ProviderModel,
-			ProviderName:    provider.Name,
-			ProviderConfig:  provider.Config,
-			ProviderProxy:   provider.ProxyURL,
-			ProviderStyle:   style,
-			WithHeader:      association.WithHeader == 1,
-			CustomerHeaders: customHeaders,
-			TimeoutSeconds:  timeoutSeconds,
-		}, nil
-	}
-	return selectedModelProvider{}, fmt.Errorf("向量模型 %s 没有支持 embeddings 的可用提供商", model.Name)
-}
-
-func buildTelegramAgentEmbeddingRequestBody(ctx context.Context, style string, text string) ([]byte, context.Context, error) {
-	switch style {
-	case consts.StyleGemini:
-		body, err := json.Marshal(map[string]any{
-			"content": map[string]any{
-				"parts": []map[string]string{{"text": text}},
-			},
-		})
-		return body, context.WithValue(ctx, consts.ContextKeyGeminiMethod, "embedContent"), err
-	default:
-		body, err := json.Marshal(map[string]any{"input": text})
-		return body, context.WithValue(ctx, consts.ContextKeyOpenAIEndpoint, "embeddings"), err
-	}
-}
-
-func parseTelegramAgentEmbeddingVector(style string, raw []byte) []float64 {
-	var payload any
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return nil
-	}
-	root, ok := payload.(map[string]any)
-	if !ok {
-		return nil
-	}
-	var values any
-	if style == consts.StyleGemini {
-		if embedding, ok := root["embedding"].(map[string]any); ok {
-			values = embedding["values"]
-		}
-	} else if data, ok := root["data"].([]any); ok && len(data) > 0 {
-		if first, ok := data[0].(map[string]any); ok {
-			values = first["embedding"]
-		}
-	}
-	return floatsFromTelegramAgentEmbeddingValue(values)
-}
-
-func floatsFromTelegramAgentEmbeddingValue(value any) []float64 {
-	items, ok := value.([]any)
-	if !ok {
-		return nil
-	}
-	result := make([]float64, 0, len(items))
-	for _, item := range items {
-		switch typed := item.(type) {
-		case float64:
-			result = append(result, typed)
-		case float32:
-			result = append(result, float64(typed))
-		case int:
-			result = append(result, float64(typed))
-		}
-	}
-	return result
-}
-
-func normalizeTelegramAgentSkillVector(vector []float64) []float64 {
-	var norm float64
-	for _, value := range vector {
-		norm += value * value
-	}
-	if norm == 0 {
-		return vector
-	}
-	norm = math.Sqrt(norm)
-	out := make([]float64, len(vector))
-	for index := range vector {
-		out[index] = vector[index] / norm
-	}
-	return out
-}
-
-func telegramAgentSkillLocalEmbeddingVector(text string) []float64 {
-	vector := make([]float64, telegramAgentSkillEmbeddingDims)
-	for _, token := range tokenizeTelegramAgentSkillText(text) {
-		if token == "" {
-			continue
-		}
-		index := telegramAgentSkillHashIndex(token)
-		vector[index]++
-	}
-	var norm float64
-	for _, value := range vector {
-		norm += value * value
-	}
-	if norm == 0 {
-		return vector
-	}
-	norm = math.Sqrt(norm)
-	for index := range vector {
-		vector[index] /= norm
-	}
-	return normalizeTelegramAgentSkillVector(vector)
-}
-
-func tokenizeTelegramAgentSkillText(text string) []string {
-	text = strings.ToLower(strings.TrimSpace(text))
-	if text == "" {
-		return nil
-	}
-	fields := strings.FieldsFunc(text, func(r rune) bool {
-		return unicode.IsSpace(r) || unicode.IsPunct(r) || unicode.IsSymbol(r)
-	})
-	tokens := make([]string, 0, len(fields)*2)
-	for _, field := range fields {
-		field = strings.TrimSpace(field)
-		if field == "" {
-			continue
-		}
-		tokens = append(tokens, field)
-		runes := []rune(field)
-		if len(runes) >= 2 {
-			for i := 0; i < len(runes)-1; i++ {
-				tokens = append(tokens, string(runes[i:i+2]))
-			}
-		}
-		if len(runes) >= 3 {
-			for i := 0; i < len(runes)-2; i++ {
-				tokens = append(tokens, string(runes[i:i+3]))
-			}
-		}
-	}
-	return tokens
-}
-
-func telegramAgentSkillHashIndex(token string) int {
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(token))
-	return int(h.Sum32() % telegramAgentSkillEmbeddingDims)
-}
-
-func telegramAgentSkillCosine(left []float64, right []float64) float64 {
-	limit := len(left)
-	if len(right) < limit {
-		limit = len(right)
-	}
-	var score float64
-	for i := 0; i < limit; i++ {
-		score += left[i] * right[i]
-	}
-	return score
 }
 
 func normalizeTelegramAgentSkillImportSource(source string) (string, error) {
