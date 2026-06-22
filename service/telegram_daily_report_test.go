@@ -22,13 +22,13 @@ func TestShouldRunTelegramDailyUsageReport(t *testing.T) {
 	}{
 		{
 			name:     "未到触发时间不执行",
-			now:      time.Date(2026, 4, 18, 8, 59, 59, 0, loc),
+			now:      time.Date(2026, 4, 18, 6, 59, 59, 0, loc),
 			lastSent: "",
 			wantRun:  false,
 		},
 		{
-			name:     "到达九点执行",
-			now:      time.Date(2026, 4, 18, 9, 0, 0, 0, loc),
+			name:     "到达七点执行",
+			now:      time.Date(2026, 4, 18, 7, 0, 0, 0, loc),
 			lastSent: "",
 			wantRun:  true,
 		},
@@ -40,7 +40,7 @@ func TestShouldRunTelegramDailyUsageReport(t *testing.T) {
 		},
 		{
 			name:     "跨天后可再次执行",
-			now:      time.Date(2026, 4, 19, 9, 1, 0, 0, loc),
+			now:      time.Date(2026, 4, 19, 7, 1, 0, 0, loc),
 			lastSent: "2026-04-18",
 			wantRun:  true,
 		},

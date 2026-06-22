@@ -866,9 +866,6 @@ export default function ConfigPage() {
                         </FormItem>
                       )}
                     />
-                  </div>
-
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <FormField
                       control={telegramAgentForm.control}
                       name="skills_enabled"
@@ -931,15 +928,6 @@ export default function ConfigPage() {
           </Card>
 
           <Card className="rounded-2xl border border-border/60 bg-card/90 shadow-[0_18px_45px_rgba(0,0,0,0.08)]">
-            <CardHeader className="pb-2">
-              <CardTitle className="flex items-center gap-2 text-sm font-semibold">
-                <Coins className="size-4 text-emerald-600" />
-                核心配置
-              </CardTitle>
-              <CardDescription className="text-xs">
-                核心运行能力配置：系统日志清理、模型价格同步、全局代理 IP
-              </CardDescription>
-            </CardHeader>
             <CardContent className="space-y-3">
               <div className="space-y-2">
                 <div className="space-y-0.5">

@@ -554,8 +554,10 @@ const DailyModelCostCard = memo(({ trend }: DailyModelCostCardProps) => {
     [trend.series]
   );
 
-  const axisMax = DAILY_MODEL_COST_AXIS_MAX;
-  const yTicks = DAILY_MODEL_COST_Y_TICKS;
+  const { axisMax, yTicks } = useMemo(
+    () => buildDailyModelCostAxis(trend.totals),
+    [trend.totals]
+  );
 
   const groupWidth = trend.labels.length > 0 ? plotWidth / trend.labels.length : plotWidth;
   const barWidth = Math.min(44, Math.max(16, groupWidth * 0.58));
@@ -578,9 +580,8 @@ const DailyModelCostCard = memo(({ trend }: DailyModelCostCardProps) => {
       label: trend.labels[hoveredIndex],
       total: trend.totals[hoveredIndex] ?? 0,
       breakdown,
-      exceedAxisMax: (trend.totals[hoveredIndex] ?? 0) > axisMax,
     };
-  }, [axisMax, hoveredIndex, seriesWithVisual, trend.labels, trend.totals]);
+  }, [hoveredIndex, seriesWithVisual, trend.labels, trend.totals]);
 
   return (
     <Card className={`${cardHoverClass} gap-3 h-full min-h-[460px]`}>
@@ -728,11 +729,6 @@ const DailyModelCostCard = memo(({ trend }: DailyModelCostCardProps) => {
               <div className="pointer-events-none absolute right-3 top-3 z-20 w-52 rounded-xl border border-border/70 bg-card/95 px-3 py-2 text-xs shadow-md backdrop-blur-sm">
                 <div className="font-semibold text-foreground">{tooltip.label}</div>
                 <div className="mt-1 text-muted-foreground">Total: {formatMoney(tooltip.total, 4)}</div>
-                {tooltip.exceedAxisMax && (
-                  <div className="mt-1 text-[10px] text-amber-600">
-                    超过坐标上限 $60，柱体已封顶显示
-                  </div>
-                )}
                 <div className="mt-2 space-y-1">
                   {tooltip.breakdown.map((item) => (
                     <div key={item.model} className="flex items-center justify-between gap-2">
@@ -1100,12 +1096,40 @@ const formatAmountValue = (value: number) => {
   return value.toFixed(6).replace(/\.?0+$/, "");
 };
 
-const DAILY_MODEL_COST_AXIS_MAX = 60;
-const DAILY_MODEL_COST_Y_TICKS = [0, 10, 20, 30, 40, 50, 60];
+const DAILY_MODEL_COST_TICK_COUNT = 5;
+
+const getNiceDailyModelCostStep = (rawStep: number) => {
+  if (!Number.isFinite(rawStep) || rawStep <= 0) return 1;
+  const magnitude = 10 ** Math.floor(Math.log10(rawStep));
+  const normalized = rawStep / magnitude;
+  const factor = [1, 1.5, 2, 2.5, 5, 10].find((item) => normalized <= item) ?? 10;
+  return factor * magnitude;
+};
+
+const buildDailyModelCostAxis = (totals: number[]) => {
+  const maxTotal = totals.reduce((max, value) => (
+    Number.isFinite(value) && value > max ? value : max
+  ), 0);
+  if (maxTotal <= 0) {
+    return {
+      axisMax: 1,
+      yTicks: Array.from({ length: DAILY_MODEL_COST_TICK_COUNT + 1 }, (_, index) => index / DAILY_MODEL_COST_TICK_COUNT),
+    };
+  }
+
+  const paddedMax = maxTotal * 1.05;
+  const step = getNiceDailyModelCostStep(paddedMax / DAILY_MODEL_COST_TICK_COUNT);
+  const axisMax = step * DAILY_MODEL_COST_TICK_COUNT;
+  return {
+    axisMax,
+    yTicks: Array.from({ length: DAILY_MODEL_COST_TICK_COUNT + 1 }, (_, index) => step * index),
+  };
+};
 
 const formatAxisTick = (value: number) => {
   if (!Number.isFinite(value)) return "0";
-  return value.toFixed(0);
+  if (Math.abs(value) >= 1000) return formatCompactValue(value);
+  return formatAmountValue(value);
 };
 
 type HomeHeaderProps = {

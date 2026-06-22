@@ -48,7 +48,7 @@ const (
 	telegramModelListPageSize         = 12
 	telegramModelProviderListPageSize = 8
 
-	telegramDailyUsageReportHour          = 9
+	telegramDailyUsageReportHour          = 7
 	telegramDailyUsageReportMinute        = 0
 	telegramDailyUsageReportCheckInterval = 1 * time.Minute
 )
@@ -181,7 +181,7 @@ func StartTelegramCommandBot(ctx context.Context) {
 	pkg.GoSafe("service.telegram_command_loop", func() { telegramCommandLoop(ctx) })
 }
 
-// StartTelegramDailyUsageReport 每天早上 9 点推送前一天使用日报。
+// StartTelegramDailyUsageReport 每天早上 7 点推送前一天使用日报。
 func StartTelegramDailyUsageReport(ctx context.Context) {
 	pkg.GoSafe("service.telegram_daily_usage_report_loop", func() { telegramDailyUsageReportLoop(ctx) })
 }
