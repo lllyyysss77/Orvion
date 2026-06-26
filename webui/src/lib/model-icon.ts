@@ -4,6 +4,7 @@ type ModelIconAsset = {
   tokens: string[];
   src: string;
   alt: string;
+  formatPriority: number;
 };
 
 const iconModules = import.meta.glob("../assets/modelIcon/*.{svg,png,jpg,jpeg,webp,avif,gif,ico}", {
@@ -32,6 +33,27 @@ const toTitle = (value: string): string =>
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
     .join(" ");
 
+const getIconFormatPriority = (filename: string): number => {
+  const extension = filename.split(".").pop()?.toLowerCase() ?? "";
+  switch (extension) {
+    case "svg":
+      return 5;
+    case "png":
+    case "webp":
+    case "avif":
+      return 4;
+    case "jpg":
+    case "jpeg":
+      return 3;
+    case "gif":
+      return 2;
+    case "ico":
+      return 1;
+    default:
+      return 0;
+  }
+};
+
 const modelIconAssets: ModelIconAsset[] = Object.entries(iconModules)
   .map(([path, src]) => {
     const filename = path.split("/").pop() ?? "";
@@ -42,10 +64,11 @@ const modelIconAssets: ModelIconAsset[] = Object.entries(iconModules)
       tokens: tokenizeForMatch(key),
       src,
       alt: toTitle(key),
+      formatPriority: getIconFormatPriority(filename),
     };
   })
   .filter((item) => item.normalizedKey.length >= 2)
-  .sort((a, b) => b.normalizedKey.length - a.normalizedKey.length);
+  .sort((a, b) => b.normalizedKey.length - a.normalizedKey.length || b.formatPriority - a.formatPriority);
 
 const modelIconAliases = [
   {

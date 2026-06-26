@@ -56,6 +56,11 @@ type TelegramMessage struct {
 	Attachments []TelegramInputAttachment
 }
 
+type TelegramRuntimeResetResult struct {
+	ConversationID  string
+	ClearedSessions int
+}
+
 type TelegramInputAttachment struct {
 	FileName string
 	MIMEType string
@@ -1305,6 +1310,31 @@ func ForgetTelegramConversation(chatID int64, conversationID string) {
 		session.messages = nil
 		telegramSessions.Delete(chatID)
 	}
+}
+
+func ResetTelegramRuntime(ctx context.Context, chatID int64) (TelegramRuntimeResetResult, error) {
+	clearedSessions := 0
+	telegramSessions.Range(func(key any, value any) bool {
+		session, ok := value.(*chatSession)
+		if ok {
+			session.mu.Lock()
+			session.conversationID = ""
+			session.messages = nil
+			session.mu.Unlock()
+		}
+		telegramSessions.Delete(key)
+		clearedSessions++
+		return true
+	})
+
+	conversationID, err := startNewTelegramConversation(ctx, chatID)
+	if err != nil {
+		return TelegramRuntimeResetResult{}, err
+	}
+	return TelegramRuntimeResetResult{
+		ConversationID:  conversationID,
+		ClearedSessions: clearedSessions,
+	}, nil
 }
 
 func loadTelegramSessionMessages(ctx context.Context, chatID int64, cfg models.TelegramAgentConfig) ([]chatMessage, error) {

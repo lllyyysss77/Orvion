@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRenderTelegramAgentMarkdownV2(t *testing.T) {
@@ -62,6 +63,66 @@ func TestRenderTelegramAgentMarkdownV2SupportsCommonEntities(t *testing.T) {
 	} {
 		if !strings.Contains(got, expected) {
 			t.Fatalf("期望包含 %q，实际为: %s", expected, got)
+		}
+	}
+}
+
+func TestRenderTelegramAgentMarkdownV2NormalizesBlocksForTelegram(t *testing.T) {
+	input := strings.Join([]string{
+		"## 🌤️ 佛山天气每日推送",
+		"",
+		"---",
+		"",
+		"| 项目 | 详情 |",
+		"|------|------|",
+		"| 天气现象 | 多云转雷阵雨 |",
+		"| 气温范围 | 26℃ ~ 33℃ |",
+		"",
+		"### 💡 出行建议",
+	}, "\n")
+
+	got := renderTelegramAgentMarkdownV2(input)
+	for _, expected := range []string{
+		`*🌤️ 佛山天气每日推送*`,
+		`━━━━━━━━━━━━`,
+		`• 天气现象：多云转雷阵雨`,
+		`• 气温范围：26℃ \~ 33℃`,
+		`*💡 出行建议*`,
+	} {
+		if !strings.Contains(got, expected) {
+			t.Fatalf("期望包含 %q，实际为: %s", expected, got)
+		}
+	}
+	if strings.Contains(got, `\|`) || strings.Contains(got, `\#\#`) {
+		t.Fatalf("表格和标题不应保留为原始 Markdown，实际为: %s", got)
+	}
+}
+
+func TestBuildModelProviderAutoDisableAlertContentAlignsValues(t *testing.T) {
+	now := time.Date(2026, 6, 26, 16, 46, 6, 0, time.Local)
+	resumeAt := time.Date(2026, 6, 26, 16, 51, 6, 0, time.Local)
+	content := buildModelProviderAutoDisableAlertContent(modelProviderAutoDisableAlertDetail{
+		ModelName:     "gpt-5.4",
+		ProviderName:  "anyrouter",
+		ProviderModel: "gpt-5.5",
+	}, ModelProviderAutoDisableAlertEvent{
+		Threshold: 10,
+		Window:    time.Minute,
+		ResumeAt:  resumeAt,
+	}, now)
+
+	for _, expected := range []string{
+		"【Orvion 模型提供商熔断】",
+		"```text\n",
+		"时间    ：2026-06-26 16:46:06",
+		"模型    ：gpt-5.4",
+		"提供商  ：anyrouter / gpt-5.5",
+		"触发原因：检测窗口内错误达到 10 次",
+		"检测窗口：1m0s",
+		"恢复时间：2026-06-26 16:51:06",
+	} {
+		if !strings.Contains(content, expected) {
+			t.Fatalf("期望包含 %q，实际为: %s", expected, content)
 		}
 	}
 }

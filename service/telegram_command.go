@@ -23,6 +23,7 @@ import (
 	"github.com/racio/orvion/consts"
 	"github.com/racio/orvion/models"
 	"github.com/racio/orvion/pkg"
+	"github.com/racio/orvion/providers"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -279,6 +280,20 @@ func telegramCommandLoop(ctx context.Context) {
 				"photo_count", len(update.Message.Photo),
 				"has_document", update.Message.Document != nil,
 			)
+			handledHelp, helpErr := handleTelegramHelpCommand(ctx, notifier, *update.Message, allowedChat)
+			if helpErr != nil {
+				slog.Warn("处理 TG /help 命令失败", "error", helpErr)
+			}
+			if handledHelp {
+				continue
+			}
+			handledRestart, restartErr := handleTelegramRestartCommand(ctx, notifier, pollClient, *update.Message, allowedChat)
+			if restartErr != nil {
+				slog.Warn("处理 TG /restart 命令失败", "error", restartErr)
+			}
+			if handledRestart {
+				continue
+			}
 			handledStatus, statusErr := handleTelegramStatusCommand(ctx, notifier, *update.Message, allowedChat)
 			if statusErr != nil {
 				slog.Warn("处理 TG /status 命令失败", "error", statusErr)
@@ -665,6 +680,7 @@ func buildTelegramHelpMessage() string {
 		"🧩 /model - 查看模型与模型提供商",
 		"💬 /chat <内容> - 与 TG Agent 流式对话",
 		"🧹 /new - 开启新的 TG Agent 对话",
+		"♻️ /restart - 重启 TG Agent 并释放连接",
 		"📘 /help - 显示帮助",
 	}, "\n")
 }
@@ -797,6 +813,7 @@ func syncTelegramCommandList(notifier *telegramNotifier) error {
 		{Command: "model", Description: "查看模型与模型提供商状态"},
 		{Command: "chat", Description: "与 TG Agent 流式对话"},
 		{Command: "new", Description: "开启新的 TG Agent 对话"},
+		{Command: "restart", Description: "重启 TG Agent 并释放连接"},
 		{Command: "help", Description: "显示帮助"},
 	})
 }
@@ -938,6 +955,93 @@ func handleTelegramStatusCommand(ctx context.Context, notifier *telegramNotifier
 	content := buildTelegramSystemStatusMessage(ctx)
 	chatID := strconv.FormatInt(message.Chat.ID, 10)
 	return true, sendTelegramCaptionWithStatusImage(ctx, notifier, chatID, content)
+}
+
+func handleTelegramHelpCommand(ctx context.Context, notifier *telegramNotifier, message telegramMessage, allowedChatID string) (bool, error) {
+	if notifier == nil {
+		return false, nil
+	}
+	if !isAllowedTelegramChat(message.Chat.ID, allowedChatID) {
+		return false, nil
+	}
+
+	cmd := extractTelegramCommand(strings.ToLower(strings.TrimSpace(message.Text)))
+	if cmd != "/help" && cmd != "/start" {
+		return false, nil
+	}
+
+	chatID := strconv.FormatInt(message.Chat.ID, 10)
+	return true, sendTelegramHelpMessage(ctx, notifier, chatID)
+}
+
+func handleTelegramRestartCommand(ctx context.Context, notifier *telegramNotifier, pollClient *http.Client, message telegramMessage, allowedChatID string) (bool, error) {
+	if notifier == nil {
+		return false, nil
+	}
+	if !isAllowedTelegramChat(message.Chat.ID, allowedChatID) {
+		return false, nil
+	}
+
+	cmd := extractTelegramCommand(strings.ToLower(strings.TrimSpace(message.Text)))
+	if cmd != "/restart" {
+		return false, nil
+	}
+
+	resetResult, err := agent.ResetTelegramRuntime(ctx, message.Chat.ID)
+	if err != nil {
+		return true, err
+	}
+	clearedProviderClients := providers.ResetHTTPClientCache()
+	clearedStatusImages := clearTelegramStatusImageWindow()
+	closeTelegramClientIdleConnections(notifier.client)
+	closeTelegramClientIdleConnections(pollClient)
+	runtime.GC()
+
+	slog.Info("TG Agent 已重启",
+		"chat_id", message.Chat.ID,
+		"conversation_id", resetResult.ConversationID,
+		"cleared_sessions", resetResult.ClearedSessions,
+		"cleared_provider_clients", clearedProviderClients,
+		"cleared_status_images", clearedStatusImages,
+	)
+	content := strings.Join([]string{
+		"TG Agent 已重启。",
+		fmt.Sprintf("已开启新的对话，清理内存会话：%d 个。", resetResult.ClearedSessions),
+		fmt.Sprintf("已释放模型连接缓存：%d 个，状态图片缓存：%d 张。", clearedProviderClients, clearedStatusImages),
+	}, "\n")
+	return true, notifier.sendText(content)
+}
+
+func sendTelegramHelpMessage(ctx context.Context, notifier *telegramNotifier, chatID string) error {
+	content := buildTelegramHelpMessage()
+	return sendTelegramCaptionWithStatusImage(ctx, notifier, chatID, content)
+}
+
+func clearTelegramStatusImageWindow() int {
+	telegramStatusImageWindowMu.Lock()
+	defer telegramStatusImageWindowMu.Unlock()
+
+	count := len(telegramStatusImageWindowItems)
+	for index := range telegramStatusImageWindowItems {
+		telegramStatusImageWindowItems[index] = telegramStatusImageItem{}
+	}
+	telegramStatusImageWindowItems = nil
+	return count
+}
+
+func closeTelegramClientIdleConnections(client *http.Client) {
+	if client == nil {
+		return
+	}
+	transport := client.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+	closer, ok := transport.(interface{ CloseIdleConnections() })
+	if !ok {
+		return
+	}
+	closer.CloseIdleConnections()
 }
 
 type telegramAgentClient struct {
@@ -1320,6 +1424,10 @@ func isPathWithinRoot(path string, root string) bool {
 }
 
 func sendTelegramCaptionWithStatusImage(ctx context.Context, notifier *telegramNotifier, chatID string, content string) error {
+	return sendTelegramCaptionWithStatusImageWithParseMode(ctx, notifier, chatID, content, "")
+}
+
+func sendTelegramCaptionWithStatusImageWithParseMode(ctx context.Context, notifier *telegramNotifier, chatID string, content string, parseMode string) error {
 	if notifier == nil {
 		return errors.New("telegram notifier is nil")
 	}
@@ -1336,7 +1444,7 @@ func sendTelegramCaptionWithStatusImage(ctx context.Context, notifier *telegramN
 		if err != nil {
 			slog.Error("下载 TG 状态图片失败", "base_url", baseURL, "error", err)
 			// 下载图片失败时回退到纯文本，避免关键消息丢失。
-			if fallbackErr := notifier.sendTextWithMarkupToChat(chatID, content, nil); fallbackErr != nil {
+			if fallbackErr := notifier.sendTextWithMarkupToChatWithParseMode(chatID, content, nil, parseMode); fallbackErr != nil {
 				return fmt.Errorf("下载状态图片失败: %v, 文本回退也失败: %w", err, fallbackErr)
 			}
 			return nil
@@ -1349,9 +1457,9 @@ func sendTelegramCaptionWithStatusImage(ctx context.Context, notifier *telegramN
 	}
 	defer clearTelegramStatusBinary(item.Binary)
 
-	if err := notifier.sendPhotoBinaryToChat(chatID, item.FileName, item.Binary, content); err != nil {
+	if err := notifier.sendPhotoBinaryToChatWithParseMode(ctx, chatID, item.FileName, item.Binary, content, parseMode); err != nil {
 		// 图片发送失败时回退到纯文本，避免关键消息丢失。
-		if fallbackErr := notifier.sendTextWithMarkupToChat(chatID, content, nil); fallbackErr != nil {
+		if fallbackErr := notifier.sendTextWithMarkupToChatWithParseMode(chatID, content, nil, parseMode); fallbackErr != nil {
 			return fmt.Errorf("发送状态图片失败: %v, 文本回退也失败: %w", err, fallbackErr)
 		}
 		return nil

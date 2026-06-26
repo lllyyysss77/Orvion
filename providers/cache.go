@@ -101,6 +101,30 @@ func GetClientWithProxy(responseHeaderTimeout time.Duration, proxyURL string) (*
 	return client, nil
 }
 
+// ResetHTTPClientCache 关闭缓存客户端的空闲连接，并清空缓存。
+func ResetHTTPClientCache() int {
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+
+	count := len(cache.clients)
+	for _, client := range cache.clients {
+		closeHTTPClientIdleConnections(client)
+	}
+	cache.clients = make(map[clientKey]*http.Client)
+	return count
+}
+
+func closeHTTPClientIdleConnections(client *http.Client) {
+	if client == nil || client.Transport == nil {
+		return
+	}
+	transport, ok := client.Transport.(interface{ CloseIdleConnections() })
+	if !ok {
+		return
+	}
+	transport.CloseIdleConnections()
+}
+
 func normalizeProxyURL(proxyURL string) (string, error) {
 	proxyURL = strings.TrimSpace(proxyURL)
 	if proxyURL == "" {

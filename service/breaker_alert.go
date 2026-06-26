@@ -60,9 +60,10 @@ type telegramSendMessageRequest struct {
 }
 
 type telegramSendPhotoRequest struct {
-	ChatID  string `json:"chat_id"`
-	Photo   string `json:"photo"`
-	Caption string `json:"caption,omitempty"`
+	ChatID    string `json:"chat_id"`
+	Photo     string `json:"photo"`
+	Caption   string `json:"caption,omitempty"`
+	ParseMode string `json:"parse_mode,omitempty"`
 }
 
 type telegramSendDocumentRequest struct {
@@ -289,12 +290,16 @@ func SendModelProviderAutoDisableAlert(ctx context.Context, event ModelProviderA
 	}
 
 	detail := loadModelProviderAutoDisableAlertDetail(ctx, event.ModelWithProviderID)
-	lines := []string{
-		"【Orvion 模型提供商熔断】",
-		fmt.Sprintf("时间：%s", time.Now().Format("2006-01-02 15:04:05")),
+	content := buildModelProviderAutoDisableAlertContent(detail, event, time.Now())
+	return sendTelegramCaptionWithStatusImageWithParseMode(ctx, notifier, notifier.chatID, content, "MarkdownV2")
+}
+
+func buildModelProviderAutoDisableAlertContent(detail modelProviderAutoDisableAlertDetail, event ModelProviderAutoDisableAlertEvent, now time.Time) string {
+	rows := []telegramAlignedAlertRow{
+		{Label: "时间", Value: now.Format("2006-01-02 15:04:05")},
 	}
 	if strings.TrimSpace(detail.ModelName) != "" {
-		lines = append(lines, fmt.Sprintf("模型：%s", detail.ModelName))
+		rows = append(rows, telegramAlignedAlertRow{Label: "模型", Value: strings.TrimSpace(detail.ModelName)})
 	}
 	if strings.TrimSpace(detail.ProviderName) != "" || strings.TrimSpace(detail.ProviderModel) != "" {
 		providerText := strings.TrimSpace(detail.ProviderName)
@@ -304,15 +309,62 @@ func SendModelProviderAutoDisableAlert(ctx context.Context, event ModelProviderA
 		if providerModel := strings.TrimSpace(detail.ProviderModel); providerModel != "" {
 			providerText += " / " + providerModel
 		}
-		lines = append(lines, fmt.Sprintf("提供商：%s", providerText))
+		rows = append(rows, telegramAlignedAlertRow{Label: "提供商", Value: providerText})
 	}
-	lines = append(lines,
-		fmt.Sprintf("触发原因：检测窗口内错误达到 %d 次", event.Threshold),
-		fmt.Sprintf("检测窗口：%s", event.Window.String()),
-		fmt.Sprintf("恢复时间：%s", event.ResumeAt.Format("2006-01-02 15:04:05")),
+	rows = append(rows,
+		telegramAlignedAlertRow{Label: "触发原因", Value: fmt.Sprintf("检测窗口内错误达到 %d 次", event.Threshold)},
+		telegramAlignedAlertRow{Label: "检测窗口", Value: event.Window.String()},
+		telegramAlignedAlertRow{Label: "恢复时间", Value: event.ResumeAt.Format("2006-01-02 15:04:05")},
 	)
 
-	return sendTelegramCaptionWithStatusImage(ctx, notifier, notifier.chatID, strings.Join(lines, "\n"))
+	return strings.Join([]string{
+		escapeTelegramMarkdownV2Text("【Orvion 模型提供商熔断】"),
+		renderTelegramMarkdownV2CodeBlock("text\n" + formatTelegramAlignedAlertRows(rows)),
+	}, "\n")
+}
+
+type telegramAlignedAlertRow struct {
+	Label string
+	Value string
+}
+
+func formatTelegramAlignedAlertRows(rows []telegramAlignedAlertRow) string {
+	maxLabelWidth := 0
+	for _, row := range rows {
+		if width := telegramTextDisplayWidth(row.Label); width > maxLabelWidth {
+			maxLabelWidth = width
+		}
+	}
+
+	lines := make([]string, 0, len(rows))
+	for _, row := range rows {
+		label := strings.TrimSpace(row.Label)
+		value := strings.TrimSpace(row.Value)
+		padding := strings.Repeat(" ", maxLabelWidth-telegramTextDisplayWidth(label))
+		lines = append(lines, label+padding+"："+value)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func telegramTextDisplayWidth(content string) int {
+	width := 0
+	for _, r := range content {
+		if isTelegramWideRune(r) {
+			width += 2
+			continue
+		}
+		width++
+	}
+	return width
+}
+
+func isTelegramWideRune(r rune) bool {
+	return (r >= 0x1100 && r <= 0x11FF) ||
+		(r >= 0x2E80 && r <= 0xA4CF) ||
+		(r >= 0xAC00 && r <= 0xD7A3) ||
+		(r >= 0xF900 && r <= 0xFAFF) ||
+		(r >= 0xFE10 && r <= 0xFE6F) ||
+		(r >= 0xFF00 && r <= 0xFFEF)
 }
 
 func loadModelProviderAutoDisableAlertDetail(ctx context.Context, modelWithProviderID uint) modelProviderAutoDisableAlertDetail {
@@ -339,9 +391,14 @@ func (n *telegramNotifier) sendText(content string) error {
 }
 
 func (n *telegramNotifier) sendTextWithMarkupToChat(chatID string, content string, replyMarkup any) error {
+	return n.sendTextWithMarkupToChatWithParseMode(chatID, content, replyMarkup, "")
+}
+
+func (n *telegramNotifier) sendTextWithMarkupToChatWithParseMode(chatID string, content string, replyMarkup any, parseMode string) error {
 	payload := telegramSendMessageRequest{
 		ChatID:      chatID,
 		Text:        content,
+		ParseMode:   strings.TrimSpace(parseMode),
 		ReplyMarkup: replyMarkup,
 	}
 	if err := n.postTelegramMethod(context.Background(), "sendMessage", payload); err != nil {
@@ -446,7 +503,11 @@ func (n *telegramNotifier) sendTextToChatAndReturnMessageIDWithParseMode(ctx con
 }
 
 func (n *telegramNotifier) sendPhotoBinaryToChat(chatID string, filename string, photoData []byte, caption string) error {
-	return n.sendMultipartBinaryToChat(context.Background(), "sendPhoto", "photo", chatID, filename, photoData, caption, telegramPhotoHTTPTimeout)
+	return n.sendPhotoBinaryToChatWithParseMode(context.Background(), chatID, filename, photoData, caption, "")
+}
+
+func (n *telegramNotifier) sendPhotoBinaryToChatWithParseMode(ctx context.Context, chatID string, filename string, photoData []byte, caption string, parseMode string) error {
+	return n.sendMultipartBinaryToChat(ctx, "sendPhoto", "photo", chatID, filename, photoData, caption, strings.TrimSpace(parseMode), telegramPhotoHTTPTimeout)
 }
 
 func (n *telegramNotifier) sendPhotoURLToChat(ctx context.Context, chatID string, photoURL string, caption string) error {
@@ -469,7 +530,7 @@ func (n *telegramNotifier) sendPhotoURLToChat(ctx context.Context, chatID string
 }
 
 func (n *telegramNotifier) sendDocumentBinaryToChat(ctx context.Context, chatID string, filename string, documentData []byte, caption string) error {
-	return n.sendMultipartBinaryToChat(ctx, "sendDocument", "document", chatID, filename, documentData, caption, telegramPhotoHTTPTimeout)
+	return n.sendMultipartBinaryToChat(ctx, "sendDocument", "document", chatID, filename, documentData, caption, "", telegramPhotoHTTPTimeout)
 }
 
 func (n *telegramNotifier) sendDocumentURLToChat(ctx context.Context, chatID string, documentURL string, caption string) error {
@@ -491,7 +552,7 @@ func (n *telegramNotifier) sendDocumentURLToChat(ctx context.Context, chatID str
 	})
 }
 
-func (n *telegramNotifier) sendMultipartBinaryToChat(ctx context.Context, method string, fieldName string, chatID string, filename string, fileData []byte, caption string, timeout time.Duration) error {
+func (n *telegramNotifier) sendMultipartBinaryToChat(ctx context.Context, method string, fieldName string, chatID string, filename string, fileData []byte, caption string, parseMode string, timeout time.Duration) error {
 	if n == nil {
 		return fmt.Errorf("telegram notifier is nil")
 	}
@@ -520,6 +581,11 @@ func (n *telegramNotifier) sendMultipartBinaryToChat(ctx context.Context, method
 	}
 	if strings.TrimSpace(caption) != "" {
 		if err := writer.WriteField("caption", strings.TrimSpace(caption)); err != nil {
+			return err
+		}
+	}
+	if strings.TrimSpace(parseMode) != "" {
+		if err := writer.WriteField("parse_mode", strings.TrimSpace(parseMode)); err != nil {
 			return err
 		}
 	}
@@ -609,6 +675,7 @@ func renderTelegramAgentMarkdownV2(content string) string {
 	if content == "" {
 		return ""
 	}
+	content = normalizeTelegramAgentMarkdownBlocks(content)
 
 	var out strings.Builder
 	for index := 0; index < len(content); {
@@ -729,6 +796,145 @@ func renderTelegramAgentMarkdownV2(content string) string {
 		index += size
 	}
 	return out.String()
+}
+
+func normalizeTelegramAgentMarkdownBlocks(content string) string {
+	lines := strings.Split(content, "\n")
+	normalized := make([]string, 0, len(lines))
+	for index := 0; index < len(lines); {
+		line := lines[index]
+		trimmed := strings.TrimSpace(line)
+		if isTelegramMarkdownTableRow(trimmed) && index+1 < len(lines) && isTelegramMarkdownTableSeparator(strings.TrimSpace(lines[index+1])) {
+			tableLines, nextIndex := collectTelegramMarkdownTable(lines, index)
+			if len(tableLines) > 0 {
+				normalized = append(normalized, tableLines...)
+				index = nextIndex
+				continue
+			}
+		}
+		if isTelegramMarkdownHorizontalRule(trimmed) {
+			normalized = append(normalized, "━━━━━━━━━━━━")
+			index++
+			continue
+		}
+		if heading := parseTelegramMarkdownHeadingText(trimmed); heading != "" {
+			normalized = append(normalized, "**"+heading+"**")
+			index++
+			continue
+		}
+		normalized = append(normalized, line)
+		index++
+	}
+	return strings.Join(normalized, "\n")
+}
+
+func collectTelegramMarkdownTable(lines []string, start int) ([]string, int) {
+	header := parseTelegramMarkdownTableCells(lines[start])
+	if len(header) == 0 {
+		return nil, start
+	}
+	index := start + 2
+	rows := make([][]string, 0)
+	for index < len(lines) {
+		trimmed := strings.TrimSpace(lines[index])
+		if !isTelegramMarkdownTableRow(trimmed) {
+			break
+		}
+		cells := parseTelegramMarkdownTableCells(trimmed)
+		if len(cells) > 0 {
+			rows = append(rows, cells)
+		}
+		index++
+	}
+	if len(rows) == 0 {
+		return nil, start
+	}
+
+	out := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if len(header) == 2 && len(row) >= 2 {
+			out = append(out, "• "+row[0]+"："+row[1])
+			continue
+		}
+		parts := make([]string, 0, len(row))
+		for cellIndex, cell := range row {
+			label := fmt.Sprintf("列%d", cellIndex+1)
+			if cellIndex < len(header) && strings.TrimSpace(header[cellIndex]) != "" {
+				label = header[cellIndex]
+			}
+			parts = append(parts, label+"："+cell)
+		}
+		out = append(out, "• "+strings.Join(parts, "；"))
+	}
+	return out, index
+}
+
+func parseTelegramMarkdownTableCells(line string) []string {
+	trimmed := strings.TrimSpace(line)
+	trimmed = strings.Trim(trimmed, "|")
+	parts := strings.Split(trimmed, "|")
+	cells := make([]string, 0, len(parts))
+	for _, part := range parts {
+		cell := strings.TrimSpace(part)
+		if cell == "" {
+			continue
+		}
+		cells = append(cells, cell)
+	}
+	return cells
+}
+
+func isTelegramMarkdownTableRow(line string) bool {
+	return strings.Contains(line, "|") && strings.HasPrefix(line, "|") && strings.HasSuffix(line, "|")
+}
+
+func isTelegramMarkdownTableSeparator(line string) bool {
+	if !isTelegramMarkdownTableRow(line) {
+		return false
+	}
+	cells := parseTelegramMarkdownTableCells(line)
+	if len(cells) == 0 {
+		return false
+	}
+	for _, cell := range cells {
+		cell = strings.TrimSpace(cell)
+		cell = strings.Trim(cell, ":")
+		if cell == "" {
+			return false
+		}
+		for _, r := range cell {
+			if r != '-' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func isTelegramMarkdownHorizontalRule(line string) bool {
+	if len(line) < 3 {
+		return false
+	}
+	for _, r := range line {
+		if r != '-' && r != '*' && r != '_' {
+			return false
+		}
+	}
+	return true
+}
+
+func parseTelegramMarkdownHeadingText(line string) string {
+	if !strings.HasPrefix(line, "#") {
+		return ""
+	}
+	level := 0
+	for level < len(line) && line[level] == '#' {
+		level++
+	}
+	if level == 0 || level > 6 || level >= len(line) || line[level] != ' ' {
+		return ""
+	}
+	return strings.TrimSpace(line[level+1:])
 }
 
 func findTelegramMarkdownSingleDelimiterEnd(content string, start int, delimiter byte) int {
