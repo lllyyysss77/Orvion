@@ -291,7 +291,7 @@ func SendModelProviderAutoDisableAlert(ctx context.Context, event ModelProviderA
 
 	detail := loadModelProviderAutoDisableAlertDetail(ctx, event.ModelWithProviderID)
 	content := buildModelProviderAutoDisableAlertContent(detail, event, time.Now())
-	return sendTelegramCaptionWithStatusImageWithParseMode(ctx, notifier, notifier.chatID, content, "MarkdownV2")
+	return sendTelegramCaptionWithStatusImage(ctx, notifier, notifier.chatID, content)
 }
 
 func buildModelProviderAutoDisableAlertContent(detail modelProviderAutoDisableAlertDetail, event ModelProviderAutoDisableAlertEvent, now time.Time) string {
@@ -317,10 +317,7 @@ func buildModelProviderAutoDisableAlertContent(detail modelProviderAutoDisableAl
 		telegramAlignedAlertRow{Label: "恢复时间", Value: event.ResumeAt.Format("2006-01-02 15:04:05")},
 	)
 
-	return strings.Join([]string{
-		escapeTelegramMarkdownV2Text("【Orvion 模型提供商熔断】"),
-		renderTelegramMarkdownV2CodeBlock("text\n" + formatTelegramAlignedAlertRows(rows)),
-	}, "\n")
+	return "【Orvion 模型提供商熔断】\n" + formatTelegramAlignedAlertRows(rows)
 }
 
 type telegramAlignedAlertRow struct {
@@ -340,10 +337,17 @@ func formatTelegramAlignedAlertRows(rows []telegramAlignedAlertRow) string {
 	for _, row := range rows {
 		label := strings.TrimSpace(row.Label)
 		value := strings.TrimSpace(row.Value)
-		padding := strings.Repeat(" ", maxLabelWidth-telegramTextDisplayWidth(label))
+		padding := telegramAlignedTextPadding(maxLabelWidth - telegramTextDisplayWidth(label))
 		lines = append(lines, label+padding+"："+value)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func telegramAlignedTextPadding(width int) string {
+	if width <= 0 {
+		return ""
+	}
+	return strings.Repeat("　", width/2) + strings.Repeat(" ", width%2)
 }
 
 func telegramTextDisplayWidth(content string) int {

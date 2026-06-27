@@ -3,11 +3,67 @@ package service
 import (
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"github.com/racio/orvion/models"
 	"gorm.io/gorm"
 )
+
+func TestReserveModelProviderAutoRecoverAfterBackoff(t *testing.T) {
+	oldBackoff := autoDisableBackoffByProvider
+	t.Cleanup(func() {
+		autoDisableBackoffByProvider = oldBackoff
+	})
+	autoDisableBackoffByProvider = make(map[uint]modelProviderAutoDisableBackoffState)
+
+	now := time.Date(2026, 6, 27, 14, 0, 0, 0, time.Local)
+	key := uint(9)
+	expected := []time.Duration{
+		5 * time.Minute,
+		10 * time.Minute,
+		20 * time.Minute,
+		40 * time.Minute,
+		time.Hour,
+		time.Hour,
+	}
+	for index, want := range expected {
+		got, _ := reserveModelProviderAutoRecoverAfter(key, now.Add(time.Duration(index)*time.Minute))
+		if got != want {
+			t.Fatalf("第 %d 次退避时间异常: got=%s want=%s", index+1, got, want)
+		}
+	}
+}
+
+func TestReserveModelProviderAutoRecoverAfterRollbackAndReset(t *testing.T) {
+	oldBackoff := autoDisableBackoffByProvider
+	t.Cleanup(func() {
+		autoDisableBackoffByProvider = oldBackoff
+	})
+	autoDisableBackoffByProvider = make(map[uint]modelProviderAutoDisableBackoffState)
+
+	now := time.Date(2026, 6, 27, 14, 0, 0, 0, time.Local)
+	key := uint(10)
+	for i := 0; i < 3; i++ {
+		reserveModelProviderAutoRecoverAfter(key, now.Add(time.Duration(i)*time.Minute))
+	}
+
+	got, rollback := reserveModelProviderAutoRecoverAfter(key, now.Add(3*time.Minute))
+	if got != 40*time.Minute {
+		t.Fatalf("第 4 次退避时间异常: got=%s", got)
+	}
+	rollback()
+
+	got, _ = reserveModelProviderAutoRecoverAfter(key, now.Add(4*time.Minute))
+	if got != 40*time.Minute {
+		t.Fatalf("回滚后再次触发应仍为第 4 次退避: got=%s", got)
+	}
+
+	got, _ = reserveModelProviderAutoRecoverAfter(key, now.Add(4*time.Minute+modelProviderAutoBackoffReset+time.Second))
+	if got != modelProviderAutoRecoverAfter {
+		t.Fatalf("超过退避重置窗口后应回到基础时间: got=%s", got)
+	}
+}
 
 func TestScheduleModelProviderAutoDisableCheckDeduplicatesByProvider(t *testing.T) {
 	oldDB := models.DB

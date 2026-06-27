@@ -565,19 +565,21 @@ func UpdateProvider(c *gin.Context) {
 		}
 	}
 
-	// Update fields
-	updates := models.Provider{
-		Name:                       req.Name,
-		Config:                     normalizedConfig,
-		Console:                    req.Console,
-		ProxyURL:                   proxyURL,
-		ModelsFetchMode:            normalizeModelsFetchMode(req.ModelsFetchMode),
-		Capabilities:               normalizedCapabilities,
-		InterfaceConversionEnabled: conversionEnabled,
-		InterfaceConversionTarget:  conversionTarget,
+	updates := map[string]any{
+		"name":                         req.Name,
+		"config":                       normalizedConfig,
+		"console":                      req.Console,
+		"proxy_url":                    proxyURL,
+		"models_fetch_mode":            normalizeModelsFetchMode(req.ModelsFetchMode),
+		"capabilities":                 normalizedCapabilities,
+		"interface_conversion_enabled": conversionEnabled,
+		"interface_conversion_target":  conversionTarget,
 	}
 
-	if _, err := gorm.G[models.Provider](models.DB).Where("id = ?", id).Updates(c.Request.Context(), updates); err != nil {
+	if err := models.DB.WithContext(c.Request.Context()).
+		Model(&models.Provider{}).
+		Where("id = ?", id).
+		Updates(updates).Error; err != nil {
 		common.InternalServerError(c, "Failed to update provider: "+err.Error())
 		return
 	}

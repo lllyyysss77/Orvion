@@ -15,19 +15,28 @@ const (
 	modelProviderAutoDisableThreshold = 10
 	modelProviderAutoDisableWindow    = time.Minute
 	modelProviderAutoRecoverAfter     = 5 * time.Minute
+	modelProviderAutoRecoverMaxAfter  = time.Hour
+	modelProviderAutoBackoffReset     = 30 * time.Minute
 	modelProviderAutoRecoverInterval  = 30 * time.Second
 	modelProviderAutoDisableWorkers   = 4
 	modelProviderAutoDisableQueueSize = 1024
 )
 
 var (
-	autoDisableQueueStart sync.Once
-	autoDisableQueue      = make(chan uint, modelProviderAutoDisableQueueSize)
-	autoDisablePendingMu  sync.Mutex
-	autoDisablePending    = make(map[uint]struct{})
-	autoDisableProviderMu sync.Mutex
-	autoDisableProviders  = make(map[uint]struct{})
+	autoDisableQueueStart        sync.Once
+	autoDisableQueue             = make(chan uint, modelProviderAutoDisableQueueSize)
+	autoDisablePendingMu         sync.Mutex
+	autoDisablePending           = make(map[uint]struct{})
+	autoDisableProviderMu        sync.Mutex
+	autoDisableProviders         = make(map[uint]struct{})
+	autoDisableBackoffMu         sync.Mutex
+	autoDisableBackoffByProvider = make(map[uint]modelProviderAutoDisableBackoffState)
 )
+
+type modelProviderAutoDisableBackoffState struct {
+	Count  int
+	LastAt time.Time
+}
 
 func StartModelProviderAutoRecovery(ctx context.Context) {
 	StartModelProviderAutoDisableQueue(ctx)
@@ -201,7 +210,16 @@ func TriggerModelProviderAutoDisableIfNeeded(ctx context.Context, modelWithProvi
 		return nil
 	}
 
-	resumeAt := now.Add(modelProviderAutoRecoverAfter)
+	backoffKey := modelWithProviderID
+	if providerID, providerErr := loadModelProviderProviderID(ctx, modelWithProviderID); providerErr != nil {
+		slog.Warn("读取模型关联提供商失败，使用模型关联维度计算熔断退避",
+			"error", providerErr,
+		)
+	} else if providerID > 0 {
+		backoffKey = providerID
+	}
+	recoverAfter, rollbackBackoff := reserveModelProviderAutoRecoverAfter(backoffKey, now)
+	resumeAt := now.Add(recoverAfter)
 	result := models.DB.WithContext(ctx).
 		Model(&models.ModelWithProvider{}).
 		Where("id = ?", modelWithProviderID).
@@ -211,12 +229,17 @@ func TriggerModelProviderAutoDisableIfNeeded(ctx context.Context, modelWithProvi
 			"auto_disabled_until": resumeAt,
 		})
 	if result.Error != nil {
+		rollbackBackoff()
 		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		rollbackBackoff()
 	}
 
 	if result.RowsAffected > 0 {
 		slog.Warn("模型关联提供商因短时间错误过多被自动关闭",
 			"resume_at", resumeAt.Format(time.RFC3339),
+			"recover_after_seconds", int(recoverAfter/time.Second),
 			"threshold", modelProviderAutoDisableThreshold,
 			"error_count", errorCount,
 			"window_seconds", int(modelProviderAutoDisableWindow/time.Second),
@@ -239,4 +262,55 @@ func TriggerModelProviderAutoDisableIfNeeded(ctx context.Context, modelWithProvi
 	}
 
 	return nil
+}
+
+func reserveModelProviderAutoRecoverAfter(backoffKey uint, now time.Time) (time.Duration, func()) {
+	if backoffKey == 0 {
+		return modelProviderAutoRecoverAfter, func() {}
+	}
+
+	autoDisableBackoffMu.Lock()
+	previous, hadPrevious := autoDisableBackoffByProvider[backoffKey]
+	next := modelProviderAutoDisableBackoffState{
+		Count:  1,
+		LastAt: now,
+	}
+	if hadPrevious && now.Sub(previous.LastAt) <= modelProviderAutoBackoffReset {
+		next.Count = previous.Count + 1
+	}
+	autoDisableBackoffByProvider[backoffKey] = next
+	recoverAfter := modelProviderAutoRecoverAfterForCount(next.Count)
+	autoDisableBackoffMu.Unlock()
+
+	return recoverAfter, func() {
+		autoDisableBackoffMu.Lock()
+		defer autoDisableBackoffMu.Unlock()
+
+		current, ok := autoDisableBackoffByProvider[backoffKey]
+		if !ok || current != next {
+			return
+		}
+		if hadPrevious {
+			autoDisableBackoffByProvider[backoffKey] = previous
+			return
+		}
+		delete(autoDisableBackoffByProvider, backoffKey)
+	}
+}
+
+func modelProviderAutoRecoverAfterForCount(count int) time.Duration {
+	if count <= 1 {
+		return modelProviderAutoRecoverAfter
+	}
+	recoverAfter := modelProviderAutoRecoverAfter
+	for i := 1; i < count; i++ {
+		if recoverAfter >= modelProviderAutoRecoverMaxAfter {
+			return modelProviderAutoRecoverMaxAfter
+		}
+		recoverAfter *= 2
+		if recoverAfter > modelProviderAutoRecoverMaxAfter {
+			return modelProviderAutoRecoverMaxAfter
+		}
+	}
+	return recoverAfter
 }

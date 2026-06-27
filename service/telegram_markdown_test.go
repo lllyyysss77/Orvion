@@ -113,10 +113,9 @@ func TestBuildModelProviderAutoDisableAlertContentAlignsValues(t *testing.T) {
 
 	for _, expected := range []string{
 		"【Orvion 模型提供商熔断】",
-		"```text\n",
-		"时间    ：2026-06-26 16:46:06",
-		"模型    ：gpt-5.4",
-		"提供商  ：anyrouter / gpt-5.5",
+		"时间　　：2026-06-26 16:46:06",
+		"模型　　：gpt-5.4",
+		"提供商　：anyrouter / gpt-5.5",
 		"触发原因：检测窗口内错误达到 10 次",
 		"检测窗口：1m0s",
 		"恢复时间：2026-06-26 16:51:06",
@@ -124,6 +123,9 @@ func TestBuildModelProviderAutoDisableAlertContentAlignsValues(t *testing.T) {
 		if !strings.Contains(content, expected) {
 			t.Fatalf("期望包含 %q，实际为: %s", expected, content)
 		}
+	}
+	if strings.Contains(content, "```") || strings.Contains(content, `\`) {
+		t.Fatalf("模型提供商熔断告警应为纯文本，实际为: %s", content)
 	}
 }
 
