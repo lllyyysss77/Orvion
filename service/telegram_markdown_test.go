@@ -67,7 +67,7 @@ func TestRenderTelegramAgentMarkdownV2SupportsCommonEntities(t *testing.T) {
 	}
 }
 
-func TestRenderTelegramAgentMarkdownV2NormalizesBlocksForTelegram(t *testing.T) {
+func TestRenderTelegramAgentMarkdownV2ConvertsMarkdownTablesToBox(t *testing.T) {
 	input := strings.Join([]string{
 		"## 🌤️ 佛山天气每日推送",
 		"",
@@ -85,16 +85,77 @@ func TestRenderTelegramAgentMarkdownV2NormalizesBlocksForTelegram(t *testing.T) 
 	for _, expected := range []string{
 		`*🌤️ 佛山天气每日推送*`,
 		`━━━━━━━━━━━━`,
-		`• 天气现象：多云转雷阵雨`,
-		`• 气温范围：26℃ \~ 33℃`,
+		"```text\n┌",
+		`│ 项目 / 详情`,
+		`│ 天气现象 : 多云转雷阵雨`,
+		`│ 气温范围 : 26℃ ~ 33℃`,
+		`└`,
 		`*💡 出行建议*`,
 	} {
 		if !strings.Contains(got, expected) {
 			t.Fatalf("期望包含 %q，实际为: %s", expected, got)
 		}
 	}
-	if strings.Contains(got, `\|`) || strings.Contains(got, `\#\#`) {
-		t.Fatalf("表格和标题不应保留为原始 Markdown，实际为: %s", got)
+	if strings.Contains(got, `\| 项目`) || strings.Contains(got, `• 天气现象`) || strings.Contains(got, `\#\#`) {
+		t.Fatalf("表格应转为盒子文本，且标题不应保留为原始 Markdown，实际为: %s", got)
+	}
+	assertTelegramMarkdownBoxUsesHalfWidthPadding(t, got)
+}
+
+func TestRenderTelegramAgentMarkdownV2ConvertsSingleTitleTableToBox(t *testing.T) {
+	input := strings.Join([]string{
+		"| 🏠 VPS 信息 |",
+		"| --- | --- |",
+		"| CPU | 15% |",
+		"| RAM | 128MB |",
+		"| DISK | 512G |",
+	}, "\n")
+
+	got := renderTelegramAgentMarkdownV2(input)
+	for _, expected := range []string{
+		"```text\n┌",
+		`│ 🏠 VPS 信息`,
+		`├`,
+		`│ CPU  : 15%`,
+		`│ RAM  : 128MB`,
+		`│ DISK : 512G`,
+		`└`,
+	} {
+		if !strings.Contains(got, expected) {
+			t.Fatalf("期望包含 %q，实际为: %s", expected, got)
+		}
+	}
+	assertTelegramMarkdownBoxRightBorderAligned(t, got)
+	assertTelegramMarkdownBoxUsesHalfWidthPadding(t, got)
+}
+
+func assertTelegramMarkdownBoxRightBorderAligned(t *testing.T, content string) {
+	t.Helper()
+	start := strings.Index(content, "```text\n")
+	if start < 0 {
+		t.Fatalf("未找到盒子代码块，实际为: %s", content)
+	}
+	bodyStart := start + len("```text\n")
+	end := strings.Index(content[bodyStart:], "\n```")
+	if end < 0 {
+		t.Fatalf("盒子代码块缺少结束标记，实际为: %s", content)
+	}
+	lines := strings.Split(content[bodyStart:bodyStart+end], "\n")
+	if len(lines) == 0 {
+		t.Fatalf("盒子代码块为空，实际为: %s", content)
+	}
+	expectedWidth := telegramTextDisplayWidth(lines[0])
+	for _, line := range lines[1:] {
+		if width := telegramTextDisplayWidth(line); width != expectedWidth {
+			t.Fatalf("盒子右边框未对齐，期望宽度 %d，实际宽度 %d，行内容: %q，完整内容: %s", expectedWidth, width, line, content)
+		}
+	}
+}
+
+func assertTelegramMarkdownBoxUsesHalfWidthPadding(t *testing.T, content string) {
+	t.Helper()
+	if strings.Contains(content, "　") {
+		t.Fatalf("盒子代码块应使用半角空格补齐，避免 Telegram 右边框错位，实际为: %s", content)
 	}
 }
 

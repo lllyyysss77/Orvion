@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/racio/orvion/consts"
 )
 
 func TestBuildTelegramCommandReplyDoesNotTreatModelStatusAsSystemStatus(t *testing.T) {
@@ -20,6 +22,71 @@ func TestBuildTelegramCommandReplyTreatsExplicitSystemStatusAsSystemStatus(t *te
 	if !isTelegramSystemStatusText("系统状态") {
 		t.Fatalf("明确系统状态查询应命中系统状态关键词")
 	}
+}
+
+func TestBuildTelegramSystemStatusMessageUsesMarkdownTemplate(t *testing.T) {
+	message := buildTelegramSystemStatusMessage(context.Background())
+	for _, expected := range []string{
+		"## 🤖 Orvion 系统状态",
+		"**🕒 时间**：",
+		"**🏷️ 版本**：`",
+		"### 💻 资源使用",
+		"`- CPU：",
+		"### 📈 今日统计",
+		"### 💰 消耗",
+		"### ⏳ 时间",
+	} {
+		if !strings.Contains(message, expected) {
+			t.Fatalf("系统状态 Markdown 缺少 %q，实际为: %s", expected, message)
+		}
+	}
+	assertTelegramStatusRightColumnsAligned(t, message, []string{"内存", "启用提供方", "成功率", "失败"})
+
+	rendered := renderTelegramAgentMarkdownV2(message)
+	for _, expected := range []string{
+		"*🤖 Orvion 系统状态*",
+		"*🕒 时间*：",
+		"`" + consts.Version + "`",
+		"*💻 资源使用*",
+		"`- CPU：",
+	} {
+		if !strings.Contains(rendered, expected) {
+			t.Fatalf("系统状态 MarkdownV2 渲染缺少 %q，实际为: %s", expected, rendered)
+		}
+	}
+	if strings.Contains(rendered, "\\#\\#") {
+		t.Fatalf("系统状态 MarkdownV2 不应保留原始标题符号，实际为: %s", rendered)
+	}
+}
+
+func assertTelegramStatusRightColumnsAligned(t *testing.T, message string, labels []string) {
+	t.Helper()
+	expectedWidth := -1
+	for _, label := range labels {
+		marker := "- " + label + "："
+		line := findTelegramStatusLineContaining(message, marker)
+		if line == "" {
+			t.Fatalf("系统状态缺少右侧字段 %q，实际为: %s", label, message)
+		}
+		index := strings.Index(line, marker)
+		width := telegramTextDisplayWidth(line[:index])
+		if expectedWidth < 0 {
+			expectedWidth = width
+			continue
+		}
+		if width != expectedWidth {
+			t.Fatalf("系统状态右侧字段未对齐，字段=%s 期望宽度=%d 实际宽度=%d 行=%q", label, expectedWidth, width, line)
+		}
+	}
+}
+
+func findTelegramStatusLineContaining(message string, marker string) string {
+	for _, line := range strings.Split(message, "\n") {
+		if strings.Contains(line, marker) {
+			return line
+		}
+	}
+	return ""
 }
 
 func TestSelectTelegramLargestPhoto(t *testing.T) {

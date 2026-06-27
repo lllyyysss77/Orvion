@@ -254,15 +254,16 @@ func SendTelegramBreakerAlertTest(ctx context.Context) error {
 	if !ok || notifier == nil {
 		return ErrTelegramNotifierNotConfigured
 	}
+	return notifier.sendText(defaultTelegramBreakerAlertTestMessage())
+}
 
-	testContent := strings.Join([]string{
+func defaultTelegramBreakerAlertTestMessage() string {
+	return strings.Join([]string{
 		"【Orvion TG 告警测试】",
 		fmt.Sprintf("时间：%s", time.Now().Format("2006-01-02 15:04:05")),
 		"状态：测试消息发送成功",
 		"说明：这是一条来自系统配置页面的测试消息。",
 	}, "\n")
-
-	return notifier.sendText(testContent)
 }
 
 func (n *telegramNotifier) SendBreakerOpen(event balancers.BreakerOpenEvent) error {
@@ -353,6 +354,9 @@ func telegramAlignedTextPadding(width int) string {
 func telegramTextDisplayWidth(content string) int {
 	width := 0
 	for _, r := range content {
+		if isTelegramZeroWidthRune(r) {
+			continue
+		}
 		if isTelegramWideRune(r) {
 			width += 2
 			continue
@@ -362,13 +366,24 @@ func telegramTextDisplayWidth(content string) int {
 	return width
 }
 
+func isTelegramZeroWidthRune(r rune) bool {
+	return (r >= 0x0300 && r <= 0x036F) ||
+		(r >= 0xFE00 && r <= 0xFE0F) ||
+		(r >= 0x1F3FB && r <= 0x1F3FF) ||
+		r == 0x200D
+}
+
 func isTelegramWideRune(r rune) bool {
-	return (r >= 0x1100 && r <= 0x11FF) ||
+	return (r >= 0x1100 && r <= 0x115F) ||
+		(r >= 0x2329 && r <= 0x232A) ||
 		(r >= 0x2E80 && r <= 0xA4CF) ||
 		(r >= 0xAC00 && r <= 0xD7A3) ||
 		(r >= 0xF900 && r <= 0xFAFF) ||
-		(r >= 0xFE10 && r <= 0xFE6F) ||
-		(r >= 0xFF00 && r <= 0xFFEF)
+		(r >= 0xFE10 && r <= 0xFE19) ||
+		(r >= 0xFE30 && r <= 0xFE6F) ||
+		(r >= 0xFF00 && r <= 0xFF60) ||
+		(r >= 0xFFE0 && r <= 0xFFE6) ||
+		(r >= 0x1F300 && r <= 0x1FAFF)
 }
 
 func loadModelProviderAutoDisableAlertDetail(ctx context.Context, modelWithProviderID uint) modelProviderAutoDisableAlertDetail {
@@ -809,7 +824,7 @@ func normalizeTelegramAgentMarkdownBlocks(content string) string {
 		line := lines[index]
 		trimmed := strings.TrimSpace(line)
 		if isTelegramMarkdownTableRow(trimmed) && index+1 < len(lines) && isTelegramMarkdownTableSeparator(strings.TrimSpace(lines[index+1])) {
-			tableLines, nextIndex := collectTelegramMarkdownTable(lines, index)
+			tableLines, nextIndex := collectTelegramMarkdownTableBox(lines, index)
 			if len(tableLines) > 0 {
 				normalized = append(normalized, tableLines...)
 				index = nextIndex
@@ -832,7 +847,7 @@ func normalizeTelegramAgentMarkdownBlocks(content string) string {
 	return strings.Join(normalized, "\n")
 }
 
-func collectTelegramMarkdownTable(lines []string, start int) ([]string, int) {
+func collectTelegramMarkdownTableBox(lines []string, start int) ([]string, int) {
 	header := parseTelegramMarkdownTableCells(lines[start])
 	if len(header) == 0 {
 		return nil, start
@@ -854,23 +869,71 @@ func collectTelegramMarkdownTable(lines []string, start int) ([]string, int) {
 		return nil, start
 	}
 
-	out := make([]string, 0, len(rows))
+	boxLines := renderTelegramMarkdownTableBox(header, rows)
+	if len(boxLines) == 0 {
+		return nil, start
+	}
+	out := make([]string, 0, len(boxLines)+2)
+	out = append(out, "```text")
+	out = append(out, boxLines...)
+	out = append(out, "```")
+	return out, index
+}
+
+func renderTelegramMarkdownTableBox(header []string, rows [][]string) []string {
+	title := strings.Join(header, " / ")
+	labelWidth := 0
+	body := make([]string, 0, len(rows))
 	for _, row := range rows {
-		if len(header) == 2 && len(row) >= 2 {
-			out = append(out, "• "+row[0]+"："+row[1])
+		if len(row) == 0 {
 			continue
 		}
-		parts := make([]string, 0, len(row))
-		for cellIndex, cell := range row {
-			label := fmt.Sprintf("列%d", cellIndex+1)
-			if cellIndex < len(header) && strings.TrimSpace(header[cellIndex]) != "" {
-				label = header[cellIndex]
-			}
-			parts = append(parts, label+"："+cell)
+		if len(row) == 1 {
+			body = append(body, row[0])
+			continue
 		}
-		out = append(out, "• "+strings.Join(parts, "；"))
+		if width := telegramTextDisplayWidth(row[0]); width > labelWidth {
+			labelWidth = width
+		}
 	}
-	return out, index
+	for _, row := range rows {
+		if len(row) == 0 {
+			continue
+		}
+		if len(row) == 1 {
+			body = append(body, row[0])
+			continue
+		}
+		label := padTelegramCodeBlockTextRight(row[0], labelWidth)
+		value := strings.Join(row[1:], " / ")
+		body = append(body, label+" : "+value)
+	}
+	if strings.TrimSpace(title) == "" && len(body) == 0 {
+		return nil
+	}
+
+	contentWidth := telegramTextDisplayWidth(title)
+	for _, line := range body {
+		if width := telegramTextDisplayWidth(line); width > contentWidth {
+			contentWidth = width
+		}
+	}
+	if contentWidth < 1 {
+		contentWidth = 1
+	}
+
+	border := strings.Repeat("─", contentWidth+2)
+	out := make([]string, 0, len(body)+4)
+	out = append(out, "┌"+border+"┐")
+	if strings.TrimSpace(title) != "" {
+		out = append(out, "│ "+padTelegramCodeBlockTextRight(title, contentWidth)+" │")
+		out = append(out, "├"+border+"┤")
+	}
+	for _, line := range body {
+		out = append(out, "│ "+padTelegramCodeBlockTextRight(line, contentWidth)+" │")
+	}
+	out = append(out, "└"+border+"┘")
+	return out
 }
 
 func parseTelegramMarkdownTableCells(line string) []string {
@@ -879,13 +942,19 @@ func parseTelegramMarkdownTableCells(line string) []string {
 	parts := strings.Split(trimmed, "|")
 	cells := make([]string, 0, len(parts))
 	for _, part := range parts {
-		cell := strings.TrimSpace(part)
+		cell := cleanTelegramMarkdownTableCell(part)
 		if cell == "" {
 			continue
 		}
 		cells = append(cells, cell)
 	}
 	return cells
+}
+
+func cleanTelegramMarkdownTableCell(value string) string {
+	value = strings.TrimSpace(value)
+	replacer := strings.NewReplacer("**", "", "__", "", "~~", "", "`", "")
+	return strings.TrimSpace(replacer.Replace(value))
 }
 
 func isTelegramMarkdownTableRow(line string) bool {
@@ -913,6 +982,22 @@ func isTelegramMarkdownTableSeparator(line string) bool {
 		}
 	}
 	return true
+}
+
+func padTelegramTextRight(value string, targetWidth int) string {
+	padding := targetWidth - telegramTextDisplayWidth(value)
+	if padding <= 0 {
+		return value
+	}
+	return value + telegramAlignedTextPadding(padding)
+}
+
+func padTelegramCodeBlockTextRight(value string, targetWidth int) string {
+	padding := targetWidth - telegramTextDisplayWidth(value)
+	if padding <= 0 {
+		return value
+	}
+	return value + strings.Repeat(" ", padding)
 }
 
 func isTelegramMarkdownHorizontalRule(line string) bool {

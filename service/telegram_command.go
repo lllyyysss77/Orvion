@@ -617,14 +617,9 @@ func buildTelegramCommandReply(ctx context.Context, message telegramMessage, all
 	switch cmd {
 	case "/start", "/help":
 		return buildTelegramHelpMessage(), true
-	case "/status":
-		return buildTelegramSystemStatusMessage(ctx), true
 	case "/model", "/models":
 		return "", false
 	default:
-		if isTelegramSystemStatusText(normalized) {
-			return buildTelegramSystemStatusMessage(ctx), true
-		}
 		if strings.HasPrefix(normalized, "/") {
 			return buildTelegramHelpMessage(), true
 		}
@@ -678,7 +673,6 @@ func buildTelegramHelpMessage() string {
 		"【🤖 Orvion TG 命令帮助】\n",
 		"📊 /status - 查看系统状态摘要",
 		"🧩 /model - 查看模型与模型提供商",
-		"💬 /chat <内容> - 与 TG Agent 流式对话",
 		"🧹 /new - 开启新的 TG Agent 对话",
 		"♻️ /restart - 重启 TG Agent 并释放连接",
 		"📘 /help - 显示帮助",
@@ -719,14 +713,20 @@ func buildTelegramSystemStatusMessage(ctx context.Context) string {
 		successRate = float64(todaySuccess) / float64(todayReqs) * 100
 	}
 
-	totalAmount, amountErr := GetOrInitTotalConsumedAmount(ctx)
-	if amountErr != nil {
-		totalAmount = 0
-	}
+	totalAmount := 0.0
+	firstDeployTime := now
+	if models.DB != nil {
+		var amountErr error
+		totalAmount, amountErr = GetOrInitTotalConsumedAmount(ctx)
+		if amountErr != nil {
+			totalAmount = 0
+		}
 
-	firstDeployTime, firstDeployErr := GetOrInitFirstDeployTime(ctx)
-	if firstDeployErr != nil {
-		firstDeployTime = now
+		var firstDeployErr error
+		firstDeployTime, firstDeployErr = GetOrInitFirstDeployTime(ctx)
+		if firstDeployErr != nil {
+			firstDeployTime = now
+		}
 	}
 	firstDeployTime = firstDeployTime.Local()
 	deployUptime := now.Sub(firstDeployTime)
@@ -739,20 +739,67 @@ func buildTelegramSystemStatusMessage(ctx context.Context) string {
 	}
 
 	processUsage := collectTelegramProcessUsage(now)
+	statusPairs := formatTelegramStatusMetricPairs([]telegramStatusMetricPair{
+		{LeftLabel: "CPU", LeftValue: fmt.Sprintf("%.2f%%", processUsage.CPUPercent), RightLabel: "内存", RightValue: formatBytesBinary(processUsage.MemoryBytes)},
+		{LeftLabel: "模型总数", LeftValue: fmt.Sprintf("%d", modelTotal), RightLabel: "启用提供方", RightValue: fmt.Sprintf("%d", modelProviderEnabled)},
+		{LeftLabel: "请求", LeftValue: fmt.Sprintf("%d", todayReqs), RightLabel: "成功率", RightValue: fmt.Sprintf("%.2f%%", successRate)},
+		{LeftLabel: "成功", LeftValue: fmt.Sprintf("%d", todaySuccess), RightLabel: "失败", RightValue: fmt.Sprintf("%d", todayFailure)},
+	})
 
 	return strings.Join([]string{
-		"【🤖 Orvion 系统状态】\n",
-		fmt.Sprintf("🕒 时间：%s", timeText),
-		fmt.Sprintf("🏷️ 版本：%s", consts.Version),
-		"━━━━━━━━━━━━━━━━",
-		fmt.Sprintf("💻 整体：CPU %.2f%%｜内存 %s", processUsage.CPUPercent, formatBytesBinary(processUsage.MemoryBytes)),
-		fmt.Sprintf("🧿 模型：%d（启用模型关联：%d）", modelTotal, modelProviderEnabled),
-		"━━━━━━━━━━━━━━━━",
-		fmt.Sprintf("📈 今日请求：%d（成功：%d，失败：%d，成功率：%.2f%%）", todayReqs, todaySuccess, todayFailure, successRate),
-		fmt.Sprintf("💰 今日消耗/累计消耗：$%.2f / $%.2f", todayAmount, totalAmount),
-		fmt.Sprintf("⏳ 部署时长：%s", formatHumanDuration(deployUptime)),
-		fmt.Sprintf("🚀 进程时长：%s", formatHumanDuration(processUptime)),
+		fmt.Sprintf("## 🤖 Orvion 系统状态\n"),
+
+		fmt.Sprintf("**🕒 时间**：%s", timeText),
+		fmt.Sprintf("**🏷️ 版本**：`%s`", consts.Version),
+
+		"\n---\n",
+
+		fmt.Sprintf("### 💻 资源使用"),
+		statusPairs[0],
+
+		"\n### 🧿 模型信息",
+		statusPairs[1],
+
+		"\n---\n",
+
+		fmt.Sprintf("### 📈 今日统计"),
+		statusPairs[2],
+		statusPairs[3],
+
+		fmt.Sprintf("\n### 💰 消耗"),
+		fmt.Sprintf("- 今日 / 累计：`$%.2f / $%.2f`", todayAmount, totalAmount),
+
+		fmt.Sprintf("\n### ⏳ 时间"),
+		fmt.Sprintf("- 部署时长：`%s`", formatHumanDuration(deployUptime)),
+		fmt.Sprintf("- 运行时长：`%s`", formatHumanDuration(processUptime)),
 	}, "\n")
+}
+
+type telegramStatusMetricPair struct {
+	LeftLabel  string
+	LeftValue  string
+	RightLabel string
+	RightValue string
+}
+
+func formatTelegramStatusMetricPairs(pairs []telegramStatusMetricPair) []string {
+	leftParts := make([]string, 0, len(pairs))
+	maxLeftWidth := 0
+	for _, pair := range pairs {
+		left := fmt.Sprintf("- %s：%s", pair.LeftLabel, pair.LeftValue)
+		leftParts = append(leftParts, left)
+		if width := telegramTextDisplayWidth(left); width > maxLeftWidth {
+			maxLeftWidth = width
+		}
+	}
+
+	lines := make([]string, 0, len(pairs))
+	for index, pair := range pairs {
+		left := leftParts[index]
+		padding := strings.Repeat(" ", maxLeftWidth-telegramTextDisplayWidth(left)+2)
+		lines = append(lines, fmt.Sprintf("`%s%s- %s：%s`", left, padding, pair.RightLabel, pair.RightValue))
+	}
+	return lines
 }
 
 func resolveHealthStatusIcon(status string) string {
@@ -811,7 +858,6 @@ func syncTelegramCommandList(notifier *telegramNotifier) error {
 	return notifier.setMyCommands([]telegramBotCommand{
 		{Command: "status", Description: "查看系统状态摘要"},
 		{Command: "model", Description: "查看模型与模型提供商状态"},
-		{Command: "chat", Description: "与 TG Agent 流式对话"},
 		{Command: "new", Description: "开启新的 TG Agent 对话"},
 		{Command: "restart", Description: "重启 TG Agent 并释放连接"},
 		{Command: "help", Description: "显示帮助"},
@@ -949,12 +995,19 @@ func handleTelegramStatusCommand(ctx context.Context, notifier *telegramNotifier
 
 	cmd := extractTelegramCommand(strings.ToLower(strings.TrimSpace(message.Text)))
 	if cmd != "/status" {
-		return false, nil
+		if !isTelegramSystemStatusText(message.Text) {
+			return false, nil
+		}
 	}
 
 	content := buildTelegramSystemStatusMessage(ctx)
 	chatID := strconv.FormatInt(message.Chat.ID, 10)
-	return true, sendTelegramCaptionWithStatusImage(ctx, notifier, chatID, content)
+	return true, sendTelegramSystemStatusMessage(ctx, notifier, chatID, content)
+}
+
+func sendTelegramSystemStatusMessage(ctx context.Context, notifier *telegramNotifier, chatID string, content string) error {
+	rendered := renderTelegramAgentMarkdownV2(content)
+	return sendTelegramCaptionWithStatusImageWithParseMode(ctx, notifier, chatID, rendered, "MarkdownV2")
 }
 
 func handleTelegramHelpCommand(ctx context.Context, notifier *telegramNotifier, message telegramMessage, allowedChatID string) (bool, error) {

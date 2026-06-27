@@ -161,7 +161,7 @@ func HandleTelegramMessage(ctx context.Context, client TelegramClient, message T
 		return false, nil
 	}
 
-	command, commandText := parseTelegramAgentCommand(raw)
+	command, _ := parseTelegramAgentCommand(raw)
 	switch command {
 	case "/new", "/reset":
 		_, err := startNewTelegramConversation(ctx, message.ChatID)
@@ -170,16 +170,6 @@ func HandleTelegramMessage(ctx context.Context, client TelegramClient, message T
 		}
 		_, err = client.SendMessage(ctx, message.ChatID, "已开启新的对话。")
 		return true, err
-	case "/chat":
-		if strings.TrimSpace(commandText) == "" && len(attachments) == 0 {
-			_, err := client.SendMessage(ctx, message.ChatID, "请在 /chat 后面输入要对话的内容。")
-			return true, err
-		}
-		prompt := strings.TrimSpace(commandText)
-		if prompt == "" {
-			prompt = defaultTelegramAgentImagePrompt
-		}
-		return true, runTelegramAgentConversation(ctx, client, message.ChatID, prompt, attachments, cfg)
 	case "":
 		if shouldBypassTelegramAgent(raw) {
 			return false, nil
