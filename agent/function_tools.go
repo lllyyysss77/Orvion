@@ -139,7 +139,7 @@ func streamTelegramAgentReplyWithFunctionTools(ctx context.Context, cfg models.T
 	if systemPrompt != "" {
 		systemPrompt += "\n\n"
 	}
-	systemPrompt += telegramAgentFunctionToolSystemPrompt(cfg)
+	systemPrompt += telegramAgentFunctionToolSystemPrompt(ctx, cfg)
 
 	messages := toTelegramAgentOpenAIMessages(systemPrompt, history, prompt, attachments)
 	for round := 0; round < telegramAgentToolLoopMaxRounds; round++ {
@@ -203,11 +203,6 @@ func streamTelegramAgentReplyWithFunctionTools(ctx context.Context, cfg models.T
 	}
 
 	return result, errors.New("工具调用轮次过多，请拆成更明确的指令")
-}
-
-func streamTelegramAgentToolResultPlainReplyWithPool(ctx context.Context, cfg models.TelegramAgentConfig, pool telegramAgentModelProviderPool, history []chatMessage, prompt string, onDelta streamDeltaHandler) (telegramAgentReplyResult, error) {
-	cfg = withTelegramAgentSystemPromptSuffix(cfg, telegramAgentToolResultFollowupSystemPrompt())
-	return streamTelegramAgentPlainReplyWithPool(ctx, cfg, pool, history, prompt, onDelta)
 }
 
 func streamTelegramAgentPlainReplyWithPool(ctx context.Context, cfg models.TelegramAgentConfig, pool telegramAgentModelProviderPool, history []chatMessage, prompt string, onDelta streamDeltaHandler) (telegramAgentReplyResult, error) {
@@ -443,6 +438,7 @@ func toTelegramAgentOpenAIMessages(systemPrompt string, history []chatMessage, p
 func readTelegramAgentOpenAIStreamWithTools(ctx context.Context, reader io.Reader, start time.Time, onDelta streamDeltaHandler) (telegramAgentOpenAIStreamReadResult, error) {
 	var result telegramAgentOpenAIStreamReadResult
 	var firstChunkSeen bool
+	var contentBuffer strings.Builder
 	partials := map[int]*telegramAgentOpenAIToolCall{}
 
 	err := readSSEData(ctx, reader, func(data string, size int) error {
@@ -458,13 +454,9 @@ func readTelegramAgentOpenAIStreamWithTools(ctx context.Context, reader io.Reade
 		usage := extractTelegramAgentOpenAIUsage(trimmed)
 		mergeTelegramAgentUsageAdd(&result.Usage, usage)
 
-		var callbackErr error
 		gjson.Get(trimmed, "choices").ForEach(func(_, choice gjson.Result) bool {
 			if text := choice.Get("delta.content").String(); text != "" {
-				callbackErr = onDelta(text)
-				if callbackErr != nil {
-					return false
-				}
+				contentBuffer.WriteString(text)
 			}
 			choice.Get("delta.tool_calls").ForEach(func(_, rawCall gjson.Result) bool {
 				index := int(rawCall.Get("index").Int())
@@ -489,7 +481,7 @@ func readTelegramAgentOpenAIStreamWithTools(ctx context.Context, reader io.Reade
 			})
 			return true
 		})
-		return callbackErr
+		return nil
 	})
 	if firstChunkSeen {
 		elapsedMs := int(time.Since(start).Milliseconds())
@@ -509,6 +501,11 @@ func readTelegramAgentOpenAIStreamWithTools(ctx context.Context, reader io.Reade
 			call.Type = "function"
 		}
 		result.ToolCalls = append(result.ToolCalls, *call)
+	}
+	if len(result.ToolCalls) == 0 && contentBuffer.Len() > 0 && onDelta != nil {
+		if callbackErr := onDelta(contentBuffer.String()); callbackErr != nil {
+			return result, callbackErr
+		}
 	}
 	normalizeTelegramAgentUsage(&result.Usage)
 	return result, err
@@ -568,7 +565,7 @@ func telegramAgentToolDirectFinalText(raw string) (string, bool) {
 	return text, payload.Final && text != "" && telegramAgentTextContainsAttachmentMarker(text)
 }
 
-func telegramAgentFunctionToolSystemPrompt(cfg models.TelegramAgentConfig) string {
+func telegramAgentFunctionToolSystemPrompt(ctx context.Context, cfg models.TelegramAgentConfig) string {
 	lines := []string{
 		"你可以通过 function call 调用 Orvion 项目管理工具。",
 		"当用户想查看模型/提供商、读取系统日志/请求日志、新增或修改 API Key、修改模型/提供商状态、查看或修改提供商配置时，必须优先调用工具，不要自己猜测结果。",
@@ -577,7 +574,8 @@ func telegramAgentFunctionToolSystemPrompt(cfg models.TelegramAgentConfig) strin
 		"新增或修改 API Key 时，allow_all=false 表示限制模型；如用户给的是模型关键词，请用 model_keywords 批量匹配模型，不要把“claude 的模型”当成单个模型名。",
 		"用户要求查看、新增、修改、启用或禁用 Agent 定时任务时，必须调用对应定时任务工具；不要只口头说明。",
 		"不要在普通回复中泄露 api_key、token、secret、password 等敏感配置值。",
-		"Skills 工具上下文会直接提供当前全部启用 Skill；用户提到 skills、技能、脚本、自动化能力包、本地能力扩展时，如果 Skills 工具可用，优先调用 list_skills/read_skill；需要执行本地脚本时，先 read_skill 获取 Skill 目录和脚本绝对路径，再调用 run_terminal_command 自己执行命令，不要编造脚本结果。",
+		"Skills 使用严格三段式渐进加载：系统提示只提供启用 Skill 的 name/description 元数据；需要某个 Skill 时必须先调用 read_skill 加载 SKILL.md 正文和资源路径；需要读取 references/ 或 scripts/ 中的文件、执行脚本或写入文件时，再调用 run_terminal_command。",
+		"用户提到 skills、技能、脚本、自动化能力包、本地能力扩展，或请求匹配下方 Skill 元数据能力时，如果 Skills 工具可用，优先调用 list_skills/read_skill；不要在未 read_skill 前编造脚本参数或脚本结果。",
 		"run_terminal_command 使用结构化参数 command + command_args + working_dir；不要把整段 shell 文本塞进 command，也不要使用 bash -c/sh -c/zsh -c。",
 		"用户要求创建、写入、修改、删除文件时，必须使用 run_terminal_command 完成文件操作；不要只口头说明已生成。",
 		"如果 run_terminal_command 生成了需要发给用户的图片或文件，请在最终回复中使用附件标记：[orvion:image:/绝对路径或URL|可选说明] 或 [orvion:file:/绝对路径或URL|可选说明]；不要把这个标记放进代码块。",
@@ -585,6 +583,9 @@ func telegramAgentFunctionToolSystemPrompt(cfg models.TelegramAgentConfig) strin
 		"用户一句话里包含多个模型启停动作时，例如“禁用 claude 并开启 deepseek”，必须调用 set_models_status_batch，并把每个动作分别放进 items；不要只处理其中一个动作。",
 		"如果用户在同一句话中要求修改后继续检查某些模型或提供商状态，修改工具执行后还要继续调用查看工具，不要只总结修改结果。",
 		"完成工具调用后，用简体中文简洁总结工具结果。",
+	}
+	if catalog := telegramAgentSkillMetadataPrompt(ctx, cfg); catalog != "" {
+		lines = append(lines, "", catalog)
 	}
 	lines = append(lines, "修改类工具会直接执行数据库更新；工具返回执行结果后，请直接告知用户结果。")
 	return strings.Join(lines, "\n")

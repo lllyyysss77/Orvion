@@ -34,31 +34,34 @@ func IsRetryableStatus(code int) bool {
 	return code >= 500 && code <= 599
 }
 
-func LoadAnthropicProxyIPConfig(ctx context.Context) (models.AnthropicProxyIPConfig, bool) {
+func LoadForwardedIPOverrideConfig(ctx context.Context) (models.ForwardedIPOverrideConfig, bool) {
 	config, err := gorm.G[models.Config](models.DB).
-		Where(models.ColumnEquals("key"), models.KeyAnthropicProxyIP).
+		Where(models.ColumnEquals("key"), models.KeyNetworkForwarding).
 		First(ctx)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return models.AnthropicProxyIPConfig{}, false
+			return models.ForwardedIPOverrideConfig{}, false
 		}
 		slog.Error("读取全局代理 IP 配置失败", "error", err)
-		return models.AnthropicProxyIPConfig{}, false
+		return models.ForwardedIPOverrideConfig{}, false
 	}
 
 	raw := strings.TrimSpace(config.Value)
 	if raw == "" {
-		return models.AnthropicProxyIPConfig{}, false
+		return models.ForwardedIPOverrideConfig{}, false
 	}
 
-	var cfg models.AnthropicProxyIPConfig
+	var cfg models.NetworkForwardingConfig
 	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
 		slog.Error("解析全局代理 IP 配置失败", "error", err)
-		return models.AnthropicProxyIPConfig{}, false
+		return models.ForwardedIPOverrideConfig{}, false
 	}
 	cfg.ProxyIP = strings.TrimSpace(cfg.ProxyIP)
-	if !cfg.Enabled || cfg.ProxyIP == "" {
-		return models.AnthropicProxyIPConfig{}, false
+	if !cfg.ProxyIPEnabled || cfg.ProxyIP == "" {
+		return models.ForwardedIPOverrideConfig{}, false
 	}
-	return cfg, true
+	return models.ForwardedIPOverrideConfig{
+		Enabled: true,
+		ProxyIP: cfg.ProxyIP,
+	}, true
 }

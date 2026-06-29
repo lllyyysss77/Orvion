@@ -19,10 +19,6 @@ const (
 	telegramAgentToolLogStatusFailed    = "failed"
 )
 
-func recordTelegramAgentFunctionToolCallLog(ctx context.Context, chatID int64, cfg models.TelegramAgentConfig, toolCall telegramAgentOpenAIToolCall, rawArgs string, toolResult string) {
-	recordTelegramAgentToolCallLog(ctx, buildTelegramAgentFunctionToolCallLog(ctx, chatID, cfg, toolCall, rawArgs, toolResult))
-}
-
 func recordTelegramAgentFunctionToolCallExecutingLog(ctx context.Context, chatID int64, cfg models.TelegramAgentConfig, toolCall telegramAgentOpenAIToolCall, rawArgs string) uint {
 	return recordTelegramAgentToolCallLog(ctx, models.TelegramAgentToolCallLog{
 		ChatID:         chatID,
@@ -78,10 +74,6 @@ func buildTelegramAgentFunctionToolCallLog(ctx context.Context, chatID int64, cf
 	return log
 }
 
-func recordTelegramAgentPreparedActionLog(ctx context.Context, action telegramToolAction, result string) {
-	recordTelegramAgentToolCallLog(ctx, buildTelegramAgentPreparedActionLog(action, result))
-}
-
 func recordTelegramAgentToolActionExecutingLog(ctx context.Context, action telegramToolAction, source string) uint {
 	return recordTelegramAgentToolCallLog(ctx, models.TelegramAgentToolCallLog{
 		ChatID:         action.ChatID,
@@ -125,13 +117,6 @@ func buildTelegramAgentPreparedActionLog(action telegramToolAction, result strin
 		ActionSummary:  action.Summary,
 		ExecutedAt:     &executedAt,
 	}
-}
-
-func recordTelegramAgentToolActionFailureLog(ctx context.Context, action telegramToolAction, err error) {
-	if err == nil {
-		return
-	}
-	recordTelegramAgentToolCallLog(ctx, buildTelegramAgentToolActionFailureLog(action, err))
 }
 
 func finishTelegramAgentToolActionFailureLog(ctx context.Context, logID uint, action telegramToolAction, err error) {

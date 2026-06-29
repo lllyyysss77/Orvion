@@ -206,23 +206,6 @@ func executeTelegramToolAction(ctx context.Context, action telegramToolAction) (
 	}
 }
 
-func shouldSummarizeTelegramToolActionResult(action telegramToolAction) bool {
-	switch action.Kind {
-	case telegramToolActionRunTerminalCommand:
-		return true
-	case telegramToolActionBatch:
-		items := flattenTelegramToolActions(action)
-		for _, item := range items {
-			if item.Kind != telegramToolActionRunTerminalCommand {
-				return false
-			}
-		}
-		return len(items) > 0
-	default:
-		return false
-	}
-}
-
 func executeTelegramToolActionBatch(ctx context.Context, action telegramToolAction) (string, error) {
 	items := flattenTelegramToolActions(action)
 	if len(items) == 0 {
@@ -246,10 +229,6 @@ func executeTelegramToolActionBatch(ctx context.Context, action telegramToolActi
 		lines = append(lines, fmt.Sprintf("%d. %s", index+1, strings.ReplaceAll(result, "\n", "\n   ")))
 	}
 	return strings.Join(lines, "\n"), nil
-}
-
-func buildTelegramSetModelStatusAction(ctx context.Context, chatID int64, target string, enabled bool) (telegramToolAction, error) {
-	return buildTelegramSetModelStatusActionWithMode(ctx, chatID, target, enabled, false)
 }
 
 func buildTelegramSetModelsStatusBatchAction(ctx context.Context, chatID int64, items []telegramAgentModelStatusBatchItem) (telegramToolAction, error) {
@@ -1006,29 +985,12 @@ func loadTelegramProviderSummaries(ctx context.Context, providers []models.Provi
 	return result, nil
 }
 
-func sendTelegramToolText(ctx context.Context, client TelegramClient, chatID int64, text string) error {
-	return sendTelegramAgentTextWithAttachments(ctx, client, chatID, text)
-}
-
 func normalizeTelegramToolControl(raw string) string {
 	value := strings.ToLower(strings.TrimSpace(raw))
 	if idx := strings.Index(value, "@"); strings.HasPrefix(value, "/") && idx > 0 {
 		value = value[:idx]
 	}
 	return strings.Trim(value, " \t\r\n。！？!?,，；;：:")
-}
-
-func normalizeTelegramToolText(raw string) string {
-	var sb strings.Builder
-	for _, r := range strings.ToLower(strings.TrimSpace(raw)) {
-		switch r {
-		case '，', ',', '。', '.', '：', ':', '；', ';', '！', '!', '？', '?', '（', '）', '(', ')', '“', '”', '"', '\'', '、':
-			sb.WriteByte(' ')
-		default:
-			sb.WriteRune(r)
-		}
-	}
-	return strings.Join(strings.Fields(sb.String()), " ")
 }
 
 func cleanupTelegramToolTarget(raw string) string {
@@ -1068,13 +1030,6 @@ func cleanupTelegramBulkModelTarget(raw string) string {
 	}
 	value = strings.Trim(value, " \t\r\n。！？!?,，；;：:\"'“”‘’[]【】（）()的")
 	return strings.Join(strings.Fields(value), " ")
-}
-
-func isTelegramToolBulkModelRequest(normalized string, target string) bool {
-	if containsAny(normalized, []string{"所有", "全部", "相关", "有关"}) {
-		return true
-	}
-	return strings.TrimSpace(cleanupTelegramBulkModelTarget(target)) != strings.TrimSpace(target)
 }
 
 func parseTelegramToolID(raw string) (uint, bool) {
@@ -1378,13 +1333,4 @@ func orderedUniqueStrings(values []string) []string {
 	}
 	sort.Strings(result)
 	return result
-}
-
-func containsAny(value string, needles []string) bool {
-	for _, needle := range needles {
-		if strings.Contains(value, needle) {
-			return true
-		}
-	}
-	return false
 }

@@ -896,8 +896,9 @@ export interface AnthropicCountTokens {
   version: string;
 }
 
-export interface AnthropicProxyIPConfig {
-  enabled: boolean;
+export interface NetworkForwardingConfig {
+  telegram_proxy_url: string;
+  proxy_ip_enabled: boolean;
   proxy_ip: string;
 }
 
@@ -906,7 +907,6 @@ export interface TelegramBreakerAlertConfig {
   bot_token: string;
   chat_id: string;
   api_base: string;
-  proxy_url: string;
   status_image_url: string;
 }
 

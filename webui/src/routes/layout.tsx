@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { Suspense, useEffect, useRef, useState, type CSSProperties } from "react";
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn, openExternalUrl } from "@/lib/utils";
+import Loading from "@/components/loading";
 import iconSvg from "@/assets/icon.svg";
 import {
   Activity,
@@ -40,6 +41,7 @@ const DESKTOP_SIDEBAR_COLLAPSED_WIDTH = "4rem";
 const SIDEBAR_GROUP_PADDING = "p-1.5";
 const SIDEBAR_BUTTON_BASE =
   "flex h-10 w-full items-center gap-2 overflow-hidden rounded-[18px] px-2.5 py-2 text-left text-[13px] outline-none ring-sidebar-ring transition-all duration-200 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2";
+const AGENT_ROUTE_PREFIXES = ["/skills", "/action", "/tg-agent-schedules"] as const;
 
 const navSections = [
   {
@@ -58,19 +60,19 @@ const navSections = [
     ],
   },
   {
-    title: "Agent",
-    items: [
-      { to: "/skills", label: "Skills", icon: Sparkles },
-      { to: "/action", label: "Action", icon: Bot },
-      { to: "/tg-agent-schedules", label: "定时任务", icon: CalendarClock },
-    ],
-  },
-  {
     title: "项目",
     items: [
       { to: "/model-chat", label: "测试场", icon: MessageSquareText },
       { to: "/logs", label: "请求日志", icon: ScrollText },
       { to: "/system-logs", label: "系统状态", icon: FileTerminal },
+    ],
+  },
+  {
+    title: "Agent",
+    items: [
+      { to: "/skills", label: "Skills", icon: Sparkles },
+      { to: "/action", label: "Action", icon: Bot },
+      { to: "/tg-agent-schedules", label: "定时任务", icon: CalendarClock },
     ],
   },
   {
@@ -118,7 +120,7 @@ export default function Layout() {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(getInitialSidebarCollapsed);
   const [uiFont, setUIFont] = useState<UIFontOption>(getInitialUIFont);
-  const [telegramAgentEnabled, setTelegramAgentEnabled] = useState(true);
+  const [telegramAgentEnabled, setTelegramAgentEnabled] = useState<boolean | null>(null);
   const [navigationProgressVisible, setNavigationProgressVisible] = useState(false);
   const [navigationProgressValue, setNavigationProgressValue] = useState(0);
   const navigate = useNavigate();
@@ -126,6 +128,10 @@ export default function Layout() {
   const effectiveUIFont: UIFontOption = uiFont;
   const layoutFontClass = UI_FONT_CLASS_MAP[effectiveUIFont];
   const isAuthKeyToken = getStoredAuthTokenMode() === "auth_key";
+  const isAgentRoute = AGENT_ROUTE_PREFIXES.some((path) => (
+    location.pathname === path || location.pathname.startsWith(`${path}/`)
+  ));
+  const shouldShowAgentRouteLoader = isAgentRoute && !isAuthKeyToken && telegramAgentEnabled === null;
   const progressTimersRef = useRef<number[]>([]);
   const progressStartedRef = useRef(false);
 
@@ -185,6 +191,15 @@ export default function Layout() {
       active = false;
     };
   }, [isAuthKeyToken]);
+
+  useEffect(() => {
+    if (!isAgentRoute) {
+      return;
+    }
+    if (isAuthKeyToken || telegramAgentEnabled === false) {
+      navigate("/", { replace: true });
+    }
+  }, [isAgentRoute, isAuthKeyToken, navigate, telegramAgentEnabled]);
 
   useEffect(() => {
     if (!versionUpdate?.hasUpdate) {
@@ -399,7 +414,7 @@ export default function Layout() {
     const sections = baseSections
       .map((section) => ({
         ...section,
-        items: isAuthKeyToken || telegramAgentEnabled
+        items: isAuthKeyToken || telegramAgentEnabled === true
           ? section.items
           : section.items.filter((item) => item.to !== "/skills" && item.to !== "/action" && item.to !== "/tg-agent-schedules"),
       }))
@@ -448,6 +463,12 @@ export default function Layout() {
       </div>
     ));
   };
+
+  const renderRouteContent = () => (
+    <Suspense fallback={<Loading message="加载页面" className="h-full min-h-[20rem]" />}>
+      {shouldShowAgentRouteLoader ? <Loading message="加载 Agent 配置" className="h-full min-h-[20rem]" /> : <Outlet />}
+    </Suspense>
+  );
 
   const renderDesktopSidebar = () => {
     return (
@@ -641,7 +662,7 @@ export default function Layout() {
         <div className="h-[calc(100vh-3.5rem)] transition-[padding-left] duration-200 ease-linear md:pl-[var(--sidebar-offset)]" style={sidebarOffsetStyle}>
           <div className="h-full p-3 md:p-4">
             <div className="mx-auto h-full max-w-[1680px] min-w-0 overflow-hidden">
-              <Outlet />
+              {renderRouteContent()}
             </div>
           </div>
         </div>

@@ -144,6 +144,8 @@ func TestExtractTelegramAgentGeminiUsage(t *testing.T) {
 
 func TestReadTelegramAgentOpenAIStreamWithToolsCollectsToolCalls(t *testing.T) {
 	stream := strings.Join([]string{
+		`data: {"choices":[{"delta":{"content":"我先查一下。"}}]}`,
+		"",
 		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"set_model_status","arguments":"{\"target\":\"claude"}}]}}]}`,
 		"",
 		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\",\"enabled\":true,\"bulk\":true}"}}]}}]}`,
@@ -173,6 +175,32 @@ func TestReadTelegramAgentOpenAIStreamWithToolsCollectsToolCalls(t *testing.T) {
 	}
 	if result.Usage.TotalTokens != 15 {
 		t.Fatalf("usage 聚合不正确: %+v", result.Usage)
+	}
+}
+
+func TestReadTelegramAgentOpenAIStreamWithToolsFlushesContentOnlyWithoutToolCalls(t *testing.T) {
+	stream := strings.Join([]string{
+		`data: {"choices":[{"delta":{"content":"最终"}}]}`,
+		"",
+		`data: {"choices":[{"delta":{"content":"结论"}}]}`,
+		"",
+		`data: [DONE]`,
+		"",
+	}, "\n")
+
+	var answer strings.Builder
+	result, err := readTelegramAgentOpenAIStreamWithTools(context.Background(), strings.NewReader(stream), time.Now(), func(delta string) error {
+		answer.WriteString(delta)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("readTelegramAgentOpenAIStreamWithTools 返回错误: %v", err)
+	}
+	if len(result.ToolCalls) != 0 {
+		t.Fatalf("不应产生工具调用，实际为 %d", len(result.ToolCalls))
+	}
+	if answer.String() != "最终结论" {
+		t.Fatalf("期望只在无工具调用时输出最终内容，实际为 %q", answer.String())
 	}
 }
 
@@ -1708,6 +1736,20 @@ func TestTelegramAgentSkillFunctionDefinitionsExposeAllEnabledSkills(t *testing.
 	enumValues, ok := skillProp["enum"].([]string)
 	if !ok || len(enumValues) != 1 || enumValues[0] != "writer" {
 		t.Fatalf("Skill enum 未按启用状态生成: %+v", skillProp["enum"])
+	}
+	if strings.Contains(readDef.Description, "Write release notes") || strings.Contains(readDef.Description, "Weather forecast") {
+		t.Fatalf("工具声明不应携带具体 Skill 元数据，实际为: %s", readDef.Description)
+	}
+
+	systemPrompt := telegramAgentFunctionToolSystemPrompt(ctx, cfg)
+	if !strings.Contains(systemPrompt, "name: writer") || !strings.Contains(systemPrompt, "description: Write release notes") {
+		t.Fatalf("系统提示应注入启用 Skill 元数据，实际为: %s", systemPrompt)
+	}
+	if strings.Contains(systemPrompt, "name: weather") || strings.Contains(systemPrompt, "Weather forecast") {
+		t.Fatalf("系统提示不应注入禁用 Skill 元数据，实际为: %s", systemPrompt)
+	}
+	if strings.Contains(systemPrompt, "compose.sh") || strings.Contains(systemPrompt, "Skill instructions") {
+		t.Fatalf("系统提示第一阶段不应注入脚本路径或 Body，实际为: %s", systemPrompt)
 	}
 
 	enabledSkills, err := loadTelegramAgentEnabledSkills(ctx, cfg)

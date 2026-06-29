@@ -18,6 +18,7 @@ const (
 	telegramAgentSkillDefaultTimeoutMs = 10000
 	telegramAgentSkillMaxTimeoutMs     = 240000
 	telegramAgentSkillMaxOutputBytes   = 64 * 1024
+	telegramAgentSkillBodyMaxLines     = 500
 	telegramAgentSkillListMaxLimit     = 50
 )
 
@@ -99,10 +100,12 @@ func readTelegramAgentSkill(ctx context.Context, cfg models.TelegramAgentConfig,
 		return "", err
 	}
 	lines := []string{
+		"Skill 二级加载结果",
 		"Skill：" + skill.Name,
 		"状态：" + mapBoolText(skill.Enabled, "启用", "禁用"),
 		"描述：" + emptyTextFallback(skill.Description, "无"),
 		"Skill 目录：" + skill.Dir,
+		"SKILL.md：" + skill.File,
 	}
 	if len(skill.Triggers) > 0 {
 		lines = append(lines, "触发词："+strings.Join(skill.Triggers, "、"))
@@ -126,15 +129,16 @@ func readTelegramAgentSkill(ctx context.Context, cfg models.TelegramAgentConfig,
 		lines = append(lines, "脚本：无")
 	}
 	if strings.TrimSpace(skill.Instructions) != "" {
-		lines = append(lines, "", "说明：", truncateTelegramSkillText(skill.Instructions, telegramAgentSkillMaxOutputBytes/2))
+		lines = append(lines, "", "SKILL.md Body：", truncateTelegramSkillBody(skill.Instructions))
 	}
 	lines = append(lines,
 		"",
-		"命令行调用约定：",
-		"1. 根据 Skill 说明决定脚本参数。",
-		"2. 使用 run_terminal_command 执行脚本，working_dir 传 Skill 目录，脚本路径优先使用上面的绝对路径。",
-		"3. shell 脚本通常使用 command=bash、command_args=[\"脚本绝对路径\", \"--参数\", \"值\"]；Python/Node 脚本分别使用 python3/node。",
-		"4. 如果脚本明确要求 stdin JSON，可通过 stdin 传入；否则优先使用命令行参数。",
+		"三级资源加载约定：",
+		"1. 根据 SKILL.md Body 决定是否需要读取 references/、scripts/ 或其他资源文件。",
+		"2. 读取资源文件时，用 run_terminal_command 执行 cat/sed/python3 等命令，working_dir 传 Skill 目录。",
+		"3. 执行脚本时，用 run_terminal_command，脚本路径优先使用上面的绝对路径。",
+		"4. shell 脚本通常使用 command=bash、command_args=[\"脚本绝对路径\", \"--参数\", \"值\"]；Python/Node 脚本分别使用 python3/node。",
+		"5. 如果脚本明确要求 stdin JSON，可通过 stdin 传入；否则优先使用命令行参数。",
 	)
 	return strings.Join(lines, "\n"), nil
 }
@@ -196,34 +200,6 @@ func findTelegramAgentSkill(ctx context.Context, cfg models.TelegramAgentConfig,
 		return telegramAgentSkill{}, fmt.Errorf("匹配到多个 Skill：%s", strings.Join(names, "、"))
 	}
 	return telegramAgentSkill{}, fmt.Errorf("未找到 Skill：%s", name)
-}
-
-func findTelegramAgentSkillScript(skill telegramAgentSkill, name string) (telegramAgentSkillScript, error) {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return telegramAgentSkillScript{}, errors.New("请写明脚本名称")
-	}
-	lowerName := strings.ToLower(name)
-	var fuzzy []telegramAgentSkillScript
-	for _, script := range skill.Scripts {
-		if strings.ToLower(script.Name) == lowerName {
-			return script, nil
-		}
-		if strings.Contains(strings.ToLower(script.Name), lowerName) {
-			fuzzy = append(fuzzy, script)
-		}
-	}
-	if len(fuzzy) == 1 {
-		return fuzzy[0], nil
-	}
-	if len(fuzzy) > 1 {
-		names := make([]string, 0, len(fuzzy))
-		for _, script := range fuzzy {
-			names = append(names, script.Name)
-		}
-		return telegramAgentSkillScript{}, fmt.Errorf("匹配到多个脚本：%s", strings.Join(names, "、"))
-	}
-	return telegramAgentSkillScript{}, fmt.Errorf("Skill %s 中未找到脚本：%s", skill.Name, name)
 }
 
 func parseTelegramAgentSkillFile(dir string, file string) (telegramAgentSkill, error) {
@@ -806,6 +782,29 @@ func truncateTelegramSkillText(value string, limit int) string {
 		return value
 	}
 	return value[:limit] + "\n...内容已截断"
+}
+
+func truncateTelegramSkillBody(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	normalized := strings.ReplaceAll(value, "\r\n", "\n")
+	lines := strings.Split(normalized, "\n")
+	truncated := false
+	if len(lines) > telegramAgentSkillBodyMaxLines {
+		lines = lines[:telegramAgentSkillBodyMaxLines]
+		truncated = true
+	}
+	body := strings.Join(lines, "\n")
+	if len(body) > telegramAgentSkillMaxOutputBytes/2 {
+		body = truncateTelegramSkillText(body, telegramAgentSkillMaxOutputBytes/2)
+		truncated = false
+	}
+	if truncated {
+		body += "\n...SKILL.md Body 超过 500 行，后续内容请通过 run_terminal_command 读取 references/ 或相关文件"
+	}
+	return body
 }
 
 func emptyTextFallback(value string, fallback string) string {

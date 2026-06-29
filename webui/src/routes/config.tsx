@@ -26,7 +26,7 @@ import {
 } from '@/components/ui/dialog';
 import {
   configAPI,
-  type AnthropicProxyIPConfig,
+  type NetworkForwardingConfig,
   type TelegramBreakerAlertConfig,
   type TelegramAgentConfig,
   type ProviderModel,
@@ -44,10 +44,14 @@ import {
   type LoadingUIStyle,
 } from '@/lib/loading-ui';
 
-const anthropicProxySchema = z.object({
-  enabled: z.boolean(),
+const networkForwardingSchema = z.object({
+  telegram_proxy_url: z.string().trim(),
+  proxy_ip_enabled: z.boolean(),
   proxy_ip: z.string().trim(),
-}).refine((data) => !data.enabled || data.proxy_ip.length > 0, {
+}).refine((data) => data.telegram_proxy_url.length === 0 || isValidURL(data.telegram_proxy_url), {
+  message: 'TG 代理 URL 格式不正确',
+  path: ['telegram_proxy_url'],
+}).refine((data) => !data.proxy_ip_enabled || data.proxy_ip.length > 0, {
   message: '启用代理 IP 时必须填写代理 IP',
   path: ['proxy_ip'],
 });
@@ -63,7 +67,6 @@ const telegramBreakerAlertSchema = z.object({
   bot_token: z.string().trim(),
   chat_id: z.string().trim(),
   api_base: z.string().trim(),
-  proxy_url: z.string().trim(),
   status_image_url: z.string().trim(),
 }).refine((data) => !data.enabled || data.bot_token.length > 0, {
   message: '启用 TG 告警时必须填写 Bot Token',
@@ -74,9 +77,6 @@ const telegramBreakerAlertSchema = z.object({
 }).refine((data) => data.api_base.length === 0 || isValidURL(data.api_base), {
   message: 'TG API 地址格式不正确',
   path: ['api_base'],
-}).refine((data) => data.proxy_url.length === 0 || isValidURL(data.proxy_url), {
-  message: '代理 URL 格式不正确',
-  path: ['proxy_url'],
 }).refine((data) => data.status_image_url.length === 0 || isValidURL(data.status_image_url), {
   message: '状态图片 URL 格式不正确',
   path: ['status_image_url'],
@@ -123,7 +123,7 @@ const loadingUISchema = z.object({
   style: z.enum(loadingUIValues),
 });
 
-type AnthropicProxyForm = z.infer<typeof anthropicProxySchema>;
+type NetworkForwardingForm = z.infer<typeof networkForwardingSchema>;
 type TelegramBreakerAlertForm = z.infer<typeof telegramBreakerAlertSchema>;
 type TelegramAgentForm = z.infer<typeof telegramAgentSchema>;
 type PriceSyncForm = z.infer<typeof priceSyncSchema>;
@@ -193,10 +193,12 @@ export default function ConfigPage() {
   const [telegramAgentModelDropdownOpen, setTelegramAgentModelDropdownOpen] = useState(false);
   const [displayConfigSaving, setDisplayConfigSaving] = useState(false);
   const [coreConfigSaving, setCoreConfigSaving] = useState(false);
-  const proxyForm = useForm<AnthropicProxyForm>({
-    resolver: zodResolver(anthropicProxySchema),
+  const [networkForwardingSaving, setNetworkForwardingSaving] = useState(false);
+  const networkForwardingForm = useForm<NetworkForwardingForm>({
+    resolver: zodResolver(networkForwardingSchema),
     defaultValues: {
-      enabled: false,
+      telegram_proxy_url: '',
+      proxy_ip_enabled: false,
       proxy_ip: '',
     },
   });
@@ -217,7 +219,6 @@ export default function ConfigPage() {
       bot_token: '',
       chat_id: '',
       api_base: 'https://api.telegram.org',
-      proxy_url: '',
       status_image_url: 'https://i.mukyu.ru/random?wtf_gender=girls',
     },
   });
@@ -259,18 +260,18 @@ export default function ConfigPage() {
   const fetchConfig = useCallback(async () => {
     try {
       setLoading(true);
-      // 获取全局代理 IP 配置
-      const proxyResponse = await configAPI.getConfig('anthropic_proxy_ip');
-      if (proxyResponse.value) {
-        const proxyCfg = JSON.parse(proxyResponse.value) as AnthropicProxyIPConfig;
-        const nextProxyConfig = {
-          enabled: Boolean(proxyCfg.enabled),
-          proxy_ip: proxyCfg.proxy_ip || '',
+      const networkForwardingResponse = await configAPI.getConfig('network_forwarding');
+      if (networkForwardingResponse.value) {
+        const networkCfg = JSON.parse(networkForwardingResponse.value) as NetworkForwardingConfig;
+        const nextNetworkForwardingConfig = {
+          telegram_proxy_url: networkCfg.telegram_proxy_url || '',
+          proxy_ip_enabled: Boolean(networkCfg.proxy_ip_enabled),
+          proxy_ip: networkCfg.proxy_ip || '',
         };
-        proxyForm.reset(nextProxyConfig);
+        networkForwardingForm.reset(nextNetworkForwardingConfig);
       }
     } catch (error) {
-      console.error('Failed to load config:', error);
+      console.error('Failed to load network forwarding config:', error);
     }
 
     try {
@@ -282,7 +283,6 @@ export default function ConfigPage() {
           bot_token: tgCfg.bot_token || '',
           chat_id: tgCfg.chat_id || '',
           api_base: tgCfg.api_base || 'https://api.telegram.org',
-          proxy_url: tgCfg.proxy_url || '',
           status_image_url: tgCfg.status_image_url || 'https://i.mukyu.ru/random?wtf_gender=girls',
         };
         telegramBreakerAlertForm.reset(nextTGConfig);
@@ -381,7 +381,7 @@ export default function ConfigPage() {
     }
 
     setLoading(false);
-  }, [githubVersionCheckForm, loadingUIForm, priceSyncForm, proxyForm, systemLogCleanupForm, telegramAgentForm, telegramBreakerAlertForm, uiFontForm]);
+  }, [githubVersionCheckForm, loadingUIForm, networkForwardingForm, priceSyncForm, systemLogCleanupForm, telegramAgentForm, telegramBreakerAlertForm, uiFontForm]);
 
   useEffect(() => {
     void fetchConfig();
@@ -408,6 +408,19 @@ export default function ConfigPage() {
       toast.error(message);
     } finally {
       setTgTesting(false);
+    }
+  };
+
+  const onNetworkForwardingSubmit = async (values: NetworkForwardingForm) => {
+    try {
+      setNetworkForwardingSaving(true);
+      await configAPI.updateConfig('network_forwarding', values);
+      toast.success('网络转发配置已保存');
+    } catch (error) {
+      console.error('Failed to save network forwarding config:', error);
+      toast.error('保存网络转发配置失败');
+    } finally {
+      setNetworkForwardingSaving(false);
     }
   };
 
@@ -486,25 +499,22 @@ export default function ConfigPage() {
   };
 
   const onCoreConfigSubmit = async () => {
-    const [cleanupValid, priceSyncValid, proxyValid] = await Promise.all([
+    const [cleanupValid, priceSyncValid] = await Promise.all([
       systemLogCleanupForm.trigger(),
       priceSyncForm.trigger(),
-      proxyForm.trigger(),
     ]);
-    if (!cleanupValid || !priceSyncValid || !proxyValid) {
+    if (!cleanupValid || !priceSyncValid) {
       return;
     }
 
     const cleanupValues = systemLogCleanupForm.getValues();
     const priceSyncValues = priceSyncForm.getValues();
-    const proxyValues = proxyForm.getValues();
 
     try {
       setCoreConfigSaving(true);
       await Promise.all([
         configAPI.updateConfig('system_log_cleanup', cleanupValues),
         configAPI.updateConfig('model_price_sync', priceSyncValues),
-        configAPI.updateConfig('anthropic_proxy_ip', proxyValues),
       ]);
       toast.success('核心配置已保存');
     } catch (error) {
@@ -583,7 +593,7 @@ export default function ConfigPage() {
 
       <div className="flex-1 min-h-0 overflow-y-auto">
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 xl:grid-cols-3">
-          <Card className="rounded-2xl border border-border/60 bg-card/90 shadow-[0_18px_45px_rgba(0,0,0,0.08)]">
+          <Card className="rounded-2xl border border-border/60 bg-card/90 shadow-[0_18px_45px_rgba(0,0,0,0.08)] lg:order-1">
             <CardContent className="space-y-3">
               <div className="space-y-3">
                 <div className="space-y-1">
@@ -716,14 +726,87 @@ export default function ConfigPage() {
             </CardFooter>
           </Card>
 
-          <Card className="rounded-2xl border border-border/60 bg-card/90 shadow-[0_18px_45px_rgba(0,0,0,0.08)]">
+          <Card className="gap-1 rounded-2xl border border-border/60 bg-card/90 shadow-[0_18px_45px_rgba(0,0,0,0.08)] lg:order-4 xl:order-5">
+            <CardHeader className="pb-2">
+              <CardTitle className="flex items-center gap-2 text-sm font-semibold">
+                <Network className="size-4 text-emerald-600" />
+                网络转发配置
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <Form {...networkForwardingForm}>
+                <form
+                  id="network-forwarding-form"
+                  onSubmit={networkForwardingForm.handleSubmit(onNetworkForwardingSubmit)}
+                  className="space-y-4"
+                >
+                  <FormField
+                    control={networkForwardingForm.control}
+                    name="telegram_proxy_url"
+                    render={({ field }) => (
+                      <FormItem className="space-y-1">
+                        <div className="flex items-center gap-1.5">
+                          <FormLabel className="w-[4.5rem] shrink-0 text-xs text-muted-foreground">TG 代理</FormLabel>
+                          <FormControl>
+                            <Input placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080" {...field} />
+                          </FormControl>
+                        </div>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-[8.75rem_minmax(0,1fr)]">
+                    <FormField
+                      control={networkForwardingForm.control}
+                      name="proxy_ip_enabled"
+                      render={({ field }) => (
+                        <FormItem className="flex h-9 items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/50 px-3">
+                          <FormLabel className="text-xs text-muted-foreground">启用 IP 覆盖</FormLabel>
+                          <FormControl>
+                            <Switch
+                              checked={field.value === true}
+                              onCheckedChange={(checked) => field.onChange(checked === true)}
+                            />
+                          </FormControl>
+                        </FormItem>
+                      )}
+                    />
+
+                    <FormField
+                      control={networkForwardingForm.control}
+                      name="proxy_ip"
+                      render={({ field }) => (
+                        <FormItem className="space-y-1">
+                          <div className="flex items-center gap-1.5">
+                            <FormLabel className="shrink-0 text-xs text-muted-foreground">覆盖 IP</FormLabel>
+                            <FormControl>
+                              <Input className="h-9" placeholder="203.0.113.10" {...field} />
+                            </FormControl>
+                          </div>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  </div>
+                </form>
+              </Form>
+            </CardContent>
+            <CardFooter className="justify-end">
+              <Button type="submit" form="network-forwarding-form" disabled={networkForwardingSaving}>
+                {networkForwardingSaving ? '保存中...' : '保存配置'}
+              </Button>
+            </CardFooter>
+          </Card>
+
+          <Card className="gap-1 rounded-2xl border border-border/60 bg-card/90 shadow-[0_18px_45px_rgba(0,0,0,0.08)] lg:order-2">
             <CardHeader className="pb-2">
               <CardTitle className="flex items-center gap-2 text-sm font-semibold">
                 <Send className="size-4 text-emerald-600" />
                 TG 告警配置
               </CardTitle>
               <CardDescription className="text-xs">
-                配置熔断告警发送到 Telegram 的 Bot 参数与发送代理。
+                配置熔断告警发送到 Telegram 的 Bot 参数、API 地址与状态图片。
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -796,22 +879,6 @@ export default function ConfigPage() {
 
                       <FormField
                         control={telegramBreakerAlertForm.control}
-                        name="proxy_url"
-                        render={({ field }) => (
-                          <FormItem className="space-y-1">
-                            <div className="flex items-center gap-1.5">
-                              <FormLabel className="w-[3.75rem] shrink-0 text-xs text-muted-foreground">代理 URL</FormLabel>
-                              <FormControl>
-                                <Input placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080" {...field} />
-                              </FormControl>
-                            </div>
-                            <FormMessage />
-                          </FormItem>
-                        )}
-                      />
-
-                      <FormField
-                        control={telegramBreakerAlertForm.control}
                         name="status_image_url"
                         render={({ field }) => (
                           <FormItem className="space-y-1">
@@ -837,7 +904,7 @@ export default function ConfigPage() {
             </CardFooter>
           </Card>
 
-          <Card className="rounded-2xl border border-border/60 bg-card/90 shadow-[0_18px_45px_rgba(0,0,0,0.08)]">
+          <Card className="gap-1 rounded-2xl border border-border/60 bg-card/90 shadow-[0_18px_45px_rgba(0,0,0,0.08)] lg:order-5 xl:order-3">
             <CardHeader className="pb-2">
               <CardTitle className="flex items-center gap-2 text-sm font-semibold">
                 <Bot className="size-4 text-emerald-600" />
@@ -927,8 +994,8 @@ export default function ConfigPage() {
             </CardFooter>
           </Card>
 
-          <Card className="rounded-2xl border border-border/60 bg-card/90 shadow-[0_18px_45px_rgba(0,0,0,0.08)]">
-            <CardContent className="space-y-3">
+          <Card className="rounded-2xl border border-border/60 bg-card/90 shadow-[0_18px_45px_rgba(0,0,0,0.08)] lg:order-3 xl:order-4">
+            <CardContent className="grid grid-cols-1 gap-4 xl:grid-cols-2">
               <div className="space-y-2">
                 <div className="space-y-0.5">
                   <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
@@ -937,7 +1004,7 @@ export default function ConfigPage() {
                   </div>
                 </div>
                 <Form {...systemLogCleanupForm}>
-                  <div className="grid grid-cols-[minmax(0,1fr)_140px] items-start gap-3">
+                  <div className="space-y-3">
                     <FormField
                       control={systemLogCleanupForm.control}
                       name="enabled"
@@ -983,7 +1050,7 @@ export default function ConfigPage() {
                 </Form>
               </div>
 
-              <div className="space-y-2 border-t border-border/60 pt-2">
+              <div className="space-y-2 border-t border-border/60 pt-3 xl:border-l xl:border-t-0 xl:pl-4 xl:pt-0">
                 <div className="space-y-0.5">
                   <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
                     <Coins className="size-4 text-emerald-600" />
@@ -992,7 +1059,7 @@ export default function ConfigPage() {
                 </div>
                 <Form {...priceSyncForm}>
                   <div className="space-y-3">
-                    <div className="grid grid-cols-[minmax(0,1fr)_140px] items-start gap-3">
+                    <div className="space-y-3">
                       <FormField
                         control={priceSyncForm.control}
                         name="enabled"
@@ -1036,68 +1103,6 @@ export default function ConfigPage() {
                       />
                     </div>
 
-                    <div className="grid grid-cols-1">
-                      <FormField
-                        control={priceSyncForm.control}
-                        name="source_url"
-                        render={({ field }) => (
-                          <FormItem>
-                            <FormLabel>数据源</FormLabel>
-                            <FormControl>
-                              <Input placeholder="https://models.dev/api.json" {...field} />
-                            </FormControl>
-                            <FormMessage />
-                          </FormItem>
-                        )}
-                      />
-                    </div>
-                  </div>
-                </Form>
-              </div>
-
-              <div className="space-y-3 border-t border-border/60 pt-2">
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
-                    <Network className="size-4 text-emerald-600" />
-                    全局 IP 覆盖配置
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    用于覆盖所有接口转发请求的 X-Forwarded-For 与 X-Real-IP
-                  </p>
-                </div>
-                <Form {...proxyForm}>
-                  <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)] items-end gap-3">
-                    <FormField
-                      control={proxyForm.control}
-                      name="enabled"
-                      render={({ field }) => (
-                        <FormItem className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/50 px-3 py-2">
-                          <FormLabel className="text-xs text-muted-foreground">启用代理 IP</FormLabel>
-                          <FormControl>
-                            <Switch
-                              checked={field.value === true}
-                              onCheckedChange={(checked) => field.onChange(checked === true)}
-                            />
-                          </FormControl>
-                        </FormItem>
-                      )}
-                    />
-
-                    <FormField
-                      control={proxyForm.control}
-                      name="proxy_ip"
-                      render={({ field }) => (
-                        <FormItem className="space-y-1">
-                          <div className="flex items-center gap-1.5">
-                            <FormLabel className="shrink-0 text-xs text-muted-foreground">代理 IP</FormLabel>
-                            <FormControl>
-                              <Input className="h-9" placeholder="203.0.113.10" {...field} />
-                            </FormControl>
-                          </div>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
                   </div>
                 </Form>
               </div>

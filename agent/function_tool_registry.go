@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"strconv"
 	"strings"
 
 	"github.com/racio/orvion/models"
@@ -289,17 +288,13 @@ func telegramAgentSkillFunctionToolDefinitions(ctx context.Context, cfg models.T
 	}
 
 	skills, err := loadTelegramAgentEnabledSkills(ctx, cfg)
-	catalogText := "当前 Skill 目录尚未扫描到可用 Skill。"
 	skillNames := []string{}
 	if err == nil {
-		catalogText = summarizeTelegramAgentSkillToolCatalog(skills)
 		for _, skill := range skills {
 			if skill.Enabled {
 				skillNames = append(skillNames, skill.Name)
 			}
 		}
-	} else {
-		catalogText = "当前 Skill 目录扫描失败：" + err.Error()
 	}
 
 	listProperties := map[string]any{
@@ -309,7 +304,7 @@ func telegramAgentSkillFunctionToolDefinitions(ctx context.Context, cfg models.T
 	definitions := []telegramAgentFunctionToolDefinition{
 		{
 			Name:        telegramAgentToolListSkills,
-			Description: "查看本地 Agent Skills 列表。Skills 来自本地目录中的 skills.md 或 SKILL.md，支持按名称、描述、触发词和说明关键词过滤。" + catalogText,
+			Description: "查看本地 Agent Skills 列表。Skills 来自本地目录中的 skills.md 或 SKILL.md，支持按名称、描述、触发词和说明关键词过滤。",
 			Properties:  listProperties,
 			Handler:     telegramAgentFunctionListSkills,
 		},
@@ -325,7 +320,7 @@ func telegramAgentSkillFunctionToolDefinitions(ctx context.Context, cfg models.T
 	definitions = append(definitions,
 		telegramAgentFunctionToolDefinition{
 			Name:        telegramAgentToolReadSkill,
-			Description: "读取指定 Skill 的说明、Skill 目录、脚本相对路径、绝对路径和推荐命令模板。需要执行脚本时，先读取 Skill，再使用 run_terminal_command 按绝对路径执行。" + catalogText,
+			Description: "按需加载指定 Skill 的 SKILL.md Body、Skill 目录、脚本相对路径、绝对路径和推荐命令模板。需要执行脚本或读取 references/scripts 资源时，必须先读取 Skill。",
 			Properties: map[string]any{
 				"skill": skillProperty,
 			},
@@ -334,7 +329,7 @@ func telegramAgentSkillFunctionToolDefinitions(ctx context.Context, cfg models.T
 		},
 		telegramAgentFunctionToolDefinition{
 			Name:        telegramAgentToolRunTerminalCommand,
-			Description: "执行本地命令行工具，用于按 Skill 说明和推荐命令模板运行脚本。请先 read_skill 获取脚本绝对路径，再用 command + command_args + working_dir 结构化执行；不要使用 bash -c/sh -c/zsh -c。执行会直接运行并写入审计日志。" + catalogText,
+			Description: "执行本地命令行工具，用于按 Skill 说明和推荐命令模板运行脚本、读取 references/scripts 资源或进行文件操作。请先 read_skill 获取 Skill 目录和脚本绝对路径，再用 command + command_args + working_dir 结构化执行；不要使用 bash -c/sh -c/zsh -c。执行会直接运行并写入审计日志。",
 			Properties: map[string]any{
 				"command":      map[string]any{"type": "string", "description": "可执行命令或绝对路径，例如 bash、python3、node 或 /path/to/script。必须是单个命令，参数放 command_args。"},
 				"command_args": map[string]any{"type": "array", "description": "命令参数列表，例如 [\"/abs/skill/scripts/search.sh\", \"--query\", \"广州天气\"]。", "items": map[string]any{"type": "string"}},
@@ -349,7 +344,14 @@ func telegramAgentSkillFunctionToolDefinitions(ctx context.Context, cfg models.T
 	return definitions
 }
 
-func summarizeTelegramAgentSkillToolCatalog(skills []telegramAgentSkill) string {
+func telegramAgentSkillMetadataPrompt(ctx context.Context, cfg models.TelegramAgentConfig) string {
+	if !telegramAgentSkillsEnabled(cfg) {
+		return ""
+	}
+	skills, err := loadTelegramAgentEnabledSkills(ctx, cfg)
+	if err != nil {
+		return "## Skills 元数据\n当前 Skill 目录扫描失败：" + err.Error()
+	}
 	enabled := make([]telegramAgentSkill, 0, len(skills))
 	for _, skill := range skills {
 		if skill.Enabled {
@@ -357,44 +359,21 @@ func summarizeTelegramAgentSkillToolCatalog(skills []telegramAgentSkill) string 
 		}
 	}
 	if len(enabled) == 0 {
-		return "当前没有启用的 Skill。"
+		return "## Skills 元数据\n当前没有启用的 Skill。"
 	}
-	limit := len(enabled)
-	if limit > 8 {
-		limit = 8
+	lines := []string{
+		"## Skills 元数据",
+		"以下仅是启用 Skill 的 name/description 元数据，用作触发器；不要据此编造脚本参数或执行结果。需要使用某个 Skill 时，必须先调用 read_skill 加载 SKILL.md Body。",
 	}
-	parts := make([]string, 0, limit)
-	for _, skill := range enabled[:limit] {
-		scriptNames := make([]string, 0, len(skill.Scripts))
-		for _, script := range skill.Scripts {
-			scriptNames = append(scriptNames, script.Name)
+	for _, skill := range enabled {
+		line := "- name: " + skill.Name
+		description := strings.Join(strings.Fields(strings.TrimSpace(skill.Description)), " ")
+		if description != "" {
+			line += " | description: " + description
 		}
-		description := truncateTelegramSkillCatalogText(skill.Description, 80)
-		if len(scriptNames) == 0 {
-			parts = append(parts, formatTelegramAgentSkillCatalogItem(skill.Name, description, "无脚本"))
-			continue
-		}
-		parts = append(parts, formatTelegramAgentSkillCatalogItem(skill.Name, description, "脚本："+strings.Join(scriptNames, "、")))
+		lines = append(lines, line)
 	}
-	if len(enabled) > limit {
-		parts = append(parts, "还有 "+strconv.Itoa(len(enabled)-limit)+" 个")
-	}
-	return "当前启用 Skill：" + strings.Join(parts, "；") + "。"
-}
-
-func formatTelegramAgentSkillCatalogItem(name string, description string, suffix string) string {
-	if strings.TrimSpace(description) == "" {
-		return name + "（" + suffix + "）"
-	}
-	return name + "（" + description + "；" + suffix + "）"
-}
-
-func truncateTelegramSkillCatalogText(value string, limit int) string {
-	value = strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
-	if limit <= 0 || len(value) <= limit {
-		return value
-	}
-	return value[:limit] + "..."
+	return strings.Join(lines, "\n")
 }
 
 func findTelegramAgentFunctionToolDefinition(ctx context.Context, cfg models.TelegramAgentConfig, name string) (telegramAgentFunctionToolDefinition, bool) {

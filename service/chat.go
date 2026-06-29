@@ -153,7 +153,7 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, requestP
 	}
 
 	var proxyIP string
-	if cfg, ok := runtimesvc.LoadAnthropicProxyIPConfig(ctx); ok {
+	if cfg, ok := runtimesvc.LoadForwardedIPOverrideConfig(ctx); ok {
 		proxyIP = cfg.ProxyIP
 	}
 

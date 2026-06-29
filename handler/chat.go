@@ -2,9 +2,7 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -12,7 +10,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/racio/orvion/common"
@@ -247,14 +244,6 @@ func writeHeader(c *gin.Context, stream bool, header http.Header, logStyle strin
 	c.Writer.Flush()
 }
 
-func formatHeadersJSON(header http.Header) string {
-	content, err := json.MarshalIndent(header, "", "  ")
-	if err != nil {
-		return "{}"
-	}
-	return string(content)
-}
-
 func logStreamCopyError(msg string, err error) {
 	if err == nil {
 		return
@@ -276,15 +265,6 @@ func isExpectedClientDisconnect(err error) bool {
 		strings.Contains(errText, "client disconnected")
 }
 
-func isDialogueEndpoint(endpoint string) bool {
-	switch strings.ToLower(strings.TrimSpace(endpoint)) {
-	case "chat", "responses", "messages":
-		return true
-	default:
-		return false
-	}
-}
-
 type countingWriter struct {
 	writer  io.Writer
 	written int64
@@ -294,28 +274,6 @@ func (w *countingWriter) Write(p []byte) (int, error) {
 	n, err := w.writer.Write(p)
 	w.written += int64(n)
 	return n, err
-}
-
-func formatBodyPreview(raw []byte) string {
-	if len(raw) == 0 {
-		return ""
-	}
-	const maxPreviewBytes = 512
-	preview := raw
-	truncated := false
-	if len(preview) > maxPreviewBytes {
-		preview = preview[:maxPreviewBytes]
-		truncated = true
-	}
-	if !utf8.Valid(preview) {
-		return fmt.Sprintf("[非 UTF-8 内容，总长度 %d 字节]", len(raw))
-	}
-	text := strings.ReplaceAll(string(preview), "\n", "\\n")
-	text = strings.ReplaceAll(text, "\r", "\\r")
-	if truncated {
-		return text + "...(已截断)"
-	}
-	return text
 }
 
 // 校验auhtKey的模型使用权限

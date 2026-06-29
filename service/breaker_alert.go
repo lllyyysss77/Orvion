@@ -146,9 +146,36 @@ func resolveTelegramNotifier(ctx context.Context) (*telegramNotifier, bool, erro
 		return nil, false, err
 	}
 	if found {
-		return buildTelegramNotifier(cfg.BotToken, cfg.ChatID, cfg.APIBase, cfg.ProxyURL, cfg.Enabled)
+		networkCfg, _, networkErr := loadNetworkForwardingConfig(ctx)
+		if networkErr != nil {
+			return nil, false, networkErr
+		}
+		return buildTelegramNotifier(cfg.BotToken, cfg.ChatID, cfg.APIBase, networkCfg.TelegramProxyURL, cfg.Enabled)
 	}
 	return nil, false, nil
+}
+
+func loadNetworkForwardingConfig(ctx context.Context) (models.NetworkForwardingConfig, bool, error) {
+	config, err := gorm.G[models.Config](models.DB).Where(models.ColumnEquals("key"), models.KeyNetworkForwarding).First(ctx)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return models.NetworkForwardingConfig{}, false, nil
+		}
+		return models.NetworkForwardingConfig{}, false, err
+	}
+
+	raw := strings.TrimSpace(config.Value)
+	if raw == "" {
+		return models.NetworkForwardingConfig{}, true, nil
+	}
+
+	var cfg models.NetworkForwardingConfig
+	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+		return models.NetworkForwardingConfig{}, true, fmt.Errorf("解析网络转发配置失败: %w", err)
+	}
+	cfg.TelegramProxyURL = strings.TrimSpace(cfg.TelegramProxyURL)
+	cfg.ProxyIP = strings.TrimSpace(cfg.ProxyIP)
+	return cfg, true, nil
 }
 
 func loadTelegramBreakerAlertConfig(ctx context.Context) (models.TelegramBreakerAlertConfig, bool, error) {
@@ -982,14 +1009,6 @@ func isTelegramMarkdownTableSeparator(line string) bool {
 		}
 	}
 	return true
-}
-
-func padTelegramTextRight(value string, targetWidth int) string {
-	padding := targetWidth - telegramTextDisplayWidth(value)
-	if padding <= 0 {
-		return value
-	}
-	return value + telegramAlignedTextPadding(padding)
 }
 
 func padTelegramCodeBlockTextRight(value string, targetWidth int) string {

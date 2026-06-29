@@ -27,13 +27,12 @@ import (
 )
 
 const (
-	defaultTelegramAgentMaxHistoryMessages  = 20
-	defaultTelegramAgentMaxTokens           = 2048
-	defaultTelegramAgentEditInterval        = 1200 * time.Millisecond
-	telegramAgentTypingInterval             = 4 * time.Second
-	telegramAgentMessageSoftLimit           = 3600
-	telegramAgentSSEMaxLineBytes            = 1024 * 1024
-	telegramAgentToolResultFollowupMaxBytes = 30 * 1024
+	defaultTelegramAgentMaxHistoryMessages = 20
+	defaultTelegramAgentMaxTokens          = 2048
+	defaultTelegramAgentEditInterval       = 1200 * time.Millisecond
+	telegramAgentTypingInterval            = 4 * time.Second
+	telegramAgentMessageSoftLimit          = 3600
+	telegramAgentSSEMaxLineBytes           = 1024 * 1024
 )
 
 // TelegramClient 是 TG Agent 需要的最小 Telegram 能力。
@@ -302,177 +301,6 @@ func telegramAgentEditableMessageContent(answer string, status string) string {
 		return answer
 	}
 	return "正在思考..."
-}
-
-func runTelegramAgentToolResultFollowup(ctx context.Context, client TelegramClient, chatID int64, cfg models.TelegramAgentConfig, action telegramToolAction, toolResult string) error {
-	session := getTelegramSession(chatID)
-	session.mu.Lock()
-	defer session.mu.Unlock()
-
-	history, err := loadTelegramSessionMessages(ctx, chatID, cfg)
-	if err != nil {
-		return err
-	}
-	pool, err := buildTelegramAgentDirectProviderPool(cfg, false)
-	if err != nil {
-		return err
-	}
-
-	placeholderID, err := client.SendMessage(ctx, chatID, "正在整理结果...")
-	if err != nil {
-		return err
-	}
-	stopTyping := startTelegramTypingLoop(ctx, client, chatID)
-	defer stopTyping()
-
-	prompt := buildTelegramAgentToolResultFollowupPrompt(action, toolResult)
-	var answer strings.Builder
-	lastEditedAt := time.Now()
-	lastEditedText := "正在整理结果..."
-
-	edit := func(force bool) error {
-		content := strings.TrimSpace(answer.String())
-		if content == "" {
-			content = "正在整理结果..."
-		}
-		content = trimTelegramMessage(content)
-		if content == lastEditedText {
-			return nil
-		}
-		if !force {
-			if time.Since(lastEditedAt) < resolveTelegramAgentEditInterval(cfg) {
-				return nil
-			}
-		}
-		if err := client.EditMessage(ctx, chatID, placeholderID, content); err != nil {
-			return err
-		}
-		lastEditedAt = time.Now()
-		lastEditedText = content
-		return nil
-	}
-
-	_, err = streamTelegramAgentToolResultPlainReplyWithPool(ctx, cfg, pool, history, prompt, func(delta string) error {
-		if delta == "" {
-			return nil
-		}
-		answer.WriteString(delta)
-		return edit(false)
-	})
-	if err != nil {
-		if fallbackErr := editTelegramAgentToolResultFallback(ctx, client, chatID, placeholderID, toolResult); fallbackErr != nil {
-			return fmt.Errorf("%w；回退发送原始结果失败: %v", err, fallbackErr)
-		}
-		return nil
-	}
-
-	rawFinalAnswer := strings.TrimSpace(answer.String())
-	finalAnswer, attachments := extractTelegramAgentAttachments(rawFinalAnswer)
-	if finalAnswer == "" {
-		if len(attachments) > 0 {
-			finalAnswer = "已生成附件。"
-		} else {
-			finalAnswer = "工具已执行完成，但模型没有生成整理内容。"
-		}
-	}
-	answer.Reset()
-	answer.WriteString(finalAnswer)
-	if err := edit(true); err != nil {
-		return err
-	}
-	parts := splitTelegramMessage(finalAnswer)
-	if len(parts) > 1 {
-		for _, part := range parts[1:] {
-			if strings.TrimSpace(part) == "" {
-				continue
-			}
-			if _, sendErr := client.SendMessage(ctx, chatID, strings.TrimSpace(part)); sendErr != nil {
-				return sendErr
-			}
-		}
-	}
-	if err := sendTelegramAgentAttachments(ctx, client, chatID, attachments); err != nil {
-		return err
-	}
-
-	nextHistory := trimTelegramHistory(append(history,
-		chatMessage{Role: "user", Content: "整理工具执行结果"},
-		chatMessage{Role: "assistant", Content: finalAnswer},
-	), cfg)
-	if err := saveTelegramSessionMessages(ctx, chatID, nextHistory); err != nil {
-		slog.Warn("保存 TG Agent 工具整理上下文失败", "chat_id", chatID, "error", err)
-	}
-	return nil
-}
-
-func editTelegramAgentToolResultFallback(ctx context.Context, client TelegramClient, chatID int64, messageID int64, toolResult string) error {
-	text, attachments := extractTelegramAgentAttachments(strings.TrimSpace(toolResult))
-	if text == "" && len(attachments) == 0 {
-		text = "工具已执行完成，但没有输出。"
-	} else if text == "" {
-		text = "已生成附件。"
-	}
-	parts := splitTelegramMessage(text)
-	if len(parts) == 0 {
-		return sendTelegramAgentAttachments(ctx, client, chatID, attachments)
-	}
-	if err := client.EditMessage(ctx, chatID, messageID, trimTelegramMessage(parts[0])); err != nil {
-		return err
-	}
-	for _, part := range parts[1:] {
-		if strings.TrimSpace(part) == "" {
-			continue
-		}
-		if _, err := client.SendMessage(ctx, chatID, strings.TrimSpace(part)); err != nil {
-			return err
-		}
-	}
-	return sendTelegramAgentAttachments(ctx, client, chatID, attachments)
-}
-
-func buildTelegramAgentToolResultFollowupPrompt(action telegramToolAction, toolResult string) string {
-	summary := strings.TrimSpace(action.Summary)
-	if summary == "" {
-		summary = string(action.Kind)
-	}
-	result := truncateTelegramSkillText(toolResult, telegramAgentToolResultFollowupMaxBytes)
-	return strings.Join([]string{
-		"系统刚刚执行了本地工具操作。请基于工具执行结果，回答用户原始需求。",
-		"要求：",
-		"- 使用简体中文。",
-		"- 不要原样粘贴 JSON，也不要输出内部字段名清单。",
-		"- 如果结果包含搜索、天气、查询或脚本输出，请提炼关键信息，整理成易读摘要。",
-		"- 可以保留重要数值、时间、来源名称和必要链接。",
-		"- 如果结果表示失败或信息不足，请说明原因和下一步建议。",
-		"",
-		"已执行操作：",
-		summary,
-		"",
-		"工具执行结果：",
-		result,
-	}, "\n")
-}
-
-func telegramAgentToolResultFollowupSystemPrompt() string {
-	return strings.Join([]string{
-		"你正在整理 Orvion TG Agent 的本地工具执行结果。",
-		"你的任务是把工具输出转化为用户真正需要的自然语言答案。",
-		"不要暴露内部工具调用细节、审计字段或无关 JSON 结构。",
-	}, "\n")
-}
-
-func withTelegramAgentSystemPromptSuffix(cfg models.TelegramAgentConfig, suffix string) models.TelegramAgentConfig {
-	suffix = strings.TrimSpace(suffix)
-	if suffix == "" {
-		return cfg
-	}
-	base := strings.TrimSpace(cfg.SystemPrompt)
-	if base == "" {
-		cfg.SystemPrompt = suffix
-		return cfg
-	}
-	cfg.SystemPrompt = base + "\n\n" + suffix
-	return cfg
 }
 
 func startTelegramTypingLoop(ctx context.Context, client TelegramClient, chatID int64) func() {

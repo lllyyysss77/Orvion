@@ -25,16 +25,6 @@ func estimateUsageFromIO(style string, model string, inputRaw []byte, output *mo
 	return usage
 }
 
-func estimatePromptTokensFromInput(style string, inputRaw []byte) int64 {
-	inputText := extractInputText(style, inputRaw)
-	return estimateTokens("", inputText)
-}
-
-func estimatePromptTokensFromInputWithModel(style string, model string, inputRaw []byte) int64 {
-	inputText := extractInputText(style, inputRaw)
-	return estimateTokens(model, inputText)
-}
-
 func estimateTokens(model string, text string) int64 {
 	text = strings.TrimSpace(text)
 	if text == "" {

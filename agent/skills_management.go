@@ -20,9 +20,8 @@ import (
 )
 
 const (
-	telegramAgentSkillFileMaxBytes        = 1024 * 1024
-	telegramAgentSkillMaxFileNodes        = 2000
-	telegramAgentDynamicSkillContextLimit = 5
+	telegramAgentSkillFileMaxBytes = 1024 * 1024
+	telegramAgentSkillMaxFileNodes = 2000
 )
 
 type TelegramAgentSkillScriptView struct {
@@ -323,9 +322,6 @@ func loadTelegramAgentEnabledSkills(ctx context.Context, cfg models.TelegramAgen
 	}
 	if len(skills) == 0 {
 		return []telegramAgentSkill{}, nil
-	}
-	if len(skills) > telegramAgentDynamicSkillContextLimit {
-		return skills[:telegramAgentDynamicSkillContextLimit], nil
 	}
 	return skills, nil
 }

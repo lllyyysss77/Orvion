@@ -25,7 +25,6 @@ import (
 	"github.com/racio/orvion/pkg"
 	"github.com/racio/orvion/providers"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 const (
@@ -396,18 +395,6 @@ func shouldRunTelegramDailyUsageReport(now time.Time, lastSentScheduleDate strin
 	return scheduleDate, true
 }
 
-func dispatchTelegramDailyUsageReport(ctx context.Context, now time.Time) (bool, error) {
-	notifier, ok, err := resolveTelegramNotifier(ctx)
-	if err != nil {
-		return false, err
-	}
-	if !ok || notifier == nil {
-		return false, nil
-	}
-
-	return true, dispatchTelegramDailyUsageReportWithNotifier(ctx, notifier, now)
-}
-
 func dispatchTelegramDailyUsageReportWithNotifier(ctx context.Context, notifier *telegramNotifier, now time.Time) error {
 	content := buildTelegramYesterdayUsageReportMessage(ctx, now)
 	if err := sendTelegramCaptionWithStatusImage(ctx, notifier, notifier.chatID, content); err != nil {
@@ -437,25 +424,6 @@ func loadTelegramDailyUsageReportLastSentDate(ctx context.Context) (string, erro
 		return "", nil
 	}
 	return value, nil
-}
-
-func saveTelegramDailyUsageReportLastSentDate(ctx context.Context, scheduleDate string) error {
-	scheduleDate = strings.TrimSpace(scheduleDate)
-	if scheduleDate == "" {
-		return nil
-	}
-
-	return models.DB.WithContext(ctx).
-		Clauses(clause.OnConflict{
-			Columns: []clause.Column{{Name: "key"}},
-			DoUpdates: clause.Assignments(map[string]any{
-				"value": scheduleDate,
-			}),
-		}).
-		Create(&models.Config{
-			Key:   models.KeyTelegramDailyUsageReportLastSentDate,
-			Value: scheduleDate,
-		}).Error
 }
 
 func claimTelegramDailyUsageReportScheduleDate(ctx context.Context, scheduleDate string) (bool, error) {
@@ -518,7 +486,11 @@ func resolveTelegramRuntimeConfig(ctx context.Context) (botToken, chatID, apiBas
 		botToken = strings.TrimSpace(cfg.BotToken)
 		chatID = strings.TrimSpace(cfg.ChatID)
 		apiBase = strings.TrimSpace(cfg.APIBase)
-		proxyURL = strings.TrimSpace(cfg.ProxyURL)
+		if networkCfg, _, networkErr := loadNetworkForwardingConfig(ctx); networkErr != nil {
+			return "", "", "", "", false, networkErr
+		} else {
+			proxyURL = strings.TrimSpace(networkCfg.TelegramProxyURL)
+		}
 		enabled = cfg.Enabled && botToken != "" && chatID != ""
 		if apiBase == "" {
 			apiBase = telegramDefaultAPIBase
@@ -800,32 +772,6 @@ func formatTelegramStatusMetricPairs(pairs []telegramStatusMetricPair) []string 
 		lines = append(lines, fmt.Sprintf("`%s%s- %s：%s`", left, padding, pair.RightLabel, pair.RightValue))
 	}
 	return lines
-}
-
-func resolveHealthStatusIcon(status string) string {
-	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "healthy":
-		return "✅"
-	case "degraded":
-		return "⚠️"
-	case "unhealthy":
-		return "❌"
-	default:
-		return "ℹ️"
-	}
-}
-
-func resolveDatabaseStatusIcon(status string) string {
-	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "ok":
-		return "✅"
-	case "slow":
-		return "⚠️"
-	case "connection_error", "ping_failed", "not_initialized":
-		return "❌"
-	default:
-		return "ℹ️"
-	}
 }
 
 func formatHumanDuration(d time.Duration) string {
@@ -1680,7 +1626,7 @@ func resolveTelegramStatusCoverImageBaseURL(ctx context.Context) string {
 }
 
 func resolveTelegramStatusImageProxyURL(ctx context.Context) string {
-	cfg, found, err := loadTelegramBreakerAlertConfig(ctx)
+	cfg, found, err := loadNetworkForwardingConfig(ctx)
 	if err != nil {
 		slog.Warn("读取 TG 状态图片代理配置失败", "error", err)
 		return ""
@@ -1689,7 +1635,7 @@ func resolveTelegramStatusImageProxyURL(ctx context.Context) string {
 		return ""
 	}
 
-	configProxyURL := strings.TrimSpace(cfg.ProxyURL)
+	configProxyURL := strings.TrimSpace(cfg.TelegramProxyURL)
 	if configProxyURL != "" {
 		return configProxyURL
 	}

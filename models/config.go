@@ -12,8 +12,8 @@ type Config struct {
 
 const (
 	KeyAnthropicCountTokens = "anthropic_count_tokens"
-	// KeyAnthropicProxyIP 全局代理 IP 配置（用于覆盖 X-Forwarded-For/X-Real-IP）
-	KeyAnthropicProxyIP = "anthropic_proxy_ip"
+	// KeyNetworkForwarding 网络转发配置（TG 代理与全局真实 IP 覆盖）
+	KeyNetworkForwarding = "network_forwarding"
 	// KeyTelegramBreakerAlert 熔断 Telegram 告警配置
 	KeyTelegramBreakerAlert = "breaker_alert_tg"
 	// KeyModelPriceSync 模型价格同步配置
@@ -40,9 +40,15 @@ type AnthropicCountTokens struct {
 	Version string `json:"version"`
 }
 
-type AnthropicProxyIPConfig struct {
+type ForwardedIPOverrideConfig struct {
 	Enabled bool   `json:"enabled"`
 	ProxyIP string `json:"proxy_ip"`
+}
+
+type NetworkForwardingConfig struct {
+	TelegramProxyURL string `json:"telegram_proxy_url"`
+	ProxyIPEnabled   bool   `json:"proxy_ip_enabled"`
+	ProxyIP          string `json:"proxy_ip"`
 }
 
 type TelegramBreakerAlertConfig struct {
@@ -50,7 +56,6 @@ type TelegramBreakerAlertConfig struct {
 	BotToken       string `json:"bot_token"`
 	ChatID         string `json:"chat_id"`
 	APIBase        string `json:"api_base"`
-	ProxyURL       string `json:"proxy_url"`
 	StatusImageURL string `json:"status_image_url"`
 }
 
