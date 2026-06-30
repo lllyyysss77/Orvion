@@ -71,6 +71,7 @@ type TelegramAgentConfig struct {
 	EditIntervalMs     int      `json:"edit_interval_ms"`
 	SkillsEnabled      *bool    `json:"skills_enabled,omitempty"`
 	SkillsDir          string   `json:"-"`
+	MemoryEnabled      *bool    `json:"memory_enabled,omitempty"`
 }
 
 type ModelPriceSyncConfig struct {

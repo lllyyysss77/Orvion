@@ -1,4 +1,4 @@
-package agent
+package tools
 
 import (
 	"context"
@@ -16,22 +16,37 @@ import (
 )
 
 const (
-	telegramAgentToolListLimit = 20
+	ToolListLimit = 20
 )
 
 type telegramToolActionKind string
 
+type ActionKind = telegramToolActionKind
+
 const (
-	telegramToolActionSetModelStatus         telegramToolActionKind = "set_model_status"
-	telegramToolActionSetProviderStatus      telegramToolActionKind = "set_provider_status"
-	telegramToolActionUpdateProviderConfig   telegramToolActionKind = "update_provider_config"
-	telegramToolActionCreateAuthKey          telegramToolActionKind = "create_auth_key"
-	telegramToolActionUpdateAuthKey          telegramToolActionKind = "update_auth_key"
-	telegramToolActionCreateScheduledTask    telegramToolActionKind = "create_telegram_agent_scheduled_task"
-	telegramToolActionUpdateScheduledTask    telegramToolActionKind = "update_telegram_agent_scheduled_task"
-	telegramToolActionSetScheduledTaskStatus telegramToolActionKind = "set_telegram_agent_scheduled_task_status"
-	telegramToolActionRunTerminalCommand     telegramToolActionKind = "run_terminal_command"
-	telegramToolActionBatch                  telegramToolActionKind = "batch"
+	ActionSetModelStatus         ActionKind = "set_model_status"
+	ActionSetProviderStatus      ActionKind = "set_provider_status"
+	ActionUpdateProviderConfig   ActionKind = "update_provider_config"
+	ActionCreateAuthKey          ActionKind = "create_auth_key"
+	ActionUpdateAuthKey          ActionKind = "update_auth_key"
+	ActionCreateScheduledTask    ActionKind = "create_telegram_agent_scheduled_task"
+	ActionUpdateScheduledTask    ActionKind = "update_telegram_agent_scheduled_task"
+	ActionSetScheduledTaskStatus ActionKind = "set_telegram_agent_scheduled_task_status"
+	ActionRunTerminalCommand     ActionKind = "run_terminal_command"
+	ActionBatch                  ActionKind = "batch"
+)
+
+const (
+	telegramToolActionSetModelStatus         = ActionSetModelStatus
+	telegramToolActionSetProviderStatus      = ActionSetProviderStatus
+	telegramToolActionUpdateProviderConfig   = ActionUpdateProviderConfig
+	telegramToolActionCreateAuthKey          = ActionCreateAuthKey
+	telegramToolActionUpdateAuthKey          = ActionUpdateAuthKey
+	telegramToolActionCreateScheduledTask    = ActionCreateScheduledTask
+	telegramToolActionUpdateScheduledTask    = ActionUpdateScheduledTask
+	telegramToolActionSetScheduledTaskStatus = ActionSetScheduledTaskStatus
+	telegramToolActionRunTerminalCommand     = ActionRunTerminalCommand
+	telegramToolActionBatch                  = ActionBatch
 )
 
 type telegramToolAction struct {
@@ -50,6 +65,8 @@ type telegramToolAction struct {
 	Summary            string
 	CreatedAt          time.Time
 }
+
+type Action = telegramToolAction
 
 type telegramProviderSummary struct {
 	Provider     models.Provider
@@ -149,8 +166,8 @@ func orderedUniqueTelegramModelIDs(ids []uint) []uint {
 	return result
 }
 
-func prepareOrExecuteTelegramToolAction(ctx context.Context, action telegramToolAction) (string, error) {
-	action = attachTelegramToolActionConversationID(ctx, action)
+func prepareOrExecuteTelegramToolAction(ctx context.Context, runtime Runtime, action telegramToolAction) (string, error) {
+	action = attachTelegramToolActionConversationID(ctx, runtime, action)
 	logID := recordTelegramAgentToolActionExecutingLog(ctx, action, telegramAgentToolLogSourceToolAction)
 	result, err := executeTelegramToolAction(ctx, action)
 	if err != nil {
@@ -161,12 +178,13 @@ func prepareOrExecuteTelegramToolAction(ctx context.Context, action telegramTool
 	return result, nil
 }
 
-func attachTelegramToolActionConversationID(ctx context.Context, action telegramToolAction) telegramToolAction {
+func PrepareOrExecuteAction(ctx context.Context, runtime Runtime, action Action) (string, error) {
+	return prepareOrExecuteTelegramToolAction(ctx, runtime, action)
+}
+
+func attachTelegramToolActionConversationID(ctx context.Context, runtime Runtime, action telegramToolAction) telegramToolAction {
 	if strings.TrimSpace(action.ConversationID) == "" {
-		conversationID, err := resolveTelegramActiveConversationID(ctx, action.ChatID, getTelegramSession(action.ChatID))
-		if err == nil {
-			action.ConversationID = conversationID
-		}
+		action.ConversationID = runtime.conversationID(ctx, action.ChatID)
 	}
 	for index := range action.Actions {
 		if strings.TrimSpace(action.Actions[index].ConversationID) == "" {
@@ -231,7 +249,7 @@ func executeTelegramToolActionBatch(ctx context.Context, action telegramToolActi
 	return strings.Join(lines, "\n"), nil
 }
 
-func buildTelegramSetModelsStatusBatchAction(ctx context.Context, chatID int64, items []telegramAgentModelStatusBatchItem) (telegramToolAction, error) {
+func buildTelegramSetModelsStatusBatchAction(ctx context.Context, chatID int64, items []ModelStatusBatchItem) (telegramToolAction, error) {
 	if len(items) == 0 {
 		return telegramToolAction{}, errors.New("批量模型操作至少需要一个动作")
 	}
@@ -287,6 +305,10 @@ func buildTelegramSetModelStatusActionWithMode(ctx context.Context, chatID int64
 	}, nil
 }
 
+func BuildSetModelStatusActionWithMode(ctx context.Context, chatID int64, target string, enabled bool, bulk bool) (Action, error) {
+	return buildTelegramSetModelStatusActionWithMode(ctx, chatID, target, enabled, bulk)
+}
+
 func buildTelegramSetProviderStatusAction(ctx context.Context, chatID int64, target string, enabled bool) (telegramToolAction, error) {
 	provider, err := findTelegramAgentProvider(ctx, target)
 	if err != nil {
@@ -303,7 +325,11 @@ func buildTelegramSetProviderStatusAction(ctx context.Context, chatID int64, tar
 	}, nil
 }
 
-func buildTelegramUpdateProviderConfigAction(ctx context.Context, chatID int64, args telegramAgentToolCallArgs) (telegramToolAction, error) {
+func BuildSetProviderStatusAction(ctx context.Context, chatID int64, target string, enabled bool) (Action, error) {
+	return buildTelegramSetProviderStatusAction(ctx, chatID, target, enabled)
+}
+
+func buildTelegramUpdateProviderConfigAction(ctx context.Context, chatID int64, args CallArgs) (telegramToolAction, error) {
 	target := cleanupTelegramToolTarget(args.Target)
 	provider, err := findTelegramAgentProvider(ctx, target)
 	if err != nil {
@@ -515,7 +541,7 @@ func getTelegramAgentProviderConfigText(ctx context.Context, target string) (str
 	return sb.String(), nil
 }
 
-func buildTelegramProviderConfigPatch(ctx context.Context, provider models.Provider, args telegramAgentToolCallArgs) (telegramProviderConfigPatch, []string, error) {
+func buildTelegramProviderConfigPatch(ctx context.Context, provider models.Provider, args CallArgs) (telegramProviderConfigPatch, []string, error) {
 	var patch telegramProviderConfigPatch
 	summaryParts := make([]string, 0)
 
@@ -705,7 +731,7 @@ func listTelegramAgentModels(ctx context.Context, filter string) (string, error)
 	}
 
 	var rows []models.Model
-	if err := query.Order("status DESC").Order("LOWER(name) ASC").Order("id ASC").Limit(telegramAgentToolListLimit + 1).Find(&rows).Error; err != nil {
+	if err := query.Order("status DESC").Order("LOWER(name) ASC").Order("id ASC").Limit(ToolListLimit + 1).Find(&rows).Error; err != nil {
 		return "", err
 	}
 	if len(rows) == 0 {
@@ -715,9 +741,9 @@ func listTelegramAgentModels(ctx context.Context, filter string) (string, error)
 		return "没有找到匹配的模型：" + filter, nil
 	}
 
-	hasMore := len(rows) > telegramAgentToolListLimit
+	hasMore := len(rows) > ToolListLimit
 	if hasMore {
-		rows = rows[:telegramAgentToolListLimit]
+		rows = rows[:ToolListLimit]
 	}
 
 	var sb strings.Builder
@@ -730,9 +756,13 @@ func listTelegramAgentModels(ctx context.Context, filter string) (string, error)
 		sb.WriteString(fmt.Sprintf("\n- %s｜%s", telegramStatusLabel(item.Status), item.Name))
 	}
 	if hasMore {
-		sb.WriteString(fmt.Sprintf("\n\n仅显示前 %d 条，可加关键词继续筛选。", telegramAgentToolListLimit))
+		sb.WriteString(fmt.Sprintf("\n\n仅显示前 %d 条，可加关键词继续筛选。", ToolListLimit))
 	}
 	return sb.String(), nil
+}
+
+func ListModels(ctx context.Context, filter string) (string, error) {
+	return listTelegramAgentModels(ctx, filter)
 }
 
 func listTelegramAgentProviders(ctx context.Context, filter string) (string, error) {
@@ -743,7 +773,7 @@ func listTelegramAgentProviders(ctx context.Context, filter string) (string, err
 	}
 
 	var providers []models.Provider
-	if err := query.Order("LOWER(name) ASC").Order("id ASC").Limit(telegramAgentToolListLimit + 1).Find(&providers).Error; err != nil {
+	if err := query.Order("LOWER(name) ASC").Order("id ASC").Limit(ToolListLimit + 1).Find(&providers).Error; err != nil {
 		return "", err
 	}
 	if len(providers) == 0 {
@@ -753,9 +783,9 @@ func listTelegramAgentProviders(ctx context.Context, filter string) (string, err
 		return "没有找到匹配的提供商：" + filter, nil
 	}
 
-	hasMore := len(providers) > telegramAgentToolListLimit
+	hasMore := len(providers) > ToolListLimit
 	if hasMore {
-		providers = providers[:telegramAgentToolListLimit]
+		providers = providers[:ToolListLimit]
 	}
 	summaries, err := loadTelegramProviderSummaries(ctx, providers)
 	if err != nil {
@@ -780,9 +810,13 @@ func listTelegramAgentProviders(ctx context.Context, filter string) (string, err
 		))
 	}
 	if hasMore {
-		sb.WriteString(fmt.Sprintf("\n\n仅显示前 %d 条，可加关键词继续筛选。", telegramAgentToolListLimit))
+		sb.WriteString(fmt.Sprintf("\n\n仅显示前 %d 条，可加关键词继续筛选。", ToolListLimit))
 	}
 	return sb.String(), nil
+}
+
+func ListProviders(ctx context.Context, filter string) (string, error) {
+	return listTelegramAgentProviders(ctx, filter)
 }
 
 func findTelegramAgentModel(ctx context.Context, target string) (models.Model, error) {
@@ -991,6 +1025,10 @@ func normalizeTelegramToolControl(raw string) string {
 		value = value[:idx]
 	}
 	return strings.Trim(value, " \t\r\n。！？!?,，；;：:")
+}
+
+func NormalizeToolControl(raw string) string {
+	return normalizeTelegramToolControl(raw)
 }
 
 func cleanupTelegramToolTarget(raw string) string {

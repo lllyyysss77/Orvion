@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	agenttools "github.com/racio/orvion/agent/tools"
 	"github.com/racio/orvion/consts"
 	"github.com/racio/orvion/models"
 	"github.com/racio/orvion/pkg"
@@ -289,6 +290,9 @@ func runTelegramAgentConversationWithHistoryMode(ctx context.Context, client Tel
 	session.messages = nextHistory
 	if err := saveTelegramSessionMessages(ctx, chatID, nextHistory); err != nil {
 		slog.Warn("保存 TG Agent 上下文失败", "chat_id", chatID, "error", err)
+	}
+	if loadHistory {
+		scheduleTelegramAgentMemoryExtraction(cfg, historyPrompt, finalAnswer, time.Now())
 	}
 	return nil
 }
@@ -571,7 +575,7 @@ func performTelegramAgentProviderRequestWithRetry(
 }
 
 func buildTelegramAgentRequestBody(ctx context.Context, cfg models.TelegramAgentConfig, selected selectedModelProvider, history []chatMessage, prompt string, attachments []TelegramInputAttachment) ([]byte, context.Context, error) {
-	systemPrompt := strings.TrimSpace(cfg.SystemPrompt)
+	systemPrompt := appendTelegramAgentMemoryPrompt(ctx, cfg, cfg.SystemPrompt)
 	messages := append([]chatMessage(nil), history...)
 	messages = append(messages, chatMessage{Role: "user", Content: prompt, Attachments: normalizeTelegramAgentInputAttachments(attachments)})
 	maxTokens := resolveTelegramAgentMaxTokens(cfg)
@@ -1010,7 +1014,8 @@ func loadTelegramAgentConfig(ctx context.Context) (models.TelegramAgentConfig, e
 		EditIntervalMs:     int(defaultTelegramAgentEditInterval / time.Millisecond),
 		SystemPrompt:       "你是 Orvion 的 Telegram 对话助手。请用简体中文回答，保持简洁、准确、友好。",
 		SkillsEnabled:      boolPtr(false),
-		SkillsDir:          telegramAgentDefaultSkillsDir,
+		SkillsDir:          agenttools.DefaultSkillsDir,
+		MemoryEnabled:      boolPtr(true),
 	}
 
 	if models.DB == nil {
@@ -1073,6 +1078,9 @@ func mergeTelegramAgentConfig(base models.TelegramAgentConfig, override models.T
 	if override.SkillsEnabled != nil {
 		base.SkillsEnabled = override.SkillsEnabled
 	}
+	if override.MemoryEnabled != nil {
+		base.MemoryEnabled = override.MemoryEnabled
+	}
 	return base
 }
 
@@ -1097,7 +1105,7 @@ func parseTelegramAgentCommand(raw string) (command string, text string) {
 }
 
 func shouldBypassTelegramAgent(raw string) bool {
-	switch normalizeTelegramToolControl(raw) {
+	switch agenttools.NormalizeToolControl(raw) {
 	case "/status", "状态", "系统状态", "查看状态", "查看系统状态":
 		return true
 	default:

@@ -48,7 +48,7 @@ import {
   updateProviderStatus,
   deleteProvider,
   getProviderTemplates,
-  getProviderModels
+  getProviderModels,
 } from "@/lib/api";
 import type { Provider, ProviderTemplate, ProviderModel } from "@/lib/api";
 import { openExternalUrl } from "@/lib/utils";

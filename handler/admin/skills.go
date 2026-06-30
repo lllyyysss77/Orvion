@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/racio/orvion/agent"
+	agenttools "github.com/racio/orvion/agent/tools"
 	"github.com/racio/orvion/common"
 )
 
@@ -27,7 +28,7 @@ func GetSkills(c *gin.Context) {
 		common.InternalServerError(c, err.Error())
 		return
 	}
-	result, err := agent.ListTelegramAgentSkillsForManagement(
+	result, err := agenttools.ListTelegramAgentSkillsForManagement(
 		c.Request.Context(),
 		cfg,
 		c.Query("query"),
@@ -51,7 +52,7 @@ func GetSkill(c *gin.Context) {
 		common.InternalServerError(c, err.Error())
 		return
 	}
-	result, err := agent.ReadTelegramAgentSkillForManagement(c.Request.Context(), cfg, name)
+	result, err := agenttools.ReadTelegramAgentSkillForManagement(c.Request.Context(), cfg, name)
 	if err != nil {
 		common.BadRequest(c, err.Error())
 		return
@@ -71,7 +72,7 @@ func GetSkillFiles(c *gin.Context) {
 		common.InternalServerError(c, err.Error())
 		return
 	}
-	result, err := agent.ListTelegramAgentSkillFilesForManagement(c.Request.Context(), cfg, name)
+	result, err := agenttools.ListTelegramAgentSkillFilesForManagement(c.Request.Context(), cfg, name)
 	if err != nil {
 		common.BadRequest(c, err.Error())
 		return
@@ -91,7 +92,7 @@ func GetSkillFileContent(c *gin.Context) {
 		common.InternalServerError(c, err.Error())
 		return
 	}
-	result, err := agent.ReadTelegramAgentSkillFileForManagement(c.Request.Context(), cfg, name, c.Query("path"))
+	result, err := agenttools.ReadTelegramAgentSkillFileForManagement(c.Request.Context(), cfg, name, c.Query("path"))
 	if err != nil {
 		common.BadRequest(c, err.Error())
 		return
@@ -106,7 +107,7 @@ func UpdateSkillFileContent(c *gin.Context) {
 		common.BadRequest(c, "Skill 名称不能为空")
 		return
 	}
-	var req agent.TelegramAgentSkillFileContentRequest
+	var req agenttools.TelegramAgentSkillFileContentRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.BadRequest(c, "请求参数错误: "+err.Error())
 		return
@@ -116,7 +117,7 @@ func UpdateSkillFileContent(c *gin.Context) {
 		common.InternalServerError(c, err.Error())
 		return
 	}
-	result, err := agent.WriteTelegramAgentSkillFileForManagement(c.Request.Context(), cfg, name, req)
+	result, err := agenttools.WriteTelegramAgentSkillFileForManagement(c.Request.Context(), cfg, name, req)
 	if err != nil {
 		common.BadRequest(c, err.Error())
 		return
@@ -136,7 +137,7 @@ func DeleteSkill(c *gin.Context) {
 		common.InternalServerError(c, err.Error())
 		return
 	}
-	result, err := agent.DeleteTelegramAgentSkillForManagement(c.Request.Context(), cfg, name)
+	result, err := agenttools.DeleteTelegramAgentSkillForManagement(c.Request.Context(), cfg, name)
 	if err != nil {
 		common.BadRequest(c, err.Error())
 		return
@@ -151,7 +152,7 @@ func ReloadSkills(c *gin.Context) {
 		common.InternalServerError(c, err.Error())
 		return
 	}
-	result, err := agent.ReloadTelegramAgentSkillsForManagement(
+	result, err := agenttools.ReloadTelegramAgentSkillsForManagement(
 		c.Request.Context(),
 		cfg,
 		c.Query("query"),
@@ -180,7 +181,7 @@ func UpdateSkillStatus(c *gin.Context) {
 		common.InternalServerError(c, err.Error())
 		return
 	}
-	result, err := agent.SetTelegramAgentSkillEnabled(c.Request.Context(), cfg, name, req.Enabled)
+	result, err := agenttools.SetTelegramAgentSkillEnabled(c.Request.Context(), cfg, name, req.Enabled)
 	if err != nil {
 		common.BadRequest(c, err.Error())
 		return
@@ -234,7 +235,7 @@ func UploadSkill(c *gin.Context) {
 		return
 	}
 
-	result, err := agent.ImportTelegramAgentSkill(c.Request.Context(), cfg, agent.TelegramAgentSkillImportRequest{
+	result, err := agenttools.ImportTelegramAgentSkill(c.Request.Context(), cfg, agenttools.TelegramAgentSkillImportRequest{
 		SourcePath: sourcePath,
 		Name:       strings.TrimSpace(c.PostForm("name")),
 		Overwrite:  parseSkillUploadBool(c.PostForm("overwrite")),

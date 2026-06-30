@@ -145,9 +145,11 @@ func main() {
 	}
 
 	// server.Shutdown 已返回,所有在途请求都结束了——此时触发 AuthKey 聚合 flusher
-	// 做最后一次落库,并等其退出。这样即使 Shutdown 期间产生的记账也不会丢失。
+	// 和累计金额 flusher 做最后一次落库,并等其退出。这样即使 Shutdown 期间产生的记账也不会丢失。
 	service.ShutdownAuthKeyFlusher()
+	service.ShutdownTotalAmountFlusher()
 	service.WaitAuthKeyFlusher(shutdownTimeout)
+	service.WaitTotalAmountFlusher(shutdownTimeout)
 
 	select {
 	case err := <-serverErrCh:
@@ -180,10 +182,12 @@ func startBackgroundWorkers(ctx context.Context) {
 	service.StartChatLogOutputSizeBackfill(ctx)
 	handler.StartGitHubVersionUpdateRefresher(ctx)
 	service.StartAuthKeyFlusher(ctx)
+	service.StartTotalAmountFlusher(ctx)
 	service.StartPriceSync(ctx)
 	service.StartSystemLogCleanup(ctx)
 	service.StartModelProviderAutoRecovery(ctx)
 	service.StartTelegramCommandBot(ctx)
 	service.StartTelegramDailyUsageReport(ctx)
 	service.StartTelegramAgentScheduledTasks(ctx)
+	service.StartTelegramAgentMemoryRollup(ctx)
 }

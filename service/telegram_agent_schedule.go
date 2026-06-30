@@ -18,6 +18,7 @@ const (
 )
 
 func StartTelegramAgentScheduledTasks(ctx context.Context) {
+	registerTelegramAgentSystemToolHooks()
 	pkg.GoSafe("service.telegram_agent_scheduled_tasks", func() { telegramAgentScheduledTaskLoop(ctx) })
 }
 

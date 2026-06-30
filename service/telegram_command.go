@@ -178,6 +178,7 @@ type telegramDailyUsageSummary struct {
 
 // StartTelegramCommandBot 启动 Telegram 命令对话机器人（/status、/model、/help）。
 func StartTelegramCommandBot(ctx context.Context) {
+	registerTelegramAgentSystemToolHooks()
 	pkg.GoSafe("service.telegram_command_loop", func() { telegramCommandLoop(ctx) })
 }
 
@@ -844,6 +845,15 @@ func popTelegramStatusImageWindowItem(ctx context.Context) (telegramStatusImageI
 }
 
 func scheduleTelegramStatusImageRefill(ctx context.Context) {
+	scheduleTelegramStatusImageRefillWithTrigger(ctx, "refill")
+}
+
+func scheduleTelegramStatusImageRefillWithTrigger(ctx context.Context, trigger string) {
+	trigger = strings.TrimSpace(trigger)
+	if trigger == "" {
+		trigger = "refill"
+	}
+
 	telegramStatusImageWindowMu.Lock()
 	if telegramStatusImageRefillRunning || len(telegramStatusImageWindowItems) >= telegramStatusImageWindowSize {
 		telegramStatusImageWindowMu.Unlock()
@@ -873,7 +883,7 @@ func scheduleTelegramStatusImageRefill(ctx context.Context) {
 				return
 			}
 
-			if err := prefetchTelegramStatusImageIntoWindowWithRetry(ctx, "refill"); err != nil {
+			if err := prefetchTelegramStatusImageIntoWindowWithRetry(ctx, trigger); err != nil {
 				slog.Warn("异步补充 /status 图片缓存失败", "error", err)
 				return
 			}
@@ -992,6 +1002,7 @@ func handleTelegramRestartCommand(ctx context.Context, notifier *telegramNotifie
 	}
 	clearedProviderClients := providers.ResetHTTPClientCache()
 	clearedStatusImages := clearTelegramStatusImageWindow()
+	scheduleTelegramStatusImageRefillWithTrigger(RootContext(), "restart")
 	closeTelegramClientIdleConnections(notifier.client)
 	closeTelegramClientIdleConnections(pollClient)
 	runtime.GC()

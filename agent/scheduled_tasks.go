@@ -10,13 +10,14 @@ import (
 	"sync"
 	"time"
 
+	agenttools "github.com/racio/orvion/agent/tools"
 	"github.com/racio/orvion/models"
 	"gorm.io/gorm"
 )
 
 const (
-	TelegramAgentScheduleTypeInterval = "interval"
-	TelegramAgentScheduleTypeDaily    = "daily"
+	TelegramAgentScheduleTypeInterval = agenttools.TelegramAgentScheduleTypeInterval
+	TelegramAgentScheduleTypeDaily    = agenttools.TelegramAgentScheduleTypeDaily
 
 	telegramAgentScheduledTaskToolName = "telegram_agent_scheduled_task"
 	telegramAgentScheduledTaskSource   = "scheduled_task"
@@ -279,12 +280,12 @@ func runTelegramAgentScheduledTaskSilently(ctx context.Context, cfg models.Teleg
 }
 
 func recordTelegramAgentScheduledTaskExecutingLog(ctx context.Context, task models.TelegramAgentScheduledTask, chatID int64) uint {
-	return recordTelegramAgentToolCallLog(ctx, models.TelegramAgentToolCallLog{
+	return agenttools.RecordToolCallLog(ctx, telegramAgentToolRuntime(), models.TelegramAgentToolCallLog{
 		ChatID:        chatID,
 		Source:        telegramAgentScheduledTaskSource,
 		ToolName:      telegramAgentScheduledTaskToolName,
 		Arguments:     telegramAgentScheduledTaskArguments(task),
-		Status:        telegramAgentToolLogStatusExecuting,
+		Status:        agenttools.ToolLogStatusExecuting,
 		ActionKind:    telegramAgentScheduledTaskAction,
 		ActionSummary: task.Name,
 		OK:            0,
@@ -294,18 +295,18 @@ func recordTelegramAgentScheduledTaskExecutingLog(ctx context.Context, task mode
 }
 
 func finishTelegramAgentScheduledTaskLog(ctx context.Context, logID uint, task models.TelegramAgentScheduledTask, result TelegramAgentScheduledTaskRunResult, err error) {
-	status := telegramAgentToolLogStatusExecuted
+	status := agenttools.ToolLogStatusExecuted
 	ok := 1
 	errorText := ""
 	text := result.Text
 	if err != nil {
-		status = telegramAgentToolLogStatusFailed
+		status = agenttools.ToolLogStatusFailed
 		ok = 0
 		errorText = err.Error()
 		text = errorText
 	}
 	now := time.Now()
-	updateTelegramAgentToolCallLog(ctx, logID, models.TelegramAgentToolCallLog{
+	agenttools.UpdateToolCallLog(ctx, telegramAgentToolRuntime(), logID, models.TelegramAgentToolCallLog{
 		ChatID:        result.ChatID,
 		Source:        telegramAgentScheduledTaskSource,
 		ToolName:      telegramAgentScheduledTaskToolName,

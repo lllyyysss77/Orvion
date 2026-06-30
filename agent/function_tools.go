@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	agenttools "github.com/racio/orvion/agent/tools"
 	"github.com/racio/orvion/consts"
 	"github.com/racio/orvion/models"
 	"github.com/racio/orvion/providers"
@@ -20,26 +21,35 @@ import (
 
 const (
 	telegramAgentToolLoopMaxRounds = 20
+)
 
-	telegramAgentToolListModels             = "list_models"
-	telegramAgentToolListProviders          = "list_providers"
-	telegramAgentToolSetModelStatus         = "set_model_status"
-	telegramAgentToolSetModelsStatusBatch   = "set_models_status_batch"
-	telegramAgentToolSetProviderStatus      = "set_provider_status"
-	telegramAgentToolGetProviderConfig      = "get_provider_config"
-	telegramAgentToolUpdateProviderConfig   = "update_provider_config"
-	telegramAgentToolReadSystemLogs         = "read_system_logs"
-	telegramAgentToolReadRequestLogs        = "read_request_logs"
-	telegramAgentToolListAuthKeys           = "list_auth_keys"
-	telegramAgentToolCreateAuthKey          = "create_auth_key"
-	telegramAgentToolUpdateAuthKey          = "update_auth_key"
-	telegramAgentToolListScheduledTasks     = "list_telegram_agent_scheduled_tasks"
-	telegramAgentToolCreateScheduledTask    = "create_telegram_agent_scheduled_task"
-	telegramAgentToolUpdateScheduledTask    = "update_telegram_agent_scheduled_task"
-	telegramAgentToolSetScheduledTaskStatus = "set_telegram_agent_scheduled_task_status"
-	telegramAgentToolListSkills             = "list_skills"
-	telegramAgentToolReadSkill              = "read_skill"
-	telegramAgentToolRunTerminalCommand     = "run_terminal_command"
+const (
+	telegramAgentToolListModels             = agenttools.NameListModels
+	telegramAgentToolListProviders          = agenttools.NameListProviders
+	telegramAgentToolSetModelStatus         = agenttools.NameSetModelStatus
+	telegramAgentToolSetModelsStatusBatch   = agenttools.NameSetModelsStatusBatch
+	telegramAgentToolSetProviderStatus      = agenttools.NameSetProviderStatus
+	telegramAgentToolGetProviderConfig      = agenttools.NameGetProviderConfig
+	telegramAgentToolUpdateProviderConfig   = agenttools.NameUpdateProviderConfig
+	telegramAgentToolReadSystemLogs         = agenttools.NameReadSystemLogs
+	telegramAgentToolReadRequestLogs        = agenttools.NameReadRequestLogs
+	telegramAgentToolGetSystemStatus        = agenttools.NameGetSystemStatus
+	telegramAgentToolGetPerformanceStats    = agenttools.NameGetPerformanceStats
+	telegramAgentToolListImageCache         = agenttools.NameListImageCache
+	telegramAgentToolDeleteImageCache       = agenttools.NameDeleteImageCache
+	telegramAgentToolRefreshImageCache      = agenttools.NameRefreshImageCache
+	telegramAgentToolGetBackgroundTasks     = agenttools.NameGetBackgroundTasks
+	telegramAgentToolTriggerBackgroundTask  = agenttools.NameTriggerBackgroundTask
+	telegramAgentToolListAuthKeys           = agenttools.NameListAuthKeys
+	telegramAgentToolCreateAuthKey          = agenttools.NameCreateAuthKey
+	telegramAgentToolUpdateAuthKey          = agenttools.NameUpdateAuthKey
+	telegramAgentToolListScheduledTasks     = agenttools.NameListScheduledTasks
+	telegramAgentToolCreateScheduledTask    = agenttools.NameCreateScheduledTask
+	telegramAgentToolUpdateScheduledTask    = agenttools.NameUpdateScheduledTask
+	telegramAgentToolSetScheduledTaskStatus = agenttools.NameSetScheduledTaskStatus
+	telegramAgentToolListSkills             = agenttools.NameListSkills
+	telegramAgentToolReadSkill              = agenttools.NameReadSkill
+	telegramAgentToolRunTerminalCommand     = agenttools.NameRunTerminalCommand
 )
 
 type telegramAgentOpenAIMessage struct {
@@ -60,58 +70,9 @@ type telegramAgentOpenAIFunctionCall struct {
 	Arguments string `json:"arguments"`
 }
 
-type telegramAgentToolCallArgs struct {
-	Query                      string                              `json:"query"`
-	Limit                      int                                 `json:"limit"`
-	Level                      string                              `json:"level"`
-	Status                     string                              `json:"status"`
-	ProviderName               string                              `json:"provider_name"`
-	Model                      string                              `json:"model"`
-	RecentMinutes              int                                 `json:"recent_minutes"`
-	StartAt                    string                              `json:"start_at"`
-	EndAt                      string                              `json:"end_at"`
-	KeySuffix                  *string                             `json:"key_suffix"`
-	AllowAll                   *bool                               `json:"allow_all"`
-	AuthModels                 []string                            `json:"models"`
-	ModelKeywords              []string                            `json:"model_keywords"`
-	ExpiresAt                  *string                             `json:"expires_at"`
-	ClearExpiresAt             bool                                `json:"clear_expires_at"`
-	RPMLimit                   *int                                `json:"rpm_limit"`
-	TaskPrompt                 *string                             `json:"prompt"`
-	ScheduleType               *string                             `json:"schedule_type"`
-	IntervalMinutes            *int                                `json:"interval_minutes"`
-	TimeOfDay                  *string                             `json:"time_of_day"`
-	Timezone                   *string                             `json:"timezone"`
-	PushToConversation         *bool                               `json:"push_to_conversation"`
-	ChatID                     *int64                              `json:"chat_id"`
-	ClearChatID                bool                                `json:"clear_chat_id"`
-	Target                     string                              `json:"target"`
-	Enabled                    *bool                               `json:"enabled"`
-	Bulk                       bool                                `json:"bulk"`
-	Items                      []telegramAgentModelStatusBatchItem `json:"items"`
-	Name                       *string                             `json:"name"`
-	Config                     *string                             `json:"config"`
-	ConfigUpdates              map[string]any                      `json:"config_updates"`
-	RemoveConfigKeys           []string                            `json:"remove_config_keys"`
-	Console                    *string                             `json:"console"`
-	ProxyURL                   *string                             `json:"proxy_url"`
-	ModelsFetchMode            *string                             `json:"models_fetch_mode"`
-	Capabilities               *[]string                           `json:"capabilities"`
-	InterfaceConversionEnabled *bool                               `json:"interface_conversion_enabled"`
-	InterfaceConversionTarget  *string                             `json:"interface_conversion_target"`
-	Skill                      string                              `json:"skill"`
-	Command                    string                              `json:"command"`
-	CommandArgs                []string                            `json:"command_args"`
-	WorkingDir                 string                              `json:"working_dir"`
-	Stdin                      *string                             `json:"stdin"`
-	TimeoutMs                  int                                 `json:"timeout_ms"`
-}
+type telegramAgentToolCallArgs = agenttools.CallArgs
 
-type telegramAgentModelStatusBatchItem struct {
-	Target  string `json:"target"`
-	Enabled *bool  `json:"enabled"`
-	Bulk    bool   `json:"bulk"`
-}
+type telegramAgentModelStatusBatchItem = agenttools.ModelStatusBatchItem
 
 type telegramAgentOpenAIStreamReadResult struct {
 	Usage            models.Usage
@@ -121,11 +82,7 @@ type telegramAgentOpenAIStreamReadResult struct {
 	ToolCalls        []telegramAgentOpenAIToolCall
 }
 
-type telegramAgentToolResultPayload struct {
-	OK    bool   `json:"ok"`
-	Text  string `json:"text"`
-	Final bool   `json:"final,omitempty"`
-}
+type telegramAgentToolResultPayload = agenttools.ResultPayload
 
 func streamTelegramAgentReplyWithFunctionTools(ctx context.Context, cfg models.TelegramAgentConfig, pool telegramAgentModelProviderPool, history []chatMessage, prompt string, attachments []TelegramInputAttachment, chatID int64, onDelta streamDeltaHandler, onStatus streamStatusHandler) (telegramAgentReplyResult, error) {
 	result := telegramAgentReplyResult{
@@ -135,7 +92,7 @@ func streamTelegramAgentReplyWithFunctionTools(ctx context.Context, cfg models.T
 		return result, errors.New("当前 TG Agent 模型提供商暂不支持 function call 工具调用")
 	}
 
-	systemPrompt := strings.TrimSpace(cfg.SystemPrompt)
+	systemPrompt := appendTelegramAgentMemoryPrompt(ctx, cfg, cfg.SystemPrompt)
 	if systemPrompt != "" {
 		systemPrompt += "\n\n"
 	}
@@ -211,7 +168,7 @@ func streamTelegramAgentPlainReplyWithPool(ctx context.Context, cfg models.Teleg
 	}
 	attempt, err := performTelegramAgentProviderRequestWithRetry(ctx, pool, true, result.StartedAt, func(requestCtx context.Context, selected selectedModelProvider) ([]byte, context.Context, error) {
 		if selected.responseStyle() == consts.StyleOpenAI {
-			messages := toTelegramAgentOpenAIMessages(strings.TrimSpace(cfg.SystemPrompt), history, prompt, nil)
+			messages := toTelegramAgentOpenAIMessages(appendTelegramAgentMemoryPrompt(ctx, cfg, cfg.SystemPrompt), history, prompt, nil)
 			body, err := buildTelegramAgentOpenAIChatBody(ctx, cfg, messages, true, false)
 			return body, context.WithValue(requestCtx, consts.ContextKeyOpenAIEndpoint, "chat/completions"), err
 		}
@@ -274,10 +231,11 @@ func telegramAgentToolRunningStatus(toolCall telegramAgentOpenAIToolCall) string
 	}
 
 	label := telegramAgentToolStatusLabel(name, args)
-	if query := telegramAgentToolStatusQuery(args); query != "" {
-		return fmt.Sprintf("%s 正在搜索 %s...", label, query)
+	action, detail := telegramAgentToolStatusAction(name, args)
+	if detail != "" {
+		return fmt.Sprintf("%s %s %s...", label, action, detail)
 	}
-	return fmt.Sprintf("%s 正在运行...", label)
+	return fmt.Sprintf("%s %s...", label, action)
 }
 
 func telegramAgentToolStatusLabel(name string, args telegramAgentToolCallArgs) string {
@@ -297,6 +255,37 @@ func telegramAgentToolStatusLabel(name string, args telegramAgentToolCallArgs) s
 	return name
 }
 
+func telegramAgentToolStatusAction(name string, args telegramAgentToolCallArgs) (string, string) {
+	if name == telegramAgentToolRunTerminalCommand {
+		if telegramAgentToolLooksLikeVideoGeneration(args) {
+			return "正在生成视频", telegramAgentToolGenerationPrompt(args)
+		}
+		if telegramAgentToolLooksLikeImageGeneration(args) {
+			return "正在生成图片", telegramAgentToolGenerationPrompt(args)
+		}
+		if telegramAgentToolLooksLikeSearch(args) {
+			return "正在搜索", telegramAgentToolSearchQuery(args)
+		}
+		return "正在运行", ""
+	}
+
+	switch name {
+	case telegramAgentToolListSkills:
+		if query := sanitizeTelegramAgentToolStatusValue(args.Query); query != "" {
+			return "正在查找", query
+		}
+	case telegramAgentToolReadSkill:
+		return "正在读取", ""
+	case telegramAgentToolReadSystemLogs, telegramAgentToolReadRequestLogs:
+		return "正在读取", telegramAgentToolStatusQuery(args)
+	}
+
+	if query := telegramAgentToolStatusQuery(args); query != "" {
+		return "正在处理", query
+	}
+	return "正在运行", ""
+}
+
 func telegramAgentToolStatusQuery(args telegramAgentToolCallArgs) string {
 	for _, value := range []string{
 		args.Query,
@@ -305,6 +294,7 @@ func telegramAgentToolStatusQuery(args telegramAgentToolCallArgs) string {
 		args.Model,
 		args.ProviderName,
 		args.Skill,
+		args.Task,
 	} {
 		value = sanitizeTelegramAgentToolStatusValue(value)
 		if value != "" {
@@ -315,12 +305,86 @@ func telegramAgentToolStatusQuery(args telegramAgentToolCallArgs) string {
 }
 
 func telegramAgentToolCommandQuery(args []string) string {
+	return telegramAgentToolCommandOptionValue(args, "--query", "-q")
+}
+
+func telegramAgentToolCommandPrompt(args []string) string {
+	return telegramAgentToolCommandOptionValue(args, "--prompt", "-p")
+}
+
+func telegramAgentToolCommandOptionValue(args []string, names ...string) string {
 	for index, arg := range args {
-		if strings.TrimSpace(arg) == "--query" && index+1 < len(args) {
-			return args[index+1]
+		trimmed := strings.TrimSpace(arg)
+		for _, name := range names {
+			if trimmed == name && index+1 < len(args) {
+				return args[index+1]
+			}
+			if strings.HasPrefix(trimmed, name+"=") {
+				return strings.TrimPrefix(trimmed, name+"=")
+			}
 		}
 	}
 	return ""
+}
+
+func telegramAgentToolGenerationPrompt(args telegramAgentToolCallArgs) string {
+	for _, value := range []string{
+		telegramAgentToolCommandPrompt(args.CommandArgs),
+		args.Query,
+		telegramAgentToolCommandQuery(args.CommandArgs),
+	} {
+		if value = sanitizeTelegramAgentToolStatusValue(value); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func telegramAgentToolSearchQuery(args telegramAgentToolCallArgs) string {
+	for _, value := range []string{
+		args.Query,
+		telegramAgentToolCommandQuery(args.CommandArgs),
+	} {
+		if value = sanitizeTelegramAgentToolStatusValue(value); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func telegramAgentToolLooksLikeImageGeneration(args telegramAgentToolCallArgs) bool {
+	return telegramAgentToolStatusTextContains(args,
+		"image", "images", "img", "txt2img", "img2img", "z-image", "stable-diffusion", "sdxl", "flux",
+		"图片", "图像", "生图", "绘图", "画图",
+	)
+}
+
+func telegramAgentToolLooksLikeVideoGeneration(args telegramAgentToolCallArgs) bool {
+	return telegramAgentToolStatusTextContains(args,
+		"video", "vedio", "txt2vid", "img2vid", "text-to-video", "image-to-video", "generate_video", "agnes-video", "sora", "veo", "wan",
+		"视频", "生视频", "生成视频",
+	)
+}
+
+func telegramAgentToolLooksLikeSearch(args telegramAgentToolCallArgs) bool {
+	return telegramAgentToolStatusTextContains(args,
+		"search", "dual-search", "tavily", "google", "bing", "duckduckgo", "crawl", "weather",
+		"搜索", "查询", "检索",
+	)
+}
+
+func telegramAgentToolStatusTextContains(args telegramAgentToolCallArgs, keywords ...string) bool {
+	text := strings.ToLower(strings.Join(append([]string{
+		args.Skill,
+		args.Command,
+		args.WorkingDir,
+	}, args.CommandArgs...), " "))
+	for _, keyword := range keywords {
+		if strings.Contains(text, strings.ToLower(keyword)) {
+			return true
+		}
+	}
+	return false
 }
 
 func sanitizeTelegramAgentToolStatusValue(value string) string {
@@ -515,11 +579,16 @@ func executeTelegramAgentFunctionToolCall(ctx context.Context, chatID int64, cfg
 	name := strings.TrimSpace(toolCall.Function.Name)
 	args := telegramAgentToolCallArgs{}
 	rawArgs := strings.TrimSpace(toolCall.Function.Arguments)
-	logID := recordTelegramAgentFunctionToolCallExecutingLog(ctx, chatID, cfg, toolCall, rawArgs)
+	call := agenttools.FunctionCall{
+		ID:   strings.TrimSpace(toolCall.ID),
+		Name: name,
+	}
+	runtime := telegramAgentToolRuntime()
+	logID := agenttools.RecordFunctionToolCallExecutingLog(ctx, runtime, chatID, call, rawArgs)
 	if rawArgs != "" {
 		if err := json.Unmarshal([]byte(rawArgs), &args); err != nil {
 			result := telegramAgentToolResult(false, "工具参数不是合法 JSON："+err.Error())
-			finishTelegramAgentFunctionToolCallLog(ctx, logID, chatID, cfg, toolCall, rawArgs, result)
+			agenttools.FinishFunctionToolCallLog(ctx, runtime, logID, chatID, call, rawArgs, result)
 			return result
 		}
 	}
@@ -527,48 +596,31 @@ func executeTelegramAgentFunctionToolCall(ctx context.Context, chatID int64, cfg
 	definition, ok := findTelegramAgentFunctionToolDefinition(ctx, cfg, name)
 	if !ok {
 		result := telegramAgentToolResult(false, "未知工具："+name)
-		finishTelegramAgentFunctionToolCallLog(ctx, logID, chatID, cfg, toolCall, rawArgs, result)
+		agenttools.FinishFunctionToolCallLog(ctx, runtime, logID, chatID, call, rawArgs, result)
 		return result
 	}
 	result := definition.Handler(ctx, chatID, cfg, args)
-	finishTelegramAgentFunctionToolCallLog(ctx, logID, chatID, cfg, toolCall, rawArgs, result)
+	agenttools.FinishFunctionToolCallLog(ctx, runtime, logID, chatID, call, rawArgs, result)
 	return result
 }
 
 func telegramAgentToolResult(ok bool, text string) string {
-	return telegramAgentToolResultWithFinal(ok, text, false)
+	return agenttools.ToolResult(ok, text)
 }
 
 func telegramAgentToolFinalResult(ok bool, text string) string {
-	return telegramAgentToolResultWithFinal(ok, text, true)
-}
-
-func telegramAgentToolResultWithFinal(ok bool, text string, final bool) string {
-	payload := telegramAgentToolResultPayload{
-		OK:    ok,
-		Text:  text,
-		Final: final,
-	}
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return text
-	}
-	return string(raw)
+	return agenttools.ToolFinalResult(ok, text)
 }
 
 func telegramAgentToolDirectFinalText(raw string) (string, bool) {
-	var payload telegramAgentToolResultPayload
-	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
-		return "", false
-	}
-	text := strings.TrimSpace(payload.Text)
-	return text, payload.Final && text != "" && telegramAgentTextContainsAttachmentMarker(text)
+	return agenttools.DirectFinalText(raw)
 }
 
 func telegramAgentFunctionToolSystemPrompt(ctx context.Context, cfg models.TelegramAgentConfig) string {
 	lines := []string{
 		"你可以通过 function call 调用 Orvion 项目管理工具。",
 		"当用户想查看模型/提供商、读取系统日志/请求日志、新增或修改 API Key、修改模型/提供商状态、查看或修改提供商配置时，必须优先调用工具，不要自己猜测结果。",
+		"当用户想查看系统状态、慢 SQL、请求成功率、图片缓存、后台任务状态，或要求手动触发价格同步/日志清理/token 回填/图片缓存补充时，必须调用对应系统管理工具。",
 		"用户提到报错、错误日志、慢响应、请求失败、最近日志、timeout、panic、SQL 等排查诉求时，优先调用日志读取工具。",
 		"修改提供商配置时，provider 的 config 字段使用 config_updates 做局部修改，例如 base_url、api_key；删除配置字段使用 remove_config_keys。",
 		"新增或修改 API Key 时，allow_all=false 表示限制模型；如用户给的是模型关键词，请用 model_keywords 批量匹配模型，不要把“claude 的模型”当成单个模型名。",

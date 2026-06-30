@@ -129,6 +129,65 @@ func TestQueryChatLogDailyUsageSummaryTopStatsUseSuccessfulRequests(t *testing.T
 	}
 }
 
+func TestQueryChatLogProviderSuccessStatsUsesDailyProviderLogs(t *testing.T) {
+	oldDB := DB
+	clearChatLogMonthlyTableCacheForTest()
+	t.Cleanup(func() {
+		DB = oldDB
+		clearChatLogMonthlyTableCacheForTest()
+	})
+
+	dialector, err := buildDialector(filepath.Join(t.TempDir(), "provider-success-stats.db"))
+	if err != nil {
+		t.Fatalf("build dialector: %v", err)
+	}
+	db, err := gorm.Open(dialector, &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	DB = db
+
+	loc := time.FixedZone("UTC+8", 8*3600)
+	start := time.Date(2026, 6, 20, 0, 0, 0, 0, loc)
+	end := start.AddDate(0, 0, 1)
+	tableName, err := EnsureChatLogMonthlyTable(start)
+	if err != nil {
+		t.Fatalf("ensure monthly table: %v", err)
+	}
+
+	rows := []ChatLog{
+		{CreatedAt: start.Add(1 * time.Hour), ProviderName: "alpha", Status: "success", Name: "gpt-a"},
+		{CreatedAt: start.Add(2 * time.Hour), ProviderName: "alpha", Status: "success", Name: "gpt-b"},
+		{CreatedAt: start.Add(3 * time.Hour), ProviderName: "alpha", Status: "error", Name: "gpt-c"},
+		{CreatedAt: start.Add(4 * time.Hour), ProviderName: "beta", Status: "error", Name: "gpt-a"},
+		{CreatedAt: end.Add(time.Hour), ProviderName: "alpha", Status: "success", Name: "gpt-outside"},
+	}
+	if err := DB.Table(tableName).Create(&rows).Error; err != nil {
+		t.Fatalf("insert provider logs: %v", err)
+	}
+
+	stats, err := QueryChatLogProviderSuccessStats(context.Background(), start, end, []string{"alpha", "beta", "missing"})
+	if err != nil {
+		t.Fatalf("query provider success stats: %v", err)
+	}
+	statsByProvider := make(map[string]ChatLogProviderSuccessStat, len(stats))
+	for _, stat := range stats {
+		statsByProvider[stat.ProviderName] = stat
+	}
+
+	alpha := statsByProvider["alpha"]
+	if alpha.TotalCount != 3 || alpha.SuccessCount != 2 {
+		t.Fatalf("alpha provider stats mismatch: total=%d success=%d", alpha.TotalCount, alpha.SuccessCount)
+	}
+	beta := statsByProvider["beta"]
+	if beta.TotalCount != 1 || beta.SuccessCount != 0 {
+		t.Fatalf("beta provider stats mismatch: total=%d success=%d", beta.TotalCount, beta.SuccessCount)
+	}
+	if _, ok := statsByProvider["missing"]; ok {
+		t.Fatalf("missing provider should not return an empty aggregate row")
+	}
+}
+
 func TestQueryChatLogCountSupportsModelWithProviderIDFilter(t *testing.T) {
 	oldDB := DB
 	clearChatLogMonthlyTableCacheForTest()

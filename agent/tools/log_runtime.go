@@ -1,4 +1,4 @@
-package agent
+package tools
 
 import (
 	"context"
@@ -28,7 +28,7 @@ var (
 	telegramLogBearerSecretPattern   = regexp.MustCompile(`(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+`)
 )
 
-func readTelegramAgentSystemLogs(_ context.Context, args telegramAgentToolCallArgs) (string, error) {
+func readTelegramAgentSystemLogs(_ context.Context, args CallArgs) (string, error) {
 	limit := normalizeTelegramAgentSystemLogLimit(args.Limit)
 	level := normalizeTelegramAgentSystemLogLevel(args.Level)
 	query := strings.TrimSpace(args.Query)
@@ -77,7 +77,7 @@ func readTelegramAgentSystemLogs(_ context.Context, args telegramAgentToolCallAr
 	return sb.String(), nil
 }
 
-func readTelegramAgentRequestLogs(ctx context.Context, args telegramAgentToolCallArgs) (string, error) {
+func readTelegramAgentRequestLogs(ctx context.Context, args CallArgs) (string, error) {
 	if models.DB == nil {
 		return "", fmt.Errorf("数据库未初始化")
 	}
@@ -222,7 +222,7 @@ func normalizeTelegramAgentRequestLogStatus(raw string) (string, error) {
 	}
 }
 
-func buildTelegramAgentRequestLogTimeScope(args telegramAgentToolCallArgs) (*time.Time, *time.Time, string, error) {
+func buildTelegramAgentRequestLogTimeScope(args CallArgs) (*time.Time, *time.Time, string, error) {
 	var startAt *time.Time
 	var endAt *time.Time
 	labels := make([]string, 0, 2)

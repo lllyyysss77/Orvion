@@ -1,4 +1,4 @@
-package agent
+package tools
 
 import (
 	"context"
@@ -29,7 +29,7 @@ type telegramAuthKeyPatch struct {
 
 const telegramAgentAuthKeyListMaxLimit = 50
 
-func buildTelegramCreateAuthKeyAction(ctx context.Context, chatID int64, args telegramAgentToolCallArgs) (telegramToolAction, error) {
+func buildTelegramCreateAuthKeyAction(ctx context.Context, chatID int64, args CallArgs) (telegramToolAction, error) {
 	name := strings.TrimSpace(valueFromStringPtr(args.Name))
 	if name == "" {
 		return telegramToolAction{}, errors.New("请写明 API Key 项目名称")
@@ -79,7 +79,7 @@ func buildTelegramCreateAuthKeyAction(ctx context.Context, chatID int64, args te
 	}, nil
 }
 
-func buildTelegramUpdateAuthKeyAction(ctx context.Context, chatID int64, args telegramAgentToolCallArgs) (telegramToolAction, error) {
+func buildTelegramUpdateAuthKeyAction(ctx context.Context, chatID int64, args CallArgs) (telegramToolAction, error) {
 	target := cleanupTelegramToolTarget(args.Target)
 	authKey, err := findTelegramAgentAuthKey(ctx, target)
 	if err != nil {
@@ -211,7 +211,7 @@ func createTelegramAgentAuthKey(ctx context.Context, patch telegramAuthKeyPatch)
 	}, "\n"), nil
 }
 
-func listTelegramAgentAuthKeys(ctx context.Context, args telegramAgentToolCallArgs) (string, error) {
+func listTelegramAgentAuthKeys(ctx context.Context, args CallArgs) (string, error) {
 	limit := args.Limit
 	if limit <= 0 {
 		limit = 20
@@ -587,8 +587,8 @@ func summarizeTelegramAuthKeyModels(models []string) string {
 	if len(models) == 0 {
 		return "无"
 	}
-	if len(models) > telegramAgentToolListLimit {
-		return strings.Join(models[:telegramAgentToolListLimit], "、") + fmt.Sprintf(" 等 %d 个", len(models))
+	if len(models) > ToolListLimit {
+		return strings.Join(models[:ToolListLimit], "、") + fmt.Sprintf(" 等 %d 个", len(models))
 	}
 	return strings.Join(models, "、")
 }

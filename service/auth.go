@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/racio/orvion/agent"
+	agenttools "github.com/racio/orvion/agent/tools"
 	"github.com/racio/orvion/models"
 	"github.com/racio/orvion/pkg"
 	"golang.org/x/sync/singleflight"
@@ -36,7 +36,7 @@ var (
 )
 
 func init() {
-	agent.SetAuthKeyInvalidator(InvalidateAuthKeys)
+	agenttools.SetAuthKeyInvalidator(InvalidateAuthKeys)
 }
 
 // GetAuthKey 读取指定 plaintext key 对应的 AuthKey。带 TTL 缓存 + singleflight。

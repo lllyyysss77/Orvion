@@ -1,4 +1,4 @@
-package agent
+package tools
 
 import (
 	"context"
@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	telegramAgentDefaultSkillsDir      = "data/skills"
+	DefaultSkillsDir                   = "data/skills"
 	telegramAgentSkillDefaultTimeoutMs = 10000
 	telegramAgentSkillMaxTimeoutMs     = 240000
 	telegramAgentSkillMaxOutputBytes   = 64 * 1024
@@ -33,6 +33,8 @@ type telegramAgentSkill struct {
 	Scripts      []telegramAgentSkillScript
 }
 
+type TelegramAgentSkill = telegramAgentSkill
+
 type telegramAgentSkillScript struct {
 	Name        string
 	Path        string
@@ -42,11 +44,13 @@ type telegramAgentSkillScript struct {
 	Usage       []string
 }
 
+type TelegramAgentSkillScript = telegramAgentSkillScript
+
 func telegramAgentSkillsEnabled(cfg models.TelegramAgentConfig) bool {
 	return cfg.SkillsEnabled != nil && *cfg.SkillsEnabled
 }
 
-func listTelegramAgentSkills(ctx context.Context, cfg models.TelegramAgentConfig, args telegramAgentToolCallArgs) (string, error) {
+func listTelegramAgentSkills(ctx context.Context, cfg models.TelegramAgentConfig, args CallArgs) (string, error) {
 	if !telegramAgentSkillsEnabled(cfg) {
 		return "Skills 未启用。请先在 TG Agent 配置中启用 Skills 并设置本地目录。", nil
 	}
@@ -60,7 +64,7 @@ func listTelegramAgentSkills(ctx context.Context, cfg models.TelegramAgentConfig
 
 	limit := args.Limit
 	if limit <= 0 {
-		limit = telegramAgentToolListLimit
+		limit = ToolListLimit
 	}
 	if limit > telegramAgentSkillListMaxLimit {
 		limit = telegramAgentSkillListMaxLimit
@@ -91,7 +95,7 @@ func listTelegramAgentSkills(ctx context.Context, cfg models.TelegramAgentConfig
 	return strings.Join(lines, "\n"), nil
 }
 
-func readTelegramAgentSkill(ctx context.Context, cfg models.TelegramAgentConfig, args telegramAgentToolCallArgs) (string, error) {
+func readTelegramAgentSkill(ctx context.Context, cfg models.TelegramAgentConfig, args CallArgs) (string, error) {
 	if !telegramAgentSkillsEnabled(cfg) {
 		return "Skills 未启用。请先在 TG Agent 配置中启用 Skills 并设置本地目录。", nil
 	}
@@ -143,6 +147,10 @@ func readTelegramAgentSkill(ctx context.Context, cfg models.TelegramAgentConfig,
 	return strings.Join(lines, "\n"), nil
 }
 
+func ReadTelegramAgentSkill(ctx context.Context, cfg models.TelegramAgentConfig, args CallArgs) (string, error) {
+	return readTelegramAgentSkill(ctx, cfg, args)
+}
+
 func scanTelegramAgentSkills(ctx context.Context, cfg models.TelegramAgentConfig) ([]telegramAgentSkill, error) {
 	root, err := resolveTelegramAgentSkillsRoot(cfg)
 	if err != nil {
@@ -158,7 +166,7 @@ func scanTelegramAgentSkills(ctx context.Context, cfg models.TelegramAgentConfig
 func resolveTelegramAgentSkillsRoot(cfg models.TelegramAgentConfig) (string, error) {
 	root := strings.TrimSpace(cfg.SkillsDir)
 	if root == "" {
-		root = telegramAgentDefaultSkillsDir
+		root = DefaultSkillsDir
 	}
 	if !filepath.IsAbs(root) {
 		cwd, err := os.Getwd()

@@ -23,6 +23,7 @@ import (
 	"github.com/racio/orvion/service"
 	"github.com/samber/lo"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // ProviderRequest represents the request body for creating/updating a provider
@@ -1200,25 +1201,20 @@ func UpdateModelProvider(c *gin.Context) {
 		return
 	}
 
-	// Update fields
-	// 注意：使用 struct Updates 时 GORM 会忽略 0 值，导致 false/0 无法写入（例如勾选框取消不生效）。
-	// 由于当前泛型封装的 Updates 仅接受 struct，这里改为逐列 Update，确保 0/空字符串也能落库。
-	updatePairs := []struct {
-		col string
-		val any
-	}{
-		{"model_id", req.ModelID},
-		{"provider_id", req.ProviderID},
-		{"provider_model", req.ProviderModel},
-		{"with_header", withHeader},
-		{"customer_headers", customerHeadersJSON},
-		{"weight", req.Weight},
+	updateMap := map[string]any{
+		"model_id":         req.ModelID,
+		"provider_id":      req.ProviderID,
+		"provider_model":   req.ProviderModel,
+		"with_header":      withHeader,
+		"customer_headers": customerHeadersJSON,
+		"weight":           req.Weight,
 	}
-	for _, pair := range updatePairs {
-		if _, err := gorm.G[models.ModelWithProvider](models.DB).Where("id = ?", id).Update(c.Request.Context(), pair.col, pair.val); err != nil {
-			common.InternalServerError(c, "Failed to update model-provider association: "+err.Error())
-			return
-		}
+	if err := models.DB.WithContext(c.Request.Context()).
+		Model(&models.ModelWithProvider{}).
+		Where("id = ?", id).
+		Updates(updateMap).Error; err != nil {
+		common.InternalServerError(c, "Failed to update model-provider association: "+err.Error())
+		return
 	}
 
 	// Get updated model-provider association
@@ -1640,35 +1636,21 @@ func UpdateConfigByKey(c *gin.Context) {
 		return
 	}
 
-	// 获取或创建配置记录
-	config, err := gorm.G[models.Config](models.DB).Where(models.ColumnEquals("key"), key).First(c.Request.Context())
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			// 创建新配置
-			config = models.Config{
-				Key:   key,
-				Value: req.Value,
-			}
-			if err := gorm.G[models.Config](models.DB).Create(c.Request.Context(), &config); err != nil {
-				common.InternalServerError(c, "Failed to create config: "+err.Error())
-				return
-			}
-		} else {
-			common.InternalServerError(c, "Failed to get config: "+err.Error())
-			return
-		}
-	} else {
-		// 更新配置值
-		config.Value = req.Value
-		if _, err := gorm.G[models.Config](models.DB).Where(models.ColumnEquals("key"), key).Updates(c.Request.Context(), config); err != nil {
-			common.InternalServerError(c, "Failed to update config: "+err.Error())
-			return
-		}
+	now := time.Now()
+	config := models.Config{Key: key, Value: req.Value}
+	if err := models.DB.WithContext(c.Request.Context()).
+		Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "key"}},
+			DoUpdates: clause.Assignments(map[string]any{"value": req.Value, "updated_at": now}),
+		}).
+		Create(&config).Error; err != nil {
+		common.InternalServerError(c, "Failed to update config: "+err.Error())
+		return
 	}
 
 	common.Success(c, map[string]string{
-		"key":   config.Key,
-		"value": config.Value,
+		"key":   key,
+		"value": req.Value,
 	})
 }
 
@@ -1771,6 +1753,8 @@ func CleanLogs(c *gin.Context) {
 
 type cleanupLogRef = models.ChatLogCleanupRefRow
 
+const logCleanupDeleteBatchSize = 500
+
 func fetchLogsForCleanup(ctx context.Context, cleanType string, value int) ([]cleanupLogRef, error) {
 	now := time.Now()
 	switch cleanType {
@@ -1785,13 +1769,33 @@ func fetchLogsForCleanup(ctx context.Context, cleanType string, value int) ([]cl
 }
 
 func deleteLogsByRefs(ctx context.Context, refs []cleanupLogRef) error {
+	uuidsByTable := make(map[string][]string)
 	for _, ref := range refs {
 		if ref.UUID == "" {
 			continue
 		}
 		tableName := models.ChatLogMonthlyTableName(ref.CreatedAt)
-		if err := models.DB.WithContext(ctx).Table(tableName).Where("uuid = ?", ref.UUID).Delete(&models.ChatLog{}).Error; err != nil {
-			return err
+		if strings.TrimSpace(ref.TableName) != "" {
+			tableName = ref.TableName
+		}
+		if !models.IsChatLogMonthlyTableName(tableName) {
+			continue
+		}
+		uuidsByTable[tableName] = append(uuidsByTable[tableName], ref.UUID)
+	}
+
+	for tableName, uuids := range uuidsByTable {
+		for start := 0; start < len(uuids); start += logCleanupDeleteBatchSize {
+			end := start + logCleanupDeleteBatchSize
+			if end > len(uuids) {
+				end = len(uuids)
+			}
+			if err := models.DB.WithContext(ctx).
+				Table(tableName).
+				Where("uuid IN ?", uuids[start:end]).
+				Delete(&models.ChatLog{}).Error; err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -1807,7 +1811,18 @@ func deleteChatIOByLogRefs(ctx context.Context, refs []cleanupLogRef) error {
 	if len(uuids) == 0 {
 		return nil
 	}
-	return models.DB.WithContext(ctx).Where("log_uuid IN ?", uuids).Delete(&models.ChatIO{}).Error
+	for start := 0; start < len(uuids); start += logCleanupDeleteBatchSize {
+		end := start + logCleanupDeleteBatchSize
+		if end > len(uuids) {
+			end = len(uuids)
+		}
+		if err := models.DB.WithContext(ctx).
+			Where("log_uuid IN ?", uuids[start:end]).
+			Delete(&models.ChatIO{}).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func normalizeModelCapabilities(values []string) []string {

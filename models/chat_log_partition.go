@@ -19,6 +19,9 @@ const (
 var (
 	chatLogMonthlyTableRegexp = regexp.MustCompile(`^chat_logs_(\d{6})$`)
 	chatLogMonthlyTableCache  sync.Map
+	chatLogMonthlyTablesMu    sync.RWMutex
+	chatLogMonthlyTables      []string
+	chatLogMonthlyTablesReady bool
 	chatLogMonthlyIndexSpecs  = []chatLogMonthlyIndexSpec{
 		{Name: "created_id", Columns: []string{"created_at", "id"}},
 		{Name: "status_created", Columns: []string{"status", "created_at"}},
@@ -124,6 +127,12 @@ type ChatLogProviderUsageRow struct {
 	UsageCount   int64  `gorm:"column:usage_count"`
 }
 
+type ChatLogProviderSuccessStat struct {
+	ProviderName string `gorm:"column:provider_name"`
+	TotalCount   int64  `gorm:"column:total_count"`
+	SuccessCount int64  `gorm:"column:success_count"`
+}
+
 type ChatLogAuthKeySummaryAgg struct {
 	TotalRequests   int64   `gorm:"column:total_requests"`
 	SuccessRequests int64   `gorm:"column:success_requests"`
@@ -226,7 +235,7 @@ func EnsureChatLogMonthlyTable(t time.Time) (string, error) {
 	if err := ensureChatLogMonthlyTableSchema(DB, tableName); err != nil {
 		return "", err
 	}
-	chatLogMonthlyTableCache.Store(tableName, struct{}{})
+	rememberChatLogMonthlyTable(tableName)
 	return tableName, nil
 }
 
@@ -240,7 +249,7 @@ func EnsureAllChatLogMonthlyTableIndexes() error {
 		if err := ensureChatLogMonthlyTableSchema(DB, tableName); err != nil {
 			return err
 		}
-		chatLogMonthlyTableCache.Store(tableName, struct{}{})
+		rememberChatLogMonthlyTable(tableName)
 	}
 	return nil
 }
@@ -384,6 +393,20 @@ func UpdateMonthlyChatLogByRef(ctx context.Context, ref ChatLogRef, values any) 
 
 // ListChatLogMonthlyTables 返回全部日志月表，按表名升序。
 func ListChatLogMonthlyTables() ([]string, error) {
+	chatLogMonthlyTablesMu.RLock()
+	if chatLogMonthlyTablesReady {
+		cached := append([]string(nil), chatLogMonthlyTables...)
+		chatLogMonthlyTablesMu.RUnlock()
+		return cached, nil
+	}
+	chatLogMonthlyTablesMu.RUnlock()
+
+	chatLogMonthlyTablesMu.Lock()
+	defer chatLogMonthlyTablesMu.Unlock()
+	if chatLogMonthlyTablesReady {
+		return append([]string(nil), chatLogMonthlyTables...), nil
+	}
+
 	tables, err := DB.Migrator().GetTables()
 	if err != nil {
 		return nil, err
@@ -398,7 +421,9 @@ func ListChatLogMonthlyTables() ([]string, error) {
 		}
 	}
 	sort.Strings(monthlyTables)
-	return monthlyTables, nil
+	chatLogMonthlyTables = monthlyTables
+	chatLogMonthlyTablesReady = true
+	return append([]string(nil), chatLogMonthlyTables...), nil
 }
 
 // ListChatLogMonthlyTablesInRange 返回与时间范围相交的月表，避免跨月查询扫全量历史表。
@@ -457,7 +482,7 @@ func DropEmptyChatLogMonthlyTablesExcept(ctx context.Context, keepTables ...stri
 		if err := DB.WithContext(ctx).Migrator().DropTable(tableName); err != nil {
 			return dropped, err
 		}
-		chatLogMonthlyTableCache.Delete(tableName)
+		forgetChatLogMonthlyTable(tableName)
 		dropped = append(dropped, tableName)
 	}
 	return dropped, nil
@@ -469,6 +494,47 @@ func ClearChatLogMonthlyTableCacheForTest() {
 		chatLogMonthlyTableCache.Delete(key)
 		return true
 	})
+	chatLogMonthlyTablesMu.Lock()
+	chatLogMonthlyTables = nil
+	chatLogMonthlyTablesReady = false
+	chatLogMonthlyTablesMu.Unlock()
+}
+
+func rememberChatLogMonthlyTable(tableName string) {
+	tableName = strings.TrimSpace(tableName)
+	if !IsChatLogMonthlyTableName(tableName) {
+		return
+	}
+	chatLogMonthlyTableCache.Store(tableName, struct{}{})
+
+	chatLogMonthlyTablesMu.Lock()
+	defer chatLogMonthlyTablesMu.Unlock()
+	if !chatLogMonthlyTablesReady {
+		return
+	}
+	index := sort.SearchStrings(chatLogMonthlyTables, tableName)
+	if index < len(chatLogMonthlyTables) && chatLogMonthlyTables[index] == tableName {
+		return
+	}
+	chatLogMonthlyTables = append(chatLogMonthlyTables, "")
+	copy(chatLogMonthlyTables[index+1:], chatLogMonthlyTables[index:])
+	chatLogMonthlyTables[index] = tableName
+}
+
+func forgetChatLogMonthlyTable(tableName string) {
+	tableName = strings.TrimSpace(tableName)
+	chatLogMonthlyTableCache.Delete(tableName)
+
+	chatLogMonthlyTablesMu.Lock()
+	defer chatLogMonthlyTablesMu.Unlock()
+	if !chatLogMonthlyTablesReady {
+		return
+	}
+	index := sort.SearchStrings(chatLogMonthlyTables, tableName)
+	if index >= len(chatLogMonthlyTables) || chatLogMonthlyTables[index] != tableName {
+		return
+	}
+	chatLogMonthlyTables = append(chatLogMonthlyTables[:index], chatLogMonthlyTables[index+1:]...)
 }
 
 // BuildChatLogUnionQuery 生成跨月表查询 SQL；调用方可在外层继续 WHERE/GROUP/ORDER。
@@ -649,6 +715,34 @@ func QueryChatLogProviderUsage(ctx context.Context, scope ChatLogQueryScope, whe
 		return nil, err
 	}
 	return rows, nil
+}
+
+func QueryChatLogProviderSuccessStats(ctx context.Context, startAt time.Time, endAt time.Time, providerNames []string) ([]ChatLogProviderSuccessStat, error) {
+	if len(providerNames) == 0 {
+		return []ChatLogProviderSuccessStat{}, nil
+	}
+	union, err := BuildChatLogUnionQuery(ChatLogQueryScope{StartAt: &startAt, EndAt: &endAt}, "created_at, provider_name, status")
+	if err != nil || union.SQL == "" {
+		return []ChatLogProviderSuccessStat{}, err
+	}
+
+	stats := make([]ChatLogProviderSuccessStat, 0, len(providerNames))
+	if err := DB.WithContext(ctx).Raw(
+		`SELECT provider_name,
+		        COUNT(1) AS total_count,
+		        COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END),0) AS success_count
+		   FROM (`+union.SQL+`) AS logs
+		  WHERE created_at >= ?
+		    AND created_at < ?
+		    AND provider_name IN ?
+		  GROUP BY provider_name`,
+		startAt,
+		endAt,
+		providerNames,
+	).Scan(&stats).Error; err != nil {
+		return nil, err
+	}
+	return stats, nil
 }
 
 func QueryChatLogAuthKeySummary(ctx context.Context, authKeyID uint) (ChatLogAuthKeySummaryAgg, error) {

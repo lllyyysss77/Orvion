@@ -128,6 +128,9 @@ const formatAutoDisabledUntil = (value?: string) => {
 };
 
 const calcProviderSuccessRate = (provider: ProviderHealth): number => {
+  if (typeof provider.successRate === "number") {
+    return Math.max(0, Math.min(100, provider.successRate));
+  }
   const raw = typeof provider.errorRate === "number" ? provider.errorRate : 0;
   const errorRatePercent = raw <= 1 ? raw * 100 : raw;
   return Math.max(0, Math.min(100, 100 - errorRatePercent));

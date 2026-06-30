@@ -64,6 +64,7 @@ func Init(_ context.Context, dsn string) {
 		&TelegramAgentToolCallLog{},
 		&TelegramAgentScheduledTask{},
 		&TelegramAgentSkill{},
+		&AgentMemory{},
 		&AuthKey{},
 		&Config{},
 		&ModelPrice{},

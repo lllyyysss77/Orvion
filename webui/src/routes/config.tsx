@@ -20,12 +20,14 @@ import { Switch } from '@/components/ui/switch';
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
 import {
   configAPI,
+  testProviderProxy,
   type NetworkForwardingConfig,
   type TelegramBreakerAlertConfig,
   type TelegramAgentConfig,
@@ -34,9 +36,12 @@ import {
   type SystemLogCleanupConfig,
   type GitHubVersionCheckConfig,
   type LoadingUIConfig,
+  type ProviderProxyTargetSampleResult,
+  type ProviderProxyTargetTestResult,
+  type ProviderProxyTestResult,
 } from '@/lib/api';
 import { toast } from 'sonner';
-import { Settings, Network, Coins, FileClock, Type, Send, Github, Sparkles, Bot, Maximize2, Eye, EyeOff, RefreshCw } from 'lucide-react';
+import { Settings, Network, Coins, FileClock, Type, Send, Github, Sparkles, Bot, Maximize2, Eye, EyeOff, RefreshCw, Gauge, Loader2, Globe2, WifiOff } from 'lucide-react';
 import {
   applyLoadingUIStyleSetting,
   loadingUIValues,
@@ -161,6 +166,109 @@ const loadingUIOptions: { value: LoadingUIStyle; label: string; description: str
   { value: 'ripple_focus', label: '涟漪聚焦', description: '中心扩散涟漪，适合深色浅色主题' },
 ];
 
+const proxyTargetIconURL: Record<string, string> = {
+  bytedance: 'https://ip.net.coffee/favicons/bytedance.webp',
+  taobao: 'https://ip.net.coffee/favicons/taobao.webp',
+  wechat: 'https://ip.net.coffee/favicons/weixin.webp',
+  github: 'https://ip.net.coffee/favicons/github.webp',
+  cloudflare: 'https://ip.net.coffee/favicons/cloudflare.webp',
+  youtube: 'https://ip.net.coffee/favicons/youtube.webp',
+};
+
+const proxyLatencyClass = (target: ProviderProxyTargetTestResult) => {
+  if (!target.completed) return 'text-muted-foreground';
+  if (!target.ok) return 'text-rose-500';
+  const latency = target.latency_ms ?? 0;
+  if (latency <= 100) return 'text-emerald-600 dark:text-emerald-300';
+  if (latency <= 300) return 'text-lime-500 dark:text-lime-300';
+  if (latency <= 800) return 'text-amber-500 dark:text-amber-300';
+  return 'text-rose-500';
+};
+
+const proxyDotClass = (target: ProviderProxyTargetTestResult, index: number) => {
+  const sample = target.samples?.find((item) => item.index === index);
+  if (!sample) return 'bg-muted';
+  if (!sample.ok) return 'bg-rose-400';
+  const latency = sample.latency_ms ?? 9999;
+  if (latency <= 300) return 'bg-emerald-500';
+  if (latency <= 800) return 'bg-amber-400';
+  return 'bg-rose-400';
+};
+
+const formatProxyLatency = (target: ProviderProxyTargetTestResult) => (
+  target.ok && typeof target.latency_ms === 'number'
+    ? `${target.latency_ms}ms`
+    : target.completed >= target.total && target.total > 0
+      ? '失败'
+      : '测速中'
+);
+
+const proxyCountryFlag = (countryCode?: string): string => {
+  const code = countryCode?.trim().toUpperCase();
+  if (!code || !/^[A-Z]{2}$/.test(code)) return '';
+  return [...code].map((char) => String.fromCodePoint(127397 + char.charCodeAt(0))).join('');
+};
+
+const summarizeProxyTarget = (target: ProviderProxyTargetTestResult): ProviderProxyTargetTestResult => {
+  const samples = [...(target.samples ?? [])].sort((a, b) => a.index - b.index);
+  const successSamples = samples.filter((sample) => sample.ok && typeof sample.latency_ms === 'number');
+  const latencyTotal = successSamples.reduce((total, sample) => total + (sample.latency_ms ?? 0), 0);
+  const lastError = [...samples].reverse().find((sample) => sample.error)?.error;
+  return {
+    ...target,
+    samples,
+    completed: samples.length,
+    total: target.total || 12,
+    success_count: successSamples.length,
+    ok: successSamples.length > 0,
+    latency_ms: successSamples.length > 0 ? Math.round(latencyTotal / successSamples.length) : undefined,
+    error: successSamples.length > 0 ? undefined : lastError,
+  };
+};
+
+const applyProxyTargetSample = (
+  target: ProviderProxyTargetTestResult,
+  sample: ProviderProxyTargetSampleResult,
+): ProviderProxyTargetTestResult => {
+  const samples = [...(target.samples ?? []).filter((item) => item.index !== sample.index), sample];
+  return summarizeProxyTarget({ ...target, samples });
+};
+
+function ProxyTargetIcon({ target }: { target: ProviderProxyTargetTestResult }) {
+  const iconURL = proxyTargetIconURL[target.key];
+  if (!iconURL) {
+    return <Globe2 className="size-4 shrink-0 text-sky-500" />;
+  }
+  return (
+    <img
+      src={iconURL}
+      alt=""
+      className="size-4 shrink-0 rounded-sm object-contain"
+      loading="lazy"
+      referrerPolicy="no-referrer"
+    />
+  );
+}
+
+function ProxyCountryDisplay({ result, loading }: { result: ProviderProxyTestResult | null; loading: boolean }) {
+  const flag = proxyCountryFlag(result?.exit_country_code);
+  const text = [
+    result?.exit_country,
+    result?.exit_country_code ? `(${result.exit_country_code})` : '',
+  ].filter(Boolean).join(' ') || (loading ? '检测中...' : '未知');
+
+  return (
+    <div className="mt-1 flex min-w-0 items-center gap-1.5 font-medium">
+      <span className="truncate">{text}</span>
+      {flag && (
+        <span className="shrink-0 text-sm leading-none" aria-label={`${result?.exit_country_code} 国旗`}>
+          {flag}
+        </span>
+      )}
+    </div>
+  );
+}
+
 const isValidURL = (raw: string): boolean => {
   try {
     const parsed = new URL(raw);
@@ -194,6 +302,11 @@ export default function ConfigPage() {
   const [displayConfigSaving, setDisplayConfigSaving] = useState(false);
   const [coreConfigSaving, setCoreConfigSaving] = useState(false);
   const [networkForwardingSaving, setNetworkForwardingSaving] = useState(false);
+  const [proxyTestOpen, setProxyTestOpen] = useState(false);
+  const [proxyTestLoading, setProxyTestLoading] = useState(false);
+  const [proxyTestResult, setProxyTestResult] = useState<ProviderProxyTestResult | null>(null);
+  const [proxyTestError, setProxyTestError] = useState<string | null>(null);
+  const [proxyTestProxyURL, setProxyTestProxyURL] = useState('');
   const networkForwardingForm = useForm<NetworkForwardingForm>({
     resolver: zodResolver(networkForwardingSchema),
     defaultValues: {
@@ -421,6 +534,74 @@ export default function ConfigPage() {
       toast.error('保存网络转发配置失败');
     } finally {
       setNetworkForwardingSaving(false);
+    }
+  };
+
+  const handleNetworkProxyTest = async () => {
+    const proxyURL = networkForwardingForm.getValues('telegram_proxy_url').trim();
+    if (!proxyURL) {
+      networkForwardingForm.setError('telegram_proxy_url', { message: '请先填写 TG 代理 URL' });
+      return;
+    }
+    if (!isValidURL(proxyURL)) {
+      networkForwardingForm.setError('telegram_proxy_url', { message: 'TG 代理 URL 格式不正确' });
+      return;
+    }
+
+    networkForwardingForm.clearErrors('telegram_proxy_url');
+    setProxyTestProxyURL(proxyURL);
+    setProxyTestResult(null);
+    setProxyTestError(null);
+    setProxyTestLoading(true);
+    setProxyTestOpen(true);
+    try {
+      await testProviderProxy(proxyURL, (event) => {
+        if (event.type === 'init') {
+          setProxyTestResult({
+            targets: (event.targets ?? []).map((target) => summarizeProxyTarget(target)),
+          });
+          return;
+        }
+        if (event.type === 'exit') {
+          setProxyTestResult((current) => ({
+            ...(current ?? { targets: [] }),
+            exit_ip: event.exit_ip,
+            exit_country: event.exit_country,
+            exit_country_code: event.exit_country_code,
+            exit_error: event.exit_error,
+          }));
+          return;
+        }
+        if (event.type === 'target_sample' && event.target_key && event.sample) {
+          setProxyTestResult((current) => {
+            if (!current) return current;
+            return {
+              ...current,
+              targets: current.targets.map((target) => (
+                target.key === event.target_key ? applyProxyTargetSample(target, event.sample!) : target
+              )),
+            };
+          });
+          return;
+        }
+        if (event.type === 'target_done' && event.target_key && event.target) {
+          setProxyTestResult((current) => {
+            if (!current) return current;
+            return {
+              ...current,
+              targets: current.targets.map((target) => (
+                target.key === event.target_key ? summarizeProxyTarget(event.target!) : target
+              )),
+            };
+          });
+        }
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setProxyTestError(message);
+      toast.error(`代理测速失败: ${message}`);
+    } finally {
+      setProxyTestLoading(false);
     }
   };
 
@@ -748,7 +929,20 @@ export default function ConfigPage() {
                         <div className="flex items-center gap-1.5">
                           <FormLabel className="w-[4.5rem] shrink-0 text-xs text-muted-foreground">TG 代理</FormLabel>
                           <FormControl>
-                            <Input placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080" {...field} />
+                            <div className="flex min-w-0 flex-1 gap-2">
+                              <Input className="min-w-0 flex-1" placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080" {...field} />
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="icon"
+                                className="h-9 shrink-0"
+                                onClick={() => void handleNetworkProxyTest()}
+                                disabled={proxyTestLoading}
+                                aria-label="测试代理连通性"
+                              >
+                                {proxyTestLoading ? <Loader2 className="size-4 animate-spin" /> : <Gauge className="size-4" />}
+                              </Button>
+                            </div>
                           </FormControl>
                         </div>
                         <FormMessage />
@@ -1120,6 +1314,111 @@ export default function ConfigPage() {
 
         </div>
       </div>
+
+      <Dialog open={proxyTestOpen} onOpenChange={setProxyTestOpen}>
+        <DialogContent className="max-w-5xl gap-5">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Gauge className="size-5 text-emerald-500" />
+              网络连通性
+            </DialogTitle>
+            <DialogDescription>
+              使用网络转发配置中的 TG 代理测试出口信息与常用站点延迟
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="rounded-lg border border-border/70 bg-muted/30 px-4 py-3">
+            <div className="grid gap-3 text-sm sm:grid-cols-3">
+              <div className="min-w-0">
+                <div className="text-xs text-muted-foreground">出口地址</div>
+                <div className="mt-1 truncate font-medium">
+                  {proxyTestResult?.exit_ip || (proxyTestLoading ? '检测中...' : '未知')}
+                </div>
+              </div>
+              <div className="min-w-0">
+                <div className="text-xs text-muted-foreground">国家 / 地区</div>
+                <ProxyCountryDisplay result={proxyTestResult} loading={proxyTestLoading} />
+              </div>
+              <div className="min-w-0">
+                <div className="text-xs text-muted-foreground">代理状态</div>
+                <div className="mt-1 flex items-center gap-2 font-medium">
+                  {proxyTestLoading ? (
+                    <>
+                      <Loader2 className="size-4 animate-spin text-emerald-500" />
+                      测速中
+                    </>
+                  ) : proxyTestError || proxyTestResult?.exit_error ? (
+                    <>
+                      <WifiOff className="size-4 text-rose-500" />
+                      部分异常
+                    </>
+                  ) : (
+                    <>
+                      <Globe2 className="size-4 text-emerald-500" />
+                      可用
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+            {!proxyTestLoading && (proxyTestError || proxyTestResult?.exit_error) && (
+              <div className="mt-3 rounded-md bg-rose-500/10 px-3 py-2 text-xs text-rose-600 dark:text-rose-300">
+                {proxyTestError || proxyTestResult?.exit_error}
+              </div>
+            )}
+          </div>
+
+          {proxyTestResult?.targets?.length ? (
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              {proxyTestResult.targets.map((target) => (
+                <div
+                  key={target.key}
+                  className="flex min-h-[96px] flex-col justify-center rounded-lg border border-border/80 bg-background px-5 py-4 shadow-sm"
+                >
+                  <div className="flex min-w-0 items-center justify-between gap-4">
+                    <div className="flex min-w-0 flex-1 items-center gap-3">
+                      <ProxyTargetIcon target={target} />
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className="truncate text-[10px] font-semibold leading-none">{target.name}</span>
+                      </div>
+                    </div>
+                    <div className={`shrink-0 text-[11px] font-bold leading-none tabular-nums ${proxyLatencyClass(target)}`}>
+                      {formatProxyLatency(target)}
+                    </div>
+                  </div>
+                  <div className="mt-4 flex gap-0.5 pl-2">
+                    {Array.from({ length: target.total || 12 }).map((_, index) => (
+                      <span
+                        key={index}
+                        className={`size-1.5 shrink-0 rounded-full ${proxyDotClass(target, index)}`}
+                      />
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : proxyTestLoading ? (
+            <div className="flex min-h-56 items-center justify-center">
+              <div className="flex flex-col items-center gap-3 text-sm text-muted-foreground">
+                <Loader2 className="size-8 animate-spin text-emerald-500" />
+                正在通过代理测速
+              </div>
+            </div>
+          ) : (
+            <div className="flex min-h-32 items-center justify-center rounded-lg border border-dashed text-sm text-muted-foreground">
+              {proxyTestError ? '暂无测速结果' : '等待测速'}
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => void handleNetworkProxyTest()} disabled={proxyTestLoading || !proxyTestProxyURL}>
+              {proxyTestLoading ? <Loader2 className="size-4 animate-spin" /> : <Gauge className="size-4" />}
+              重新测试
+            </Button>
+            <Button type="button" onClick={() => setProxyTestOpen(false)}>关闭</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={telegramAgentModelDialogOpen}

@@ -1,4 +1,4 @@
-package agent
+package tools
 
 import (
 	"bytes"
@@ -326,6 +326,10 @@ func loadTelegramAgentEnabledSkills(ctx context.Context, cfg models.TelegramAgen
 	return skills, nil
 }
 
+func LoadTelegramAgentEnabledSkills(ctx context.Context, cfg models.TelegramAgentConfig) ([]TelegramAgentSkill, error) {
+	return loadTelegramAgentEnabledSkills(ctx, cfg)
+}
+
 func filterEnabledTelegramAgentSkills(skills []telegramAgentSkill) []telegramAgentSkill {
 	result := make([]telegramAgentSkill, 0, len(skills))
 	for _, skill := range skills {
@@ -579,6 +583,10 @@ func parseTelegramAgentSkillFromDir(dir string) (telegramAgentSkill, error) {
 		return telegramAgentSkill{}, fmt.Errorf("目录中未找到 skills.md 或 SKILL.md：%s", dir)
 	}
 	return parseTelegramAgentSkillFile(dir, file)
+}
+
+func ParseTelegramAgentSkillFromDir(dir string) (TelegramAgentSkill, error) {
+	return parseTelegramAgentSkillFromDir(dir)
 }
 
 func scanTelegramAgentSkillsFromRoot(root string) ([]telegramAgentSkill, error) {

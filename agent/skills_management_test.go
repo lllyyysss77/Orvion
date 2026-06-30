@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	agenttools "github.com/racio/orvion/agent/tools"
 	"github.com/racio/orvion/models"
 )
 
@@ -25,7 +26,7 @@ func TestTelegramAgentSkillFileManagement(t *testing.T) {
 	}
 
 	cfg := models.TelegramAgentConfig{SkillsDir: root}
-	tree, err := ListTelegramAgentSkillFilesForManagement(context.Background(), cfg, "demo")
+	tree, err := agenttools.ListTelegramAgentSkillFilesForManagement(context.Background(), cfg, "demo")
 	if err != nil {
 		t.Fatalf("读取文件树失败: %v", err)
 	}
@@ -33,7 +34,7 @@ func TestTelegramAgentSkillFileManagement(t *testing.T) {
 		t.Fatalf("文件树内容不正确: %+v", tree)
 	}
 
-	content, err := ReadTelegramAgentSkillFileForManagement(context.Background(), cfg, "demo", "notes.txt")
+	content, err := agenttools.ReadTelegramAgentSkillFileForManagement(context.Background(), cfg, "demo", "notes.txt")
 	if err != nil {
 		t.Fatalf("读取文件内容失败: %v", err)
 	}
@@ -41,7 +42,7 @@ func TestTelegramAgentSkillFileManagement(t *testing.T) {
 		t.Fatalf("文件内容不正确: %+v", content)
 	}
 
-	updated, err := WriteTelegramAgentSkillFileForManagement(context.Background(), cfg, "demo", TelegramAgentSkillFileContentRequest{
+	updated, err := agenttools.WriteTelegramAgentSkillFileForManagement(context.Background(), cfg, "demo", agenttools.TelegramAgentSkillFileContentRequest{
 		Path:    "notes.txt",
 		Content: "新内容",
 	})
@@ -52,7 +53,7 @@ func TestTelegramAgentSkillFileManagement(t *testing.T) {
 		t.Fatalf("保存后的内容不正确: %+v", updated)
 	}
 
-	deleted, err := DeleteTelegramAgentSkillForManagement(context.Background(), cfg, "demo")
+	deleted, err := agenttools.DeleteTelegramAgentSkillForManagement(context.Background(), cfg, "demo")
 	if err != nil {
 		t.Fatalf("删除 Skill 失败: %v", err)
 	}
@@ -80,10 +81,10 @@ func TestTelegramAgentSkillFilePathRejectsTraversal(t *testing.T) {
 	}
 
 	cfg := models.TelegramAgentConfig{SkillsDir: root}
-	if _, err := ReadTelegramAgentSkillFileForManagement(context.Background(), cfg, "demo", "../outside.txt"); err == nil {
+	if _, err := agenttools.ReadTelegramAgentSkillFileForManagement(context.Background(), cfg, "demo", "../outside.txt"); err == nil {
 		t.Fatalf("越权读取路径应该被拒绝")
 	}
-	if _, err := WriteTelegramAgentSkillFileForManagement(context.Background(), cfg, "demo", TelegramAgentSkillFileContentRequest{
+	if _, err := agenttools.WriteTelegramAgentSkillFileForManagement(context.Background(), cfg, "demo", agenttools.TelegramAgentSkillFileContentRequest{
 		Path:    "../outside.txt",
 		Content: "覆盖",
 	}); err == nil {

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	agenttools "github.com/racio/orvion/agent/tools"
 	"github.com/racio/orvion/models"
 )
 
@@ -31,7 +32,7 @@ func TestTelegramAgentScheduledTaskToolsCreateAndUpdateDirectly(t *testing.T) {
 			}, ""),
 		},
 	})
-	createPayload := parseTelegramAgentToolResultPayload(createResult)
+	createPayload := agenttools.ParseResultPayload(createResult)
 	if !createPayload.OK || !createPayload.Final || !strings.Contains(createPayload.Text, "已创建 Agent 定时任务") {
 		t.Fatalf("创建定时任务工具返回不正确: %+v", createPayload)
 	}
@@ -52,7 +53,7 @@ func TestTelegramAgentScheduledTaskToolsCreateAndUpdateDirectly(t *testing.T) {
 			Arguments: `{"target":"每日日志检查","interval_minutes":30,"push_to_conversation":false}`,
 		},
 	})
-	updatePayload := parseTelegramAgentToolResultPayload(updateResult)
+	updatePayload := agenttools.ParseResultPayload(updateResult)
 	if !updatePayload.OK || !strings.Contains(updatePayload.Text, "已更新 Agent 定时任务") {
 		t.Fatalf("修改定时任务工具返回不正确: %+v", updatePayload)
 	}
@@ -78,7 +79,7 @@ func TestTelegramAgentScheduledTaskToolCreatesDirectlyByDefault(t *testing.T) {
 			Arguments: `{"name":"默认直接任务","prompt":"检查系统状态","interval_minutes":15}`,
 		},
 	})
-	payload := parseTelegramAgentToolResultPayload(result)
+	payload := agenttools.ParseResultPayload(result)
 	if !payload.OK || !payload.Final || !strings.Contains(payload.Text, "已创建 Agent 定时任务") {
 		t.Fatalf("默认应直接创建定时任务，实际为: %+v", payload)
 	}

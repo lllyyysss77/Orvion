@@ -1,4 +1,4 @@
-package agent
+package tools
 
 import (
 	"context"
@@ -10,22 +10,32 @@ import (
 )
 
 const (
-	telegramAgentToolLogSourceFunctionCall = "function_call"
-	telegramAgentToolLogSourceToolAction   = "tool_action"
+	ToolLogSourceFunctionCall = "function_call"
+	ToolLogSourceToolAction   = "tool_action"
 
-	telegramAgentToolLogStatusExecuting = "executing"
-	telegramAgentToolLogStatusCompleted = "completed"
-	telegramAgentToolLogStatusExecuted  = "executed"
-	telegramAgentToolLogStatusFailed    = "failed"
+	ToolLogStatusExecuting = "executing"
+	ToolLogStatusCompleted = "completed"
+	ToolLogStatusExecuted  = "executed"
+	ToolLogStatusFailed    = "failed"
 )
 
-func recordTelegramAgentFunctionToolCallExecutingLog(ctx context.Context, chatID int64, cfg models.TelegramAgentConfig, toolCall telegramAgentOpenAIToolCall, rawArgs string) uint {
-	return recordTelegramAgentToolCallLog(ctx, models.TelegramAgentToolCallLog{
+const (
+	telegramAgentToolLogSourceFunctionCall = ToolLogSourceFunctionCall
+	telegramAgentToolLogSourceToolAction   = ToolLogSourceToolAction
+
+	telegramAgentToolLogStatusExecuting = ToolLogStatusExecuting
+	telegramAgentToolLogStatusCompleted = ToolLogStatusCompleted
+	telegramAgentToolLogStatusExecuted  = ToolLogStatusExecuted
+	telegramAgentToolLogStatusFailed    = ToolLogStatusFailed
+)
+
+func RecordFunctionToolCallExecutingLog(ctx context.Context, runtime Runtime, chatID int64, toolCall FunctionCall, rawArgs string) uint {
+	return recordTelegramAgentToolCallLog(ctx, runtime, models.TelegramAgentToolCallLog{
 		ChatID:         chatID,
-		ConversationID: resolveTelegramAgentToolLogConversationID(ctx, chatID),
+		ConversationID: runtime.conversationID(ctx, chatID),
 		Source:         telegramAgentToolLogSourceFunctionCall,
 		ToolCallID:     strings.TrimSpace(toolCall.ID),
-		ToolName:       strings.TrimSpace(toolCall.Function.Name),
+		ToolName:       strings.TrimSpace(toolCall.Name),
 		Arguments:      maskTelegramAgentToolArguments(rawArgs),
 		Status:         telegramAgentToolLogStatusExecuting,
 		OK:             0,
@@ -33,20 +43,20 @@ func recordTelegramAgentFunctionToolCallExecutingLog(ctx context.Context, chatID
 	})
 }
 
-func finishTelegramAgentFunctionToolCallLog(ctx context.Context, logID uint, chatID int64, cfg models.TelegramAgentConfig, toolCall telegramAgentOpenAIToolCall, rawArgs string, toolResult string) {
-	log := buildTelegramAgentFunctionToolCallLog(ctx, chatID, cfg, toolCall, rawArgs, toolResult)
+func FinishFunctionToolCallLog(ctx context.Context, runtime Runtime, logID uint, chatID int64, toolCall FunctionCall, rawArgs string, toolResult string) {
+	log := buildTelegramAgentFunctionToolCallLog(ctx, runtime, chatID, toolCall, rawArgs, toolResult)
 	if logID == 0 {
-		recordTelegramAgentToolCallLog(ctx, log)
+		recordTelegramAgentToolCallLog(ctx, runtime, log)
 		return
 	}
-	updateTelegramAgentToolCallLog(ctx, logID, log)
+	updateTelegramAgentToolCallLog(ctx, runtime, logID, log)
 }
 
-func buildTelegramAgentFunctionToolCallLog(ctx context.Context, chatID int64, cfg models.TelegramAgentConfig, toolCall telegramAgentOpenAIToolCall, rawArgs string, toolResult string) models.TelegramAgentToolCallLog {
+func buildTelegramAgentFunctionToolCallLog(ctx context.Context, runtime Runtime, chatID int64, toolCall FunctionCall, rawArgs string, toolResult string) models.TelegramAgentToolCallLog {
 	payload := parseTelegramAgentToolResultPayload(toolResult)
-	toolName := strings.TrimSpace(toolCall.Function.Name)
+	toolName := strings.TrimSpace(toolCall.Name)
 	resultText := payload.Text
-	if toolName == telegramAgentToolRunTerminalCommand {
+	if toolName == NameRunTerminalCommand {
 		resultText = terminalCommandOutputForLog(payload.Text)
 	}
 	status := telegramAgentToolLogStatusCompleted
@@ -58,7 +68,7 @@ func buildTelegramAgentFunctionToolCallLog(ctx context.Context, chatID int64, cf
 
 	log := models.TelegramAgentToolCallLog{
 		ChatID:         chatID,
-		ConversationID: resolveTelegramAgentToolLogConversationID(ctx, chatID),
+		ConversationID: runtime.conversationID(ctx, chatID),
 		Source:         telegramAgentToolLogSourceFunctionCall,
 		ToolCallID:     strings.TrimSpace(toolCall.ID),
 		ToolName:       toolName,
@@ -75,7 +85,7 @@ func buildTelegramAgentFunctionToolCallLog(ctx context.Context, chatID int64, cf
 }
 
 func recordTelegramAgentToolActionExecutingLog(ctx context.Context, action telegramToolAction, source string) uint {
-	return recordTelegramAgentToolCallLog(ctx, models.TelegramAgentToolCallLog{
+	return recordTelegramAgentToolCallLog(ctx, Runtime{}, models.TelegramAgentToolCallLog{
 		ChatID:         action.ChatID,
 		ConversationID: action.ConversationID,
 		Source:         source,
@@ -88,13 +98,21 @@ func recordTelegramAgentToolActionExecutingLog(ctx context.Context, action teleg
 	})
 }
 
+func RecordToolActionExecutingLog(ctx context.Context, action Action, source string) uint {
+	return recordTelegramAgentToolActionExecutingLog(ctx, action, source)
+}
+
 func finishTelegramAgentPreparedActionLog(ctx context.Context, logID uint, action telegramToolAction, result string) {
 	log := buildTelegramAgentPreparedActionLog(action, result)
 	if logID == 0 {
-		recordTelegramAgentToolCallLog(ctx, log)
+		recordTelegramAgentToolCallLog(ctx, Runtime{}, log)
 		return
 	}
-	updateTelegramAgentToolCallLog(ctx, logID, log)
+	updateTelegramAgentToolCallLog(ctx, Runtime{}, logID, log)
+}
+
+func FinishPreparedActionLog(ctx context.Context, logID uint, action Action, result string) {
+	finishTelegramAgentPreparedActionLog(ctx, logID, action, result)
 }
 
 func buildTelegramAgentPreparedActionLog(action telegramToolAction, result string) models.TelegramAgentToolCallLog {
@@ -125,10 +143,10 @@ func finishTelegramAgentToolActionFailureLog(ctx context.Context, logID uint, ac
 	}
 	log := buildTelegramAgentToolActionFailureLog(action, err)
 	if logID == 0 {
-		recordTelegramAgentToolCallLog(ctx, log)
+		recordTelegramAgentToolCallLog(ctx, Runtime{}, log)
 		return
 	}
-	updateTelegramAgentToolCallLog(ctx, logID, log)
+	updateTelegramAgentToolCallLog(ctx, Runtime{}, logID, log)
 }
 
 func buildTelegramAgentToolActionFailureLog(action telegramToolAction, err error) models.TelegramAgentToolCallLog {
@@ -149,6 +167,10 @@ func buildTelegramAgentToolActionFailureLog(action telegramToolAction, err error
 		ActionSummary:  action.Summary,
 		Error:          resultText,
 	}
+}
+
+func BuildToolActionFailureLog(action Action, err error) models.TelegramAgentToolCallLog {
+	return buildTelegramAgentToolActionFailureLog(action, err)
 }
 
 func terminalCommandOutputForLog(raw string) string {
@@ -216,7 +238,11 @@ func isTelegramCommandResultHeaderLine(line string) bool {
 	}
 }
 
-func recordTelegramAgentToolCallLog(ctx context.Context, log models.TelegramAgentToolCallLog) uint {
+func RecordToolCallLog(ctx context.Context, runtime Runtime, log models.TelegramAgentToolCallLog) uint {
+	return recordTelegramAgentToolCallLog(ctx, runtime, log)
+}
+
+func recordTelegramAgentToolCallLog(ctx context.Context, runtime Runtime, log models.TelegramAgentToolCallLog) uint {
 	if models.DB == nil {
 		return 0
 	}
@@ -224,7 +250,7 @@ func recordTelegramAgentToolCallLog(ctx context.Context, log models.TelegramAgen
 		log.Status = telegramAgentToolLogStatusCompleted
 	}
 	if strings.TrimSpace(log.ConversationID) == "" && log.ChatID != 0 {
-		log.ConversationID = resolveTelegramAgentToolLogConversationID(ctx, log.ChatID)
+		log.ConversationID = runtime.conversationID(ctx, log.ChatID)
 	}
 	if err := models.DB.WithContext(ctx).Create(&log).Error; err != nil {
 		return 0
@@ -232,7 +258,11 @@ func recordTelegramAgentToolCallLog(ctx context.Context, log models.TelegramAgen
 	return log.ID
 }
 
-func updateTelegramAgentToolCallLog(ctx context.Context, id uint, log models.TelegramAgentToolCallLog) {
+func UpdateToolCallLog(ctx context.Context, runtime Runtime, id uint, log models.TelegramAgentToolCallLog) {
+	updateTelegramAgentToolCallLog(ctx, runtime, id, log)
+}
+
+func updateTelegramAgentToolCallLog(ctx context.Context, runtime Runtime, id uint, log models.TelegramAgentToolCallLog) {
 	if models.DB == nil || id == 0 {
 		return
 	}
@@ -240,7 +270,7 @@ func updateTelegramAgentToolCallLog(ctx context.Context, id uint, log models.Tel
 		log.Status = telegramAgentToolLogStatusCompleted
 	}
 	if strings.TrimSpace(log.ConversationID) == "" && log.ChatID != 0 {
-		log.ConversationID = resolveTelegramAgentToolLogConversationID(ctx, log.ChatID)
+		log.ConversationID = runtime.conversationID(ctx, log.ChatID)
 	}
 	values := map[string]any{
 		"chat_id":         log.ChatID,
@@ -261,18 +291,14 @@ func updateTelegramAgentToolCallLog(ctx context.Context, id uint, log models.Tel
 	_ = models.DB.WithContext(ctx).Model(&models.TelegramAgentToolCallLog{}).Where("id = ?", id).Updates(values).Error
 }
 
-func resolveTelegramAgentToolLogConversationID(ctx context.Context, chatID int64) string {
-	conversationID, err := resolveTelegramActiveConversationID(ctx, chatID, getTelegramSession(chatID))
-	if err != nil {
-		return ""
-	}
-	return conversationID
+func ParseResultPayload(raw string) ResultPayload {
+	return parseTelegramAgentToolResultPayload(raw)
 }
 
-func parseTelegramAgentToolResultPayload(raw string) telegramAgentToolResultPayload {
-	var payload telegramAgentToolResultPayload
+func parseTelegramAgentToolResultPayload(raw string) ResultPayload {
+	var payload ResultPayload
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
-		return telegramAgentToolResultPayload{
+		return ResultPayload{
 			OK:   false,
 			Text: strings.TrimSpace(raw),
 		}

@@ -1,4 +1,4 @@
-package agent
+package tools
 
 import (
 	"bytes"
@@ -34,7 +34,7 @@ type telegramCommandRun struct {
 	ScriptPath string   `json:"script_path,omitempty"`
 }
 
-func buildTelegramRunCommandAction(ctx context.Context, chatID int64, cfg models.TelegramAgentConfig, args telegramAgentToolCallArgs) (telegramToolAction, error) {
+func buildTelegramRunCommandAction(ctx context.Context, chatID int64, cfg models.TelegramAgentConfig, args CallArgs) (telegramToolAction, error) {
 	run, err := normalizeTelegramCommandRun(args)
 	if err != nil {
 		return telegramToolAction{}, err
@@ -68,7 +68,7 @@ func buildTelegramRunCommandAction(ctx context.Context, chatID int64, cfg models
 	}, nil
 }
 
-func normalizeTelegramCommandRun(args telegramAgentToolCallArgs) (telegramCommandRun, error) {
+func normalizeTelegramCommandRun(args CallArgs) (telegramCommandRun, error) {
 	command := strings.TrimSpace(args.Command)
 	if command == "" {
 		return telegramCommandRun{}, errors.New("请写明要执行的 command")
@@ -152,7 +152,7 @@ func executeTelegramCommandAction(ctx context.Context, run telegramCommandRun) (
 		cmd.Stdin = strings.NewReader(run.Stdin)
 	}
 	cmd.Env = append(os.Environ(),
-		"ORVION_AGENT_TOOL="+telegramAgentToolRunTerminalCommand,
+		"ORVION_AGENT_TOOL="+NameRunTerminalCommand,
 	)
 	if run.SkillName != "" {
 		cmd.Env = append(cmd.Env, "ORVION_SKILL_NAME="+run.SkillName)

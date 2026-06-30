@@ -1,4 +1,4 @@
-package agent
+package tools
 
 import (
 	"context"
@@ -11,7 +11,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func listTelegramAgentScheduledTasks(ctx context.Context, args telegramAgentToolCallArgs) (string, error) {
+func listTelegramAgentScheduledTasks(ctx context.Context, args CallArgs) (string, error) {
 	if models.DB == nil {
 		return "", errors.New("数据库未初始化")
 	}
@@ -81,7 +81,7 @@ func listTelegramAgentScheduledTasks(ctx context.Context, args telegramAgentTool
 	return sb.String(), nil
 }
 
-func buildTelegramCreateScheduledTaskAction(_ context.Context, chatID int64, args telegramAgentToolCallArgs) (telegramToolAction, error) {
+func buildTelegramCreateScheduledTaskAction(_ context.Context, chatID int64, args CallArgs) (telegramToolAction, error) {
 	patch, summaryParts, err := buildTelegramScheduledTaskPatch(args, true)
 	if err != nil {
 		return telegramToolAction{}, err
@@ -102,7 +102,7 @@ func buildTelegramCreateScheduledTaskAction(_ context.Context, chatID int64, arg
 	}, nil
 }
 
-func buildTelegramUpdateScheduledTaskAction(ctx context.Context, chatID int64, args telegramAgentToolCallArgs) (telegramToolAction, error) {
+func buildTelegramUpdateScheduledTaskAction(ctx context.Context, chatID int64, args CallArgs) (telegramToolAction, error) {
 	task, err := findTelegramAgentScheduledTask(ctx, args.Target)
 	if err != nil {
 		return telegramToolAction{}, err
@@ -126,7 +126,7 @@ func buildTelegramUpdateScheduledTaskAction(ctx context.Context, chatID int64, a
 	}, nil
 }
 
-func buildTelegramSetScheduledTaskStatusAction(ctx context.Context, chatID int64, args telegramAgentToolCallArgs) (telegramToolAction, error) {
+func buildTelegramSetScheduledTaskStatusAction(ctx context.Context, chatID int64, args CallArgs) (telegramToolAction, error) {
 	if args.Enabled == nil {
 		return telegramToolAction{}, errors.New("缺少 enabled 参数")
 	}
@@ -145,7 +145,7 @@ func buildTelegramSetScheduledTaskStatusAction(ctx context.Context, chatID int64
 	}, nil
 }
 
-func buildTelegramScheduledTaskPatch(args telegramAgentToolCallArgs, create bool) (telegramScheduledTaskPatch, []string, error) {
+func buildTelegramScheduledTaskPatch(args CallArgs, create bool) (telegramScheduledTaskPatch, []string, error) {
 	var patch telegramScheduledTaskPatch
 	summaryParts := make([]string, 0)
 

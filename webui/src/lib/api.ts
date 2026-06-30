@@ -476,6 +476,108 @@ export async function deleteProvider(id: number): Promise<void> {
   });
 }
 
+export interface ProviderProxyTargetTestResult {
+  key: string;
+  name: string;
+  url: string;
+  ok: boolean;
+  status_code?: number;
+  latency_ms?: number;
+  error?: string;
+  completed: number;
+  total: number;
+  success_count: number;
+  samples?: ProviderProxyTargetSampleResult[];
+}
+
+export interface ProviderProxyTargetSampleResult {
+  index: number;
+  ok: boolean;
+  status_code?: number;
+  latency_ms?: number;
+  error?: string;
+}
+
+export interface ProviderProxyTestResult {
+  exit_ip?: string;
+  exit_country?: string;
+  exit_country_code?: string;
+  exit_error?: string;
+  targets: ProviderProxyTargetTestResult[];
+}
+
+export interface ProviderProxyTestStreamEvent {
+  type: 'init' | 'exit' | 'target_sample' | 'target_done' | 'done';
+  exit_ip?: string;
+  exit_country?: string;
+  exit_country_code?: string;
+  exit_error?: string;
+  targets?: ProviderProxyTargetTestResult[];
+  target_key?: string;
+  target?: ProviderProxyTargetTestResult;
+  sample?: ProviderProxyTargetSampleResult;
+}
+
+export async function testProviderProxy(
+  proxyURL: string,
+  onEvent: (event: ProviderProxyTestStreamEvent) => void,
+): Promise<void> {
+  const token = getStoredAuthToken();
+  const response = await fetch(`${API_BASE}/config/network-forwarding/proxy-test`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({ proxy_url: proxyURL }),
+  });
+
+  if (response.status === 401) {
+    clearStoredAuthTokenAndRedirect();
+  }
+
+  if (!response.ok) {
+    throw new Error(`API request failed: ${response.status} ${response.statusText}`);
+  }
+
+  const contentType = response.headers.get('Content-Type') ?? '';
+  if (!contentType.includes('application/x-ndjson')) {
+    const data = await response.json();
+    if (data.code !== 200) {
+      throw new Error(`${data.message}`);
+    }
+    return;
+  }
+
+  if (!response.body) {
+    throw new Error('代理测速响应缺少流式内容');
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      onEvent(JSON.parse(trimmed) as ProviderProxyTestStreamEvent);
+    }
+  }
+
+  buffer += decoder.decode();
+  const trimmed = buffer.trim();
+  if (trimmed) {
+    onEvent(JSON.parse(trimmed) as ProviderProxyTestStreamEvent);
+  }
+}
+
 // Model API functions
 export type ModelQuery = {
   page?: number;
@@ -1467,6 +1569,7 @@ export interface ProviderHealth {
   lastCheck: string;
   responseTimeMs: number;
   errorRate: number;
+  successRate: number;
   totalRequests: number;
   failedRequests: number;
   models: ModelHealth[]; // 该提供商下的模型列表

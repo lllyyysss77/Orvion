@@ -576,10 +576,6 @@ type ProvidersWithMeta struct {
 }
 
 func ProvidersWithMetaBymodelsName(ctx context.Context, logStyle string, endpoint string, requestPath string, before Before) (*ProvidersWithMeta, error) {
-	if err := RestoreExpiredAutoDisabledModelProviders(ctx); err != nil {
-		slog.Warn("恢复已到期的模型关联提供商失败", "error", err)
-	}
-
 	model, err := gorm.G[models.Model](models.DB).Where("name = ?", before.Model).First(ctx)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {

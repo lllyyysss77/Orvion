@@ -51,6 +51,7 @@ type ProviderHealth struct {
 	LastCheck      string        `json:"lastCheck"`
 	ResponseTimeMs int           `json:"responseTimeMs"`
 	ErrorRate      float64       `json:"errorRate"`
+	SuccessRate    float64       `json:"successRate"`
 	TotalRequests  int           `json:"totalRequests"`
 	FailedRequests int           `json:"failedRequests"`
 	Models         []ModelHealth `json:"models"`
@@ -345,7 +346,18 @@ func checkProvidersHealth(_ int) struct {
 		providerModels = append(providerModels, pm)
 	}
 
-	// 4) 批量查询 chat_logs 月表：取窗口期内所有记录，后续按固定时间段聚合
+	// 4) 按当天 provider 日志统计整体成功率；provider 卡片必须使用该口径。
+	providerStatsRows, err := models.QueryChatLogProviderSuccessStats(context.Background(), windowStart, windowEnd, providerNames)
+	if err != nil {
+		result.Status = "unhealthy"
+		return result
+	}
+	providerStatsByName := make(map[string]models.ChatLogProviderSuccessStat, len(providerStatsRows))
+	for _, stat := range providerStatsRows {
+		providerStatsByName[stat.ProviderName] = stat
+	}
+
+	// 5) 批量查询 chat_logs 月表：取窗口期内所有记录，后续按固定时间段聚合
 	type logKey struct {
 		providerName  string
 		modelName     string
@@ -375,11 +387,12 @@ func checkProvidersHealth(_ int) struct {
 	healthByProviderID := make(map[uint]*ProviderHealth, len(providers))
 	for _, p := range providers {
 		healthByProviderID[p.ID] = &ProviderHealth{
-			ID:        int(p.ID),
-			Name:      p.Name,
-			Status:    "unknown",
-			LastCheck: now.UTC().Format(time.RFC3339),
-			Models:    []ModelHealth{},
+			ID:          int(p.ID),
+			Name:        p.Name,
+			Status:      "unknown",
+			LastCheck:   now.UTC().Format(time.RFC3339),
+			SuccessRate: 100,
+			Models:      []ModelHealth{},
 		}
 	}
 
@@ -453,13 +466,24 @@ func checkProvidersHealth(_ int) struct {
 
 		ph := healthByProviderID[mp.ProviderID]
 		ph.Models = append(ph.Models, modelHealth)
-		ph.TotalRequests += modelHealth.TotalRequests
-		ph.FailedRequests += modelHealth.FailedRequests
 	}
 
 	// 6) 计算每个 provider 的整体状态
 	for _, p := range providers {
 		ph := healthByProviderID[p.ID]
+
+		if stat, ok := providerStatsByName[p.Name]; ok {
+			ph.TotalRequests = int(stat.TotalCount)
+			successCount := int(stat.SuccessCount)
+			ph.FailedRequests = ph.TotalRequests - successCount
+			if ph.FailedRequests < 0 {
+				ph.FailedRequests = 0
+			}
+			if ph.TotalRequests > 0 {
+				ph.SuccessRate = float64(successCount) / float64(ph.TotalRequests) * 100
+				ph.ErrorRate = float64(ph.FailedRequests) / float64(ph.TotalRequests) * 100
+			}
+		}
 
 		// 平均响应时间：取有请求的模型的平均值
 		totalAvg := 0.0
@@ -472,10 +496,6 @@ func checkProvidersHealth(_ int) struct {
 		}
 		if count > 0 {
 			ph.ResponseTimeMs = int(totalAvg / float64(count))
-		}
-
-		if ph.TotalRequests > 0 {
-			ph.ErrorRate = float64(ph.FailedRequests) / float64(ph.TotalRequests) * 100
 		}
 
 		if ph.TotalRequests == 0 {
