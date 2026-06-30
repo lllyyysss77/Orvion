@@ -72,6 +72,8 @@ type TelegramAgentConfig struct {
 	SkillsEnabled      *bool    `json:"skills_enabled,omitempty"`
 	SkillsDir          string   `json:"-"`
 	MemoryEnabled      *bool    `json:"memory_enabled,omitempty"`
+	IntentRulesEnabled *bool    `json:"intent_rules_enabled,omitempty"`
+	ImageModel         string   `json:"image_model,omitempty"`
 }
 
 type ModelPriceSyncConfig struct {

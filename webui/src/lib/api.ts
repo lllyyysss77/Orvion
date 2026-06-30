@@ -1023,6 +1023,8 @@ export interface TelegramAgentConfig {
   temperature?: number;
   edit_interval_ms: number;
   skills_enabled?: boolean;
+  intent_rules_enabled?: boolean;
+  image_model?: string;
 }
 
 export interface SkillScript {

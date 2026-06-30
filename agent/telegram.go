@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	agentintent "github.com/racio/orvion/agent/intent"
 	agenttools "github.com/racio/orvion/agent/tools"
 	"github.com/racio/orvion/consts"
 	"github.com/racio/orvion/models"
@@ -189,6 +190,11 @@ func runTelegramAgentConversationWithHistoryMode(ctx context.Context, client Tel
 	session.mu.Lock()
 	defer session.mu.Unlock()
 
+	attachments = normalizeTelegramAgentInputAttachments(attachments)
+	if shouldHandleTelegramAgentImageIntent(cfg, prompt, len(attachments) > 0) {
+		return runTelegramAgentImageGeneration(ctx, client, chatID, prompt, cfg, loadHistory)
+	}
+
 	placeholderID, err := client.SendMessage(ctx, chatID, "正在思考...")
 	if err != nil {
 		return err
@@ -235,7 +241,6 @@ func runTelegramAgentConversationWithHistoryMode(ctx context.Context, client Tel
 		return edit(true)
 	}
 
-	attachments = normalizeTelegramAgentInputAttachments(attachments)
 	_, err = streamTelegramAgentReply(ctx, cfg, history, prompt, attachments, chatID, func(delta string) error {
 		if delta == "" {
 			return nil
@@ -295,6 +300,14 @@ func runTelegramAgentConversationWithHistoryMode(ctx context.Context, client Tel
 		scheduleTelegramAgentMemoryExtraction(cfg, historyPrompt, finalAnswer, time.Now())
 	}
 	return nil
+}
+
+func shouldHandleTelegramAgentImageIntent(cfg models.TelegramAgentConfig, prompt string, hasAttachment bool) bool {
+	if cfg.IntentRulesEnabled == nil || !*cfg.IntentRulesEnabled {
+		return false
+	}
+	result := agentintent.DetectTextToImage(prompt, hasAttachment)
+	return result.Intent == agentintent.IntentTextToImage
 }
 
 func telegramAgentEditableMessageContent(answer string, status string) string {
@@ -437,6 +450,9 @@ func normalizeTelegramAgentDirectBaseURL(raw string) (string, error) {
 	path := strings.TrimRight(parsed.Path, "/")
 	if strings.HasSuffix(path, "/chat/completions") {
 		path = strings.TrimSuffix(path, "/chat/completions")
+	}
+	if strings.HasSuffix(path, "/images/generations") {
+		path = strings.TrimSuffix(path, "/images/generations")
 	}
 	parsed.Path = path
 	parsed.RawQuery = ""
@@ -1016,6 +1032,7 @@ func loadTelegramAgentConfig(ctx context.Context) (models.TelegramAgentConfig, e
 		SkillsEnabled:      boolPtr(false),
 		SkillsDir:          agenttools.DefaultSkillsDir,
 		MemoryEnabled:      boolPtr(true),
+		IntentRulesEnabled: boolPtr(false),
 	}
 
 	if models.DB == nil {
@@ -1080,6 +1097,12 @@ func mergeTelegramAgentConfig(base models.TelegramAgentConfig, override models.T
 	}
 	if override.MemoryEnabled != nil {
 		base.MemoryEnabled = override.MemoryEnabled
+	}
+	if override.IntentRulesEnabled != nil {
+		base.IntentRulesEnabled = override.IntentRulesEnabled
+	}
+	if strings.TrimSpace(override.ImageModel) != "" {
+		base.ImageModel = strings.TrimSpace(override.ImageModel)
 	}
 	return base
 }

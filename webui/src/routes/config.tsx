@@ -27,10 +27,12 @@ import {
 } from '@/components/ui/dialog';
 import {
   configAPI,
+  getModels,
   testProviderProxy,
   type NetworkForwardingConfig,
   type TelegramBreakerAlertConfig,
   type TelegramAgentConfig,
+  type Model,
   type ProviderModel,
   type ModelPriceSyncConfig,
   type SystemLogCleanupConfig,
@@ -90,6 +92,8 @@ const telegramBreakerAlertSchema = z.object({
 const telegramAgentSchema = z.object({
   enabled: z.boolean(),
   skills_enabled: z.boolean(),
+  intent_rules_enabled: z.boolean(),
+  image_model: z.string().trim(),
   base_url: z.string().trim(),
   api_key: z.string().trim(),
   model: z.string().trim(),
@@ -109,6 +113,9 @@ const telegramAgentSchema = z.object({
 }).refine((data) => !data.enabled || data.model.length > 0, {
   message: '启用 Agent 时必须填写模型名',
   path: ['model'],
+}).refine((data) => !data.enabled || !data.intent_rules_enabled || data.image_model.length > 0, {
+  message: '启用规则引擎时必须填写生图模型',
+  path: ['image_model'],
 });
 
 const systemLogCleanupSchema = z.object({
@@ -143,6 +150,8 @@ const TELEGRAM_AGENT_CONFIG_CHANGED_EVENT = "telegram-agent-config-changed";
 const telegramAgentDefaultValues: TelegramAgentForm = {
   enabled: true,
   skills_enabled: false,
+  intent_rules_enabled: false,
+  image_model: '',
   base_url: '',
   api_key: '',
   model: '',
@@ -299,6 +308,9 @@ export default function ConfigPage() {
   const [telegramAgentModelsLoading, setTelegramAgentModelsLoading] = useState(false);
   const [telegramAgentModelOptions, setTelegramAgentModelOptions] = useState<ProviderModel[]>([]);
   const [telegramAgentModelDropdownOpen, setTelegramAgentModelDropdownOpen] = useState(false);
+  const [telegramAgentImageModelsLoading, setTelegramAgentImageModelsLoading] = useState(false);
+  const [telegramAgentImageModelOptions, setTelegramAgentImageModelOptions] = useState<Model[]>([]);
+  const [telegramAgentImageModelDropdownOpen, setTelegramAgentImageModelDropdownOpen] = useState(false);
   const [displayConfigSaving, setDisplayConfigSaving] = useState(false);
   const [coreConfigSaving, setCoreConfigSaving] = useState(false);
   const [networkForwardingSaving, setNetworkForwardingSaving] = useState(false);
@@ -411,6 +423,8 @@ export default function ConfigPage() {
         const nextTelegramAgentConfig = {
           enabled: agentCfg.enabled !== false,
           skills_enabled: agentCfg.skills_enabled === true,
+          intent_rules_enabled: agentCfg.intent_rules_enabled === true,
+          image_model: agentCfg.image_model || '',
           base_url: agentCfg.base_url || '',
           api_key: agentCfg.api_key || '',
           model: agentCfg.model || '',
@@ -611,6 +625,7 @@ export default function ConfigPage() {
       base_url: values.base_url.trim(),
       api_key: values.api_key.trim(),
       model: values.model.trim(),
+      image_model: values.image_model.trim(),
       system_prompt: values.system_prompt.trim(),
     };
 
@@ -663,6 +678,52 @@ export default function ConfigPage() {
       toast.error(error instanceof Error ? error.message : '获取模型列表失败');
     } finally {
       setTelegramAgentModelsLoading(false);
+    }
+  };
+
+  const handleFetchTelegramAgentImageModels = async () => {
+    try {
+      setTelegramAgentImageModelsLoading(true);
+      const firstPage = await getModels({ page: 1, page_size: 100, capability: 'vision' });
+      const totalPages = Math.max(firstPage.pages || 1, 1);
+      const allModels = [...firstPage.data];
+
+      if (totalPages > 1) {
+        const remainRequests: Promise<{ data: Model[] }>[] = [];
+        for (let currentPage = 2; currentPage <= totalPages; currentPage += 1) {
+          remainRequests.push(getModels({ page: currentPage, page_size: 100, capability: 'vision' }));
+        }
+        const remainPages = await Promise.all(remainRequests);
+        for (const pageData of remainPages) {
+          allModels.push(...pageData.data);
+        }
+      }
+
+      const imageModels = allModels
+        .filter((model) => Number(model.Status ?? 1) === 1)
+        .filter((model) => {
+          const capabilities = Array.isArray(model.Capabilities) ? model.Capabilities : [];
+          return capabilities.some((capability) => {
+            const value = String(capability).toLowerCase().trim();
+            return value === 'vision' || value === 'image' || value === 'images';
+          });
+        })
+        .sort((a, b) => a.Name.localeCompare(b.Name));
+
+      setTelegramAgentImageModelOptions(imageModels);
+      setTelegramAgentImageModelDropdownOpen(imageModels.length > 0);
+      if (imageModels.length > 0) {
+        toast.success(`已获取 ${imageModels.length} 个启用的生图模型`);
+      } else {
+        toast.warning('当前没有启用的生图模型');
+      }
+    } catch (error) {
+      console.error('Failed to fetch telegram agent image models:', error);
+      setTelegramAgentImageModelOptions([]);
+      setTelegramAgentImageModelDropdownOpen(false);
+      toast.error(error instanceof Error ? error.message : '获取生图模型失败');
+    } finally {
+      setTelegramAgentImageModelsLoading(false);
     }
   };
 
@@ -1141,6 +1202,101 @@ export default function ConfigPage() {
                           </FormControl>
                         </FormItem>
                       )}
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-[11rem_minmax(0,1fr)]">
+                    <FormField
+                      control={telegramAgentForm.control}
+                      name="intent_rules_enabled"
+                      render={({ field }) => (
+                        <FormItem className="flex h-9 items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/50 px-3">
+                          <FormLabel className="text-xs text-muted-foreground">启用规则引擎</FormLabel>
+                          <FormControl>
+                            <Switch
+                              checked={field.value === true}
+                              onCheckedChange={(checked) => field.onChange(checked === true)}
+                            />
+                          </FormControl>
+                        </FormItem>
+                      )}
+                    />
+
+                    <FormField
+                      control={telegramAgentForm.control}
+                      name="image_model"
+                      render={({ field }) => {
+                        const keyword = String(field.value || '').trim().toLowerCase();
+                        const filteredModels = keyword
+                          ? telegramAgentImageModelOptions.filter((model) => model.Name.toLowerCase().includes(keyword))
+                          : telegramAgentImageModelOptions;
+                        return (
+                          <FormItem className="min-w-0 space-y-1">
+                            <div className="flex min-w-0 gap-2">
+                              <FormControl>
+                                <div className="relative min-w-0 flex-1">
+                                  <Input
+                                    className="h-9"
+                                    placeholder="生图模型"
+                                    {...field}
+                                    onChange={(event) => {
+                                      field.onChange(event.target.value);
+                                      if (telegramAgentImageModelOptions.length > 0) {
+                                        setTelegramAgentImageModelDropdownOpen(true);
+                                      }
+                                    }}
+                                    onFocus={() => {
+                                      if (telegramAgentImageModelOptions.length > 0) {
+                                        setTelegramAgentImageModelDropdownOpen(true);
+                                        return;
+                                      }
+                                      if (!telegramAgentImageModelsLoading) {
+                                        void handleFetchTelegramAgentImageModels();
+                                      }
+                                    }}
+                                    onClick={() => {
+                                      if (telegramAgentImageModelOptions.length > 0) {
+                                        setTelegramAgentImageModelDropdownOpen(true);
+                                        return;
+                                      }
+                                      if (!telegramAgentImageModelsLoading) {
+                                        void handleFetchTelegramAgentImageModels();
+                                      }
+                                    }}
+                                    onBlur={() => {
+                                      window.setTimeout(() => setTelegramAgentImageModelDropdownOpen(false), 120);
+                                    }}
+                                  />
+                                  {telegramAgentImageModelDropdownOpen && telegramAgentImageModelOptions.length > 0 ? (
+                                    <div className="absolute left-0 right-0 top-full z-50 mt-1 max-h-40 overflow-y-auto rounded-md border border-border/70 bg-popover p-1 text-popover-foreground shadow-lg">
+                                      {filteredModels.length > 0 ? (
+                                        filteredModels.slice(0, 80).map((model) => (
+                                          <button
+                                            key={model.ID}
+                                            type="button"
+                                            className="flex h-8 w-full items-center rounded-sm px-2 text-left text-xs hover:bg-accent hover:text-accent-foreground"
+                                            onMouseDown={(event) => {
+                                              event.preventDefault();
+                                              field.onChange(model.Name);
+                                              setTelegramAgentImageModelDropdownOpen(false);
+                                            }}
+                                            title={model.Name}
+                                          >
+                                            <span className="truncate">{model.Name}</span>
+                                          </button>
+                                        ))
+                                      ) : (
+                                        <div className="px-2 py-2 text-xs text-muted-foreground">无匹配模型</div>
+                                      )}
+                                    </div>
+                                  ) : null}
+                                </div>
+                              </FormControl>
+                            </div>
+                            <FormMessage />
+                          </FormItem>
+                        );
+                      }}
                     />
                   </div>
 
