@@ -58,13 +58,11 @@ type memoryDecision struct {
 	WorthRemembering bool   `json:"worth_remembering"`
 	Title            string `json:"title"`
 	Summary          string `json:"summary"`
-	Importance       int    `json:"importance"`
 }
 
 type memorySummary struct {
-	Title      string `json:"title"`
-	Summary    string `json:"summary"`
-	Importance int    `json:"importance"`
+	Title   string `json:"title"`
+	Summary string `json:"summary"`
 }
 
 func Enabled(cfg models.TelegramAgentConfig) bool {
@@ -106,17 +104,13 @@ func ProcessTurn(ctx context.Context, cfg models.TelegramAgentConfig, llm LLM, t
 		return nil
 	}
 	title := normalizeMemoryTitle(decision.Title, period.Key)
-	importance := normalizeImportance(decision.Importance)
 	return upsertMemory(ctx, models.AgentMemory{
-		PeriodType:  PeriodDay,
-		PeriodKey:   period.Key,
-		StartedAt:   period.StartedAt,
-		EndedAt:     period.EndedAt,
-		Title:       title,
-		Content:     summary,
-		Importance:  importance,
-		SourceCount: 1,
-		Model:       strings.TrimSpace(cfg.Model),
+		PeriodType: PeriodDay,
+		PeriodKey:  period.Key,
+		StartedAt:  period.StartedAt,
+		EndedAt:    period.EndedAt,
+		Title:      title,
+		Content:    summary,
 	})
 }
 
@@ -198,7 +192,7 @@ func rollupDaysToWeeks(ctx context.Context, cfg models.TelegramAgentConfig, llm 
 	var result RollupResult
 	for _, group := range groups {
 		if !group.period.EndedAt.After(currentWeekStart) {
-			memory, err := summarizeGroup(ctx, cfg, llm, PeriodWeek, group.period, group.rows)
+			memory, err := summarizeGroup(ctx, llm, PeriodWeek, group.period, group.rows)
 			if err != nil {
 				return result, err
 			}
@@ -231,7 +225,7 @@ func rollupWeeksToMonths(ctx context.Context, cfg models.TelegramAgentConfig, ll
 	var result RollupResult
 	for _, group := range groups {
 		if !group.period.EndedAt.After(currentMonthStart) {
-			memory, err := summarizeGroup(ctx, cfg, llm, PeriodMonth, group.period, group.rows)
+			memory, err := summarizeGroup(ctx, llm, PeriodMonth, group.period, group.rows)
 			if err != nil {
 				return result, err
 			}
@@ -276,7 +270,7 @@ func groupMemories(rows []models.AgentMemory, resolve func(models.AgentMemory) p
 	return result
 }
 
-func summarizeGroup(ctx context.Context, cfg models.TelegramAgentConfig, llm LLM, periodType string, period periodRange, rows []models.AgentMemory) (models.AgentMemory, error) {
+func summarizeGroup(ctx context.Context, llm LLM, periodType string, period periodRange, rows []models.AgentMemory) (models.AgentMemory, error) {
 	existing, _ := findMemory(ctx, periodType, period.Key)
 	raw, err := llm.Complete(ctx, CompleteRequest{
 		SystemPrompt: rollupMemorySystemPrompt(periodType),
@@ -294,15 +288,12 @@ func summarizeGroup(ctx context.Context, cfg models.TelegramAgentConfig, llm LLM
 		return models.AgentMemory{}, errors.New("长期记忆汇总为空")
 	}
 	return models.AgentMemory{
-		PeriodType:  periodType,
-		PeriodKey:   period.Key,
-		StartedAt:   period.StartedAt,
-		EndedAt:     period.EndedAt,
-		Title:       normalizeMemoryTitle(summary.Title, period.Key),
-		Content:     content,
-		Importance:  normalizeImportance(summary.Importance),
-		SourceCount: sumSourceCount(rows),
-		Model:       strings.TrimSpace(cfg.Model),
+		PeriodType: periodType,
+		PeriodKey:  period.Key,
+		StartedAt:  period.StartedAt,
+		EndedAt:    period.EndedAt,
+		Title:      normalizeMemoryTitle(summary.Title, period.Key),
+		Content:    content,
 	}, nil
 }
 
@@ -325,7 +316,6 @@ func upsertMemory(ctx context.Context, row models.AgentMemory) error {
 	row.PeriodKey = strings.TrimSpace(row.PeriodKey)
 	row.Title = normalizeMemoryTitle(row.Title, row.PeriodKey)
 	row.Content = normalizeMemoryText(row.Content, maxMemoryContentRunes)
-	row.Importance = normalizeImportance(row.Importance)
 	if row.PeriodType == "" || row.PeriodKey == "" || row.Content == "" {
 		return nil
 	}
@@ -335,31 +325,18 @@ func upsertMemory(ctx context.Context, row models.AgentMemory) error {
 		Where("period_type = ? AND period_key = ?", row.PeriodType, row.PeriodKey).
 		First(&existing).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		if row.SourceCount <= 0 {
-			row.SourceCount = 1
-		}
 		return models.DB.WithContext(ctx).Create(&row).Error
 	}
 	if err != nil {
 		return err
 	}
 
-	sourceCount := row.SourceCount
-	if row.PeriodType == PeriodDay {
-		sourceCount += existing.SourceCount
-	}
-	if sourceCount <= 0 {
-		sourceCount = existing.SourceCount
-	}
 	updates := map[string]any{
-		"started_at":   row.StartedAt,
-		"ended_at":     row.EndedAt,
-		"title":        row.Title,
-		"content":      row.Content,
-		"importance":   row.Importance,
-		"source_count": sourceCount,
-		"model":        row.Model,
-		"updated_at":   time.Now(),
+		"started_at": row.StartedAt,
+		"ended_at":   row.EndedAt,
+		"title":      row.Title,
+		"content":    row.Content,
+		"updated_at": time.Now(),
 	}
 	return models.DB.WithContext(ctx).Model(&models.AgentMemory{}).Where("id = ?", existing.ID).Updates(updates).Error
 }
@@ -441,31 +418,6 @@ func monthStart(value time.Time) time.Time {
 	return time.Date(year, month, 1, 0, 0, 0, 0, local.Location())
 }
 
-func sumSourceCount(rows []models.AgentMemory) int {
-	total := 0
-	for _, row := range rows {
-		if row.SourceCount > 0 {
-			total += row.SourceCount
-		} else {
-			total++
-		}
-	}
-	if total <= 0 {
-		return len(rows)
-	}
-	return total
-}
-
-func normalizeImportance(value int) int {
-	if value <= 0 {
-		return 50
-	}
-	if value > 100 {
-		return 100
-	}
-	return value
-}
-
 func normalizeMemoryTitle(value string, fallback string) string {
 	value = strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
 	if value == "" {
@@ -515,7 +467,6 @@ func parseMemoryDecision(raw string) (memoryDecision, error) {
 	}
 	decision.Title = strings.TrimSpace(decision.Title)
 	decision.Summary = strings.TrimSpace(decision.Summary)
-	decision.Importance = normalizeImportance(decision.Importance)
 	return decision, nil
 }
 
@@ -526,7 +477,6 @@ func parseMemorySummary(raw string) (memorySummary, error) {
 	}
 	summary.Title = strings.TrimSpace(summary.Title)
 	summary.Summary = strings.TrimSpace(summary.Summary)
-	summary.Importance = normalizeImportance(summary.Importance)
 	return summary, nil
 }
 

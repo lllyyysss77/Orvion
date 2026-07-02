@@ -227,18 +227,15 @@ func (TelegramAgentSkill) TableName() string {
 }
 
 type AgentMemory struct {
-	ID          uint      `gorm:"primaryKey"`
-	CreatedAt   time.Time `gorm:"index"`
-	UpdatedAt   time.Time
-	PeriodType  string    `gorm:"column:period_type;size:16;uniqueIndex:idx_agent_memory_period,priority:1;index"` // day/week/month
-	PeriodKey   string    `gorm:"column:period_key;size:32;uniqueIndex:idx_agent_memory_period,priority:2;index"`  // yyyy-mm-dd / yyyy-Www / yyyy-mm
-	StartedAt   time.Time `gorm:"column:started_at;index"`
-	EndedAt     time.Time `gorm:"column:ended_at;index"`
-	Title       string    `gorm:"column:title;size:191"`
-	Content     string    `gorm:"column:content"`
-	Importance  int       `gorm:"column:importance;index"`
-	SourceCount int       `gorm:"column:source_count"`
-	Model       string    `gorm:"column:model;size:191"`
+	ID         uint      `gorm:"primaryKey"`
+	CreatedAt  time.Time `gorm:"index"`
+	UpdatedAt  time.Time
+	PeriodType string    `gorm:"column:period_type;size:16;uniqueIndex:idx_agent_memory_period,priority:1;index"` // day/week/month
+	PeriodKey  string    `gorm:"column:period_key;size:32;uniqueIndex:idx_agent_memory_period,priority:2;index"`  // yyyy-mm-dd / yyyy-Www / yyyy-mm
+	StartedAt  time.Time `gorm:"column:started_at;index"`
+	EndedAt    time.Time `gorm:"column:ended_at;index"`
+	Title      string    `gorm:"column:title;size:191"`
+	Content    string    `gorm:"column:content"`
 }
 
 func (AgentMemory) TableName() string {

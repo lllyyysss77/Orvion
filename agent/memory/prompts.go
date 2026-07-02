@@ -15,8 +15,8 @@ func dailyMemorySystemPrompt() string {
 		"不要记录一次性闲聊、临时查询结果、普通天气新闻、无长期价值的执行过程、敏感密钥或完整 token。",
 		"如果已有当天记忆，请输出合并后的完整当天摘要，而不是只输出新增片段。",
 		"只能返回 JSON，不要返回 Markdown 或解释。",
-		`JSON 格式：{"worth_remembering":true,"title":"简短标题","summary":"完整当天长期记忆摘要","importance":80}`,
-		`如果不值得记录，返回：{"worth_remembering":false,"title":"","summary":"","importance":0}`,
+		`JSON 格式：{"worth_remembering":true,"title":"简短标题","summary":"完整当天长期记忆摘要"}`,
+		`如果不值得记录，返回：{"worth_remembering":false,"title":"","summary":""}`,
 	}, "\n")
 }
 
@@ -53,7 +53,7 @@ func rollupMemorySystemPrompt(periodType string) string {
 		"删除重复、临时查询结果、一次性执行过程和无长期价值细节。",
 		"如果已有该周期摘要，请输出合并后的完整摘要。",
 		"只能返回 JSON，不要返回 Markdown 或解释。",
-		`JSON 格式：{"title":"简短标题","summary":"完整周期长期记忆摘要","importance":80}`,
+		`JSON 格式：{"title":"简短标题","summary":"完整周期长期记忆摘要"}`,
 	}, "\n")
 }
 

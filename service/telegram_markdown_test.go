@@ -125,11 +125,11 @@ func TestRenderTelegramAgentMarkdownV2ConvertsSingleTitleTableToBox(t *testing.T
 			t.Fatalf("期望包含 %q，实际为: %s", expected, got)
 		}
 	}
-	assertTelegramMarkdownBoxRightBorderAligned(t, got)
+	assertTelegramMarkdownBoxHasNoRightBorder(t, got)
 	assertTelegramMarkdownBoxUsesHalfWidthPadding(t, got)
 }
 
-func assertTelegramMarkdownBoxRightBorderAligned(t *testing.T, content string) {
+func assertTelegramMarkdownBoxHasNoRightBorder(t *testing.T, content string) {
 	t.Helper()
 	start := strings.Index(content, "```text\n")
 	if start < 0 {
@@ -144,10 +144,9 @@ func assertTelegramMarkdownBoxRightBorderAligned(t *testing.T, content string) {
 	if len(lines) == 0 {
 		t.Fatalf("盒子代码块为空，实际为: %s", content)
 	}
-	expectedWidth := telegramTextDisplayWidth(lines[0])
-	for _, line := range lines[1:] {
-		if width := telegramTextDisplayWidth(line); width != expectedWidth {
-			t.Fatalf("盒子右边框未对齐，期望宽度 %d，实际宽度 %d，行内容: %q，完整内容: %s", expectedWidth, width, line, content)
+	for _, line := range lines {
+		if strings.HasSuffix(line, "│") || strings.HasSuffix(line, "┐") || strings.HasSuffix(line, "┤") || strings.HasSuffix(line, "┘") {
+			t.Fatalf("盒子代码块不应包含右边框，行内容: %q，完整内容: %s", line, content)
 		}
 	}
 }

@@ -951,15 +951,15 @@ func renderTelegramMarkdownTableBox(header []string, rows [][]string) []string {
 
 	border := strings.Repeat("─", contentWidth+2)
 	out := make([]string, 0, len(body)+4)
-	out = append(out, "┌"+border+"┐")
+	out = append(out, "┌"+border)
 	if strings.TrimSpace(title) != "" {
-		out = append(out, "│ "+padTelegramCodeBlockTextRight(title, contentWidth)+" │")
-		out = append(out, "├"+border+"┤")
+		out = append(out, "│ "+title)
+		out = append(out, "├"+border)
 	}
 	for _, line := range body {
-		out = append(out, "│ "+padTelegramCodeBlockTextRight(line, contentWidth)+" │")
+		out = append(out, "│ "+line)
 	}
-	out = append(out, "└"+border+"┘")
+	out = append(out, "└"+border)
 	return out
 }
 

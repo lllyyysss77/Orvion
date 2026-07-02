@@ -43,7 +43,7 @@ import {
   type ProviderProxyTestResult,
 } from '@/lib/api';
 import { toast } from 'sonner';
-import { Settings, Network, Coins, FileClock, Type, Send, Github, Sparkles, Bot, Maximize2, Eye, EyeOff, RefreshCw, Gauge, Loader2, Globe2, WifiOff } from 'lucide-react';
+import { Settings, Network, Coins, FileClock, Type, Send, Github, Sparkles, Bot, Maximize2, Eye, EyeOff, Gauge, Loader2, Globe2, WifiOff } from 'lucide-react';
 import {
   applyLoadingUIStyleSetting,
   loadingUIValues,
@@ -611,9 +611,9 @@ export default function ConfigPage() {
         }
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setProxyTestError(message);
-      toast.error(`代理测速失败: ${message}`);
+      console.error('Failed to run proxy test:', error);
+      setProxyTestError('代理测速失败，请检查代理地址或服务状态');
+      toast.error('代理测速失败，请检查代理地址或服务状态');
     } finally {
       setProxyTestLoading(false);
     }
@@ -835,17 +835,14 @@ export default function ConfigPage() {
 
       <div className="flex-1 min-h-0 overflow-y-auto">
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 xl:grid-cols-3">
-          <Card className="rounded-2xl border border-border/60 bg-card/90 shadow-[0_18px_45px_rgba(0,0,0,0.08)] lg:order-1">
-            <CardContent className="space-y-3">
+          <Card className="h-full rounded-2xl border border-border/60 bg-card/90 shadow-[0_18px_45px_rgba(0,0,0,0.08)] lg:order-1">
+            <CardContent className="flex-1 space-y-3">
               <div className="space-y-3">
                 <div className="space-y-1">
                   <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
                     <Github className="size-4 text-emerald-600" />
                     GitHub 更新检查
                   </div>
-                  <p className="text-xs text-muted-foreground">
-                    控制后台是否定时连接 GitHub 检查新版本
-                  </p>
                 </div>
                 <Form {...githubVersionCheckForm}>
                   <div className="space-y-3">
@@ -874,9 +871,6 @@ export default function ConfigPage() {
                     <Type className="size-4 text-emerald-600" />
                     界面字体配置
                   </div>
-                  <p className="text-xs text-muted-foreground">
-                    当前支持默认字体、昆明海鸥体、粉圆体和霞鹜文楷
-                  </p>
                 </div>
                 <Form {...uiFontForm}>
                   <div className="space-y-3">
@@ -915,9 +909,6 @@ export default function ConfigPage() {
                     <Sparkles className="size-4 text-emerald-600" />
                     加载 UI 切换
                   </div>
-                  <p className="text-xs text-muted-foreground">
-                    选择全局加载动画样式，支持简约风与 GIF 风格
-                  </p>
                 </div>
                 <Form {...loadingUIForm}>
                   <div className="space-y-3">
@@ -961,7 +952,7 @@ export default function ConfigPage() {
                 </Form>
               </div>
             </CardContent>
-            <CardFooter className="justify-end">
+            <CardFooter className="mt-auto justify-end">
               <Button type="button" onClick={() => void onDisplayConfigSubmit()} disabled={displayConfigSaving}>
                 {displayConfigSaving ? '保存中...' : '保存配置'}
               </Button>
@@ -1054,17 +1045,14 @@ export default function ConfigPage() {
             </CardFooter>
           </Card>
 
-          <Card className="gap-1 rounded-2xl border border-border/60 bg-card/90 shadow-[0_18px_45px_rgba(0,0,0,0.08)] lg:order-2">
+          <Card className="h-full gap-1 rounded-2xl border border-border/60 bg-card/90 shadow-[0_18px_45px_rgba(0,0,0,0.08)] lg:order-2">
             <CardHeader className="pb-2">
               <CardTitle className="flex items-center gap-2 text-sm font-semibold">
                 <Send className="size-4 text-emerald-600" />
                 TG 告警配置
               </CardTitle>
-              <CardDescription className="text-xs">
-                配置熔断告警发送到 Telegram 的 Bot 参数、API 地址与状态图片。
-              </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="flex-1 space-y-4">
               <Form {...telegramBreakerAlertForm}>
                 <form id="telegram-breaker-alert-form" onSubmit={telegramBreakerAlertForm.handleSubmit(onTelegramBreakerAlertSubmit)} className="space-y-4">
                   <FormField
@@ -1151,7 +1139,7 @@ export default function ConfigPage() {
                 </form>
               </Form>
             </CardContent>
-            <CardFooter className="flex justify-between">
+            <CardFooter className="mt-auto flex justify-between">
               <Button type="button" variant="outline" onClick={handleRunTelegramBreakerAlertTest} disabled={tgTesting}>
                 {tgTesting ? '发送中...' : '发送测试消息'}
               </Button>
@@ -1159,7 +1147,7 @@ export default function ConfigPage() {
             </CardFooter>
           </Card>
 
-          <Card className="gap-1 rounded-2xl border border-border/60 bg-card/90 shadow-[0_18px_45px_rgba(0,0,0,0.08)] lg:order-5 xl:order-3">
+          <Card className="h-full gap-1 rounded-2xl border border-border/60 bg-card/90 shadow-[0_18px_45px_rgba(0,0,0,0.08)] lg:order-5 xl:order-3">
             <CardHeader className="pb-2">
               <CardTitle className="flex items-center gap-2 text-sm font-semibold">
                 <Bot className="size-4 text-emerald-600" />
@@ -1169,7 +1157,7 @@ export default function ConfigPage() {
                 配置 Telegram 对话助手的开关、工具能力与系统提示词。
               </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="flex-1 space-y-4">
               <Form {...telegramAgentForm}>
                 <form id="telegram-agent-form" onSubmit={telegramAgentForm.handleSubmit(onTelegramAgentSubmit, onTelegramAgentSubmitInvalid)} className="space-y-4">
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -1337,7 +1325,7 @@ export default function ConfigPage() {
                 </form>
               </Form>
             </CardContent>
-            <CardFooter className="justify-end">
+            <CardFooter className="mt-auto justify-end">
               <Button type="submit" form="telegram-agent-form" disabled={telegramAgentSaving}>
                 {telegramAgentSaving ? '保存中...' : '保存配置'}
               </Button>
@@ -1517,11 +1505,6 @@ export default function ConfigPage() {
                 </div>
               </div>
             </div>
-            {!proxyTestLoading && (proxyTestError || proxyTestResult?.exit_error) && (
-              <div className="mt-3 rounded-md bg-rose-500/10 px-3 py-2 text-xs text-rose-600 dark:text-rose-300">
-                {proxyTestError || proxyTestResult?.exit_error}
-              </div>
-            )}
           </div>
 
           {proxyTestResult?.targets?.length ? (
@@ -1661,19 +1644,7 @@ export default function ConfigPage() {
                       : telegramAgentModelOptions;
                     return (
                       <FormItem className="min-w-0 space-y-1 sm:col-span-2 lg:col-span-2">
-                        <div className="flex items-center justify-between gap-2">
-                          <FormLabel className="text-xs text-muted-foreground">对话模型</FormLabel>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            className="h-7 gap-1.5 px-2 text-xs"
-                            disabled={telegramAgentModelsLoading}
-                            onClick={() => void handleFetchTelegramAgentModels()}
-                          >
-                            <RefreshCw className={telegramAgentModelsLoading ? 'size-3.5 animate-spin' : 'size-3.5'} />
-                            {telegramAgentModelsLoading ? '获取中' : '获取模型'}
-                          </Button>
-                        </div>
+                        <FormLabel className="text-xs text-muted-foreground">对话模型</FormLabel>
                         <FormControl>
                           <div className="relative">
                             <Input
@@ -1689,6 +1660,19 @@ export default function ConfigPage() {
                               onFocus={() => {
                                 if (telegramAgentModelOptions.length > 0) {
                                   setTelegramAgentModelDropdownOpen(true);
+                                  return;
+                                }
+                                if (!telegramAgentModelsLoading) {
+                                  void handleFetchTelegramAgentModels();
+                                }
+                              }}
+                              onClick={() => {
+                                if (telegramAgentModelOptions.length > 0) {
+                                  setTelegramAgentModelDropdownOpen(true);
+                                  return;
+                                }
+                                if (!telegramAgentModelsLoading) {
+                                  void handleFetchTelegramAgentModels();
                                 }
                               }}
                               onBlur={() => {
