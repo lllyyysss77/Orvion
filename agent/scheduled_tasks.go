@@ -219,6 +219,61 @@ func ExecuteTelegramAgentScheduledTask(ctx context.Context, task models.Telegram
 	return result, err
 }
 
+func runTelegramAgentScheduledTaskFromTool(ctx context.Context, chatID int64, task models.TelegramAgentScheduledTask) (string, error) {
+	if models.DB == nil {
+		return "", errors.New("数据库未初始化")
+	}
+	if task.ID == 0 {
+		return "", errors.New("定时任务无效")
+	}
+
+	startedAt := time.Now()
+	update := models.DB.WithContext(ctx).
+		Model(&models.TelegramAgentScheduledTask{}).
+		Where("id = ? AND running = ?", task.ID, 0).
+		Updates(map[string]any{
+			"running":     1,
+			"last_run_at": startedAt,
+			"last_status": "running",
+			"last_error":  "",
+		})
+	if update.Error != nil {
+		return "", update.Error
+	}
+	if update.RowsAffected == 0 {
+		return "", fmt.Errorf("Agent 定时任务正在执行中：%s", task.Name)
+	}
+
+	task.Running = 1
+	task.LastRunAt = &startedAt
+	task.LastStatus = "running"
+	task.LastError = ""
+	task.PushToConversation = 0
+
+	result, runErr := ExecuteTelegramAgentScheduledTask(ctx, task, nil, chatID)
+	finishErr := FinishTelegramAgentScheduledTask(ctx, task, result, runErr, time.Now())
+	if finishErr != nil {
+		return "", finishErr
+	}
+	if runErr != nil {
+		return "", runErr
+	}
+	return telegramAgentScheduledTaskToolRunText(task, result), nil
+}
+
+func telegramAgentScheduledTaskToolRunText(task models.TelegramAgentScheduledTask, result TelegramAgentScheduledTaskRunResult) string {
+	text := strings.TrimSpace(result.Text)
+	if text == "" {
+		text = "任务已执行完成，但没有返回内容。"
+	}
+	return strings.Join([]string{
+		"已执行 Agent 定时任务",
+		"名称：" + strings.TrimSpace(task.Name),
+		"结果：",
+		limitTelegramAgentScheduledTaskText(text),
+	}, "\n")
+}
+
 func FinishTelegramAgentScheduledTask(ctx context.Context, task models.TelegramAgentScheduledTask, result TelegramAgentScheduledTaskRunResult, runErr error, finishedAt time.Time) error {
 	if models.DB == nil {
 		return errors.New("数据库未初始化")

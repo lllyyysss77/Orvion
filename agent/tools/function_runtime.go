@@ -163,6 +163,16 @@ func ExecuteFunctionTool(ctx context.Context, runtime Runtime, chatID int64, cfg
 		return executePreparedAction(ctx, runtime, "准备 Agent 定时任务状态操作失败：", "执行 Agent 定时任务状态操作失败：", func() (telegramToolAction, error) {
 			return buildTelegramSetScheduledTaskStatusAction(ctx, chatID, args)
 		})
+	case NameRunScheduledTask:
+		task, err := findTelegramAgentScheduledTask(ctx, args.Target)
+		if err != nil {
+			return ToolResult(false, "准备执行 Agent 定时任务失败："+err.Error())
+		}
+		text, err := runtime.runScheduledTask(ctx, chatID, task)
+		if err != nil {
+			return ToolFinalResult(false, "执行 Agent 定时任务失败："+err.Error())
+		}
+		return ToolFinalResult(true, text)
 	case NameSetModelStatus:
 		if args.Enabled == nil {
 			return ToolResult(false, "缺少 enabled 参数")

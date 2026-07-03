@@ -61,5 +61,6 @@ func telegramAgentToolRuntime() agenttools.Runtime {
 			}
 			return conversationID
 		},
+		RunScheduledTask: runTelegramAgentScheduledTaskFromTool,
 	}
 }

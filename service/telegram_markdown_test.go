@@ -129,6 +129,34 @@ func TestRenderTelegramAgentMarkdownV2ConvertsSingleTitleTableToBox(t *testing.T
 	assertTelegramMarkdownBoxUsesHalfWidthPadding(t, got)
 }
 
+func TestRenderTelegramAgentMarkdownV2DoesNotNormalizeInsideCodeBlock(t *testing.T) {
+	input := strings.Join([]string{
+		"```text",
+		"| 项目 | 详情 |",
+		"|------|------|",
+		"| 错误码 | 400 |",
+		"```",
+	}, "\n")
+
+	got := renderTelegramAgentMarkdownV2(input)
+	if strings.Count(got, "```") != 2 {
+		t.Fatalf("代码块内部的表格不应生成嵌套代码块，实际为: %s", got)
+	}
+	if strings.Contains(got, "┌") || strings.Contains(got, "├") || strings.Contains(got, "└") {
+		t.Fatalf("已有代码块内部不应再次转换表格，实际为: %s", got)
+	}
+	if !strings.Contains(got, "```text\n| 项目 | 详情 |") {
+		t.Fatalf("应保留原始代码块内容，实际为: %s", got)
+	}
+}
+
+func TestRenderTelegramAgentMarkdownV2MovesEntityPaddingOutside(t *testing.T) {
+	got := renderTelegramAgentMarkdownV2("**🐾 具体情况分析： **")
+	if got != "*🐾 具体情况分析：* " {
+		t.Fatalf("粗体尾部空格应移到实体外，实际为: %q", got)
+	}
+}
+
 func assertTelegramMarkdownBoxHasNoRightBorder(t *testing.T, content string) {
 	t.Helper()
 	start := strings.Index(content, "```text\n")

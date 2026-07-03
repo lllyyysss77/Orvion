@@ -1,6 +1,11 @@
 package tools
 
-import "context"
+import (
+	"context"
+	"errors"
+
+	"github.com/racio/orvion/models"
+)
 
 const (
 	CategoryModelProvider = "model_provider"
@@ -37,6 +42,7 @@ const (
 	NameCreateScheduledTask    = "create_telegram_agent_scheduled_task"
 	NameUpdateScheduledTask    = "update_telegram_agent_scheduled_task"
 	NameSetScheduledTaskStatus = "set_telegram_agent_scheduled_task_status"
+	NameRunScheduledTask       = "run_telegram_agent_scheduled_task"
 	NameListSkills             = "list_skills"
 	NameReadSkill              = "read_skill"
 	NameRunTerminalCommand     = "run_terminal_command"
@@ -52,6 +58,7 @@ type Definition struct {
 
 type Runtime struct {
 	ResolveConversationID func(context.Context, int64) string
+	RunScheduledTask      func(context.Context, int64, models.TelegramAgentScheduledTask) (string, error)
 }
 
 func (runtime Runtime) conversationID(ctx context.Context, chatID int64) string {
@@ -59,6 +66,13 @@ func (runtime Runtime) conversationID(ctx context.Context, chatID int64) string 
 		return ""
 	}
 	return runtime.ResolveConversationID(ctx, chatID)
+}
+
+func (runtime Runtime) runScheduledTask(ctx context.Context, chatID int64, task models.TelegramAgentScheduledTask) (string, error) {
+	if runtime.RunScheduledTask == nil {
+		return "", errors.New("Agent 定时任务执行器未注入")
+	}
+	return runtime.RunScheduledTask(ctx, chatID, task)
 }
 
 type FunctionCall struct {

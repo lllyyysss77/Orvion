@@ -47,6 +47,7 @@ const (
 	telegramAgentToolCreateScheduledTask    = agenttools.NameCreateScheduledTask
 	telegramAgentToolUpdateScheduledTask    = agenttools.NameUpdateScheduledTask
 	telegramAgentToolSetScheduledTaskStatus = agenttools.NameSetScheduledTaskStatus
+	telegramAgentToolRunScheduledTask       = agenttools.NameRunScheduledTask
 	telegramAgentToolListSkills             = agenttools.NameListSkills
 	telegramAgentToolReadSkill              = agenttools.NameReadSkill
 	telegramAgentToolRunTerminalCommand     = agenttools.NameRunTerminalCommand
@@ -624,7 +625,7 @@ func telegramAgentFunctionToolSystemPrompt(ctx context.Context, cfg models.Teleg
 		"用户提到报错、错误日志、慢响应、请求失败、最近日志、timeout、panic、SQL 等排查诉求时，优先调用日志读取工具。",
 		"修改提供商配置时，provider 的 config 字段使用 config_updates 做局部修改，例如 base_url、api_key；删除配置字段使用 remove_config_keys。",
 		"新增或修改 API Key 时，allow_all=false 表示限制模型；如用户给的是模型关键词，请用 model_keywords 批量匹配模型，不要把“claude 的模型”当成单个模型名。",
-		"用户要求查看、新增、修改、启用或禁用 Agent 定时任务时，必须调用对应定时任务工具；不要只口头说明。",
+		"用户要求查看、新增、修改、启用、禁用或立即执行 Agent 定时任务时，必须调用对应定时任务工具；不要只口头说明。",
 		"不要在普通回复中泄露 api_key、token、secret、password 等敏感配置值。",
 		"Skills 使用严格三段式渐进加载：系统提示只提供启用 Skill 的 name/description 元数据；需要某个 Skill 时必须先调用 read_skill 加载 SKILL.md 正文和资源路径；需要读取 references/ 或 scripts/ 中的文件、执行脚本或写入文件时，再调用 run_terminal_command。",
 		"用户提到 skills、技能、脚本、自动化能力包、本地能力扩展，或请求匹配下方 Skill 元数据能力时，如果 Skills 工具可用，优先调用 list_skills/read_skill；不要在未 read_skill 前编造脚本参数或脚本结果。",

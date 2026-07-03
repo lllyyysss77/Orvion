@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/racio/orvion/balancers"
@@ -738,10 +739,7 @@ func renderTelegramAgentMarkdownV2(content string) string {
 			end := strings.Index(content[index+2:], "**")
 			if end >= 0 {
 				inner := content[index+2 : index+2+end]
-				if strings.TrimSpace(inner) != "" {
-					out.WriteByte('*')
-					out.WriteString(escapeTelegramMarkdownV2Text(inner))
-					out.WriteByte('*')
+				if writeTelegramMarkdownV2Entity(&out, inner, "*", "*") {
 					index += 2 + end + 2
 					continue
 				}
@@ -773,10 +771,7 @@ func renderTelegramAgentMarkdownV2(content string) string {
 			end := strings.Index(content[index+2:], "__")
 			if end >= 0 {
 				inner := content[index+2 : index+2+end]
-				if strings.TrimSpace(inner) != "" {
-					out.WriteString("__")
-					out.WriteString(escapeTelegramMarkdownV2Text(inner))
-					out.WriteString("__")
+				if writeTelegramMarkdownV2Entity(&out, inner, "__", "__") {
 					index += 2 + end + 2
 					continue
 				}
@@ -786,10 +781,7 @@ func renderTelegramAgentMarkdownV2(content string) string {
 			end := strings.Index(content[index+2:], "~~")
 			if end >= 0 {
 				inner := content[index+2 : index+2+end]
-				if strings.TrimSpace(inner) != "" {
-					out.WriteByte('~')
-					out.WriteString(escapeTelegramMarkdownV2Text(inner))
-					out.WriteByte('~')
+				if writeTelegramMarkdownV2Entity(&out, inner, "~", "~") {
 					index += 2 + end + 2
 					continue
 				}
@@ -799,10 +791,7 @@ func renderTelegramAgentMarkdownV2(content string) string {
 			end := strings.Index(content[index+2:], "||")
 			if end >= 0 {
 				inner := content[index+2 : index+2+end]
-				if strings.TrimSpace(inner) != "" {
-					out.WriteString("||")
-					out.WriteString(escapeTelegramMarkdownV2Text(inner))
-					out.WriteString("||")
+				if writeTelegramMarkdownV2Entity(&out, inner, "||", "||") {
 					index += 2 + end + 2
 					continue
 				}
@@ -812,10 +801,7 @@ func renderTelegramAgentMarkdownV2(content string) string {
 			end := findTelegramMarkdownSingleDelimiterEnd(content, index+1, '*')
 			if end >= 0 {
 				inner := content[index+1 : end]
-				if strings.TrimSpace(inner) != "" {
-					out.WriteByte('_')
-					out.WriteString(escapeTelegramMarkdownV2Text(inner))
-					out.WriteByte('_')
+				if writeTelegramMarkdownV2Entity(&out, inner, "_", "_") {
 					index = end + 1
 					continue
 				}
@@ -825,10 +811,7 @@ func renderTelegramAgentMarkdownV2(content string) string {
 			end := findTelegramMarkdownSingleDelimiterEnd(content, index+1, '_')
 			if end >= 0 {
 				inner := content[index+1 : end]
-				if strings.TrimSpace(inner) != "" {
-					out.WriteByte('_')
-					out.WriteString(escapeTelegramMarkdownV2Text(inner))
-					out.WriteByte('_')
+				if writeTelegramMarkdownV2Entity(&out, inner, "_", "_") {
 					index = end + 1
 					continue
 				}
@@ -847,9 +830,21 @@ func renderTelegramAgentMarkdownV2(content string) string {
 func normalizeTelegramAgentMarkdownBlocks(content string) string {
 	lines := strings.Split(content, "\n")
 	normalized := make([]string, 0, len(lines))
+	inCodeBlock := false
 	for index := 0; index < len(lines); {
 		line := lines[index]
 		trimmed := strings.TrimSpace(line)
+		if isTelegramMarkdownFenceLine(trimmed) {
+			normalized = append(normalized, line)
+			inCodeBlock = !inCodeBlock
+			index++
+			continue
+		}
+		if inCodeBlock {
+			normalized = append(normalized, line)
+			index++
+			continue
+		}
 		if isTelegramMarkdownTableRow(trimmed) && index+1 < len(lines) && isTelegramMarkdownTableSeparator(strings.TrimSpace(lines[index+1])) {
 			tableLines, nextIndex := collectTelegramMarkdownTableBox(lines, index)
 			if len(tableLines) > 0 {
@@ -872,6 +867,10 @@ func normalizeTelegramAgentMarkdownBlocks(content string) string {
 		index++
 	}
 	return strings.Join(normalized, "\n")
+}
+
+func isTelegramMarkdownFenceLine(line string) bool {
+	return strings.HasPrefix(strings.TrimSpace(line), "```")
 }
 
 func collectTelegramMarkdownTableBox(lines []string, start int) ([]string, int) {
@@ -1117,6 +1116,46 @@ func renderTelegramMarkdownV2CodeBlock(body string) string {
 	}
 	out.WriteString("```")
 	return out.String()
+}
+
+func writeTelegramMarkdownV2Entity(out *strings.Builder, inner string, open string, close string) bool {
+	leading, core, trailing := splitTelegramMarkdownV2EntityWhitespace(inner)
+	if core == "" {
+		return false
+	}
+	out.WriteString(escapeTelegramMarkdownV2Text(leading))
+	out.WriteString(open)
+	out.WriteString(escapeTelegramMarkdownV2Text(core))
+	out.WriteString(close)
+	out.WriteString(escapeTelegramMarkdownV2Text(trailing))
+	return true
+}
+
+func splitTelegramMarkdownV2EntityWhitespace(content string) (string, string, string) {
+	start := 0
+	for start < len(content) {
+		r, size := utf8.DecodeRuneInString(content[start:])
+		if r == utf8.RuneError && size == 0 {
+			break
+		}
+		if !unicode.IsSpace(r) {
+			break
+		}
+		start += size
+	}
+
+	end := len(content)
+	for end > start {
+		r, size := utf8.DecodeLastRuneInString(content[:end])
+		if r == utf8.RuneError && size == 0 {
+			break
+		}
+		if !unicode.IsSpace(r) {
+			break
+		}
+		end -= size
+	}
+	return content[:start], content[start:end], content[end:]
 }
 
 func splitTelegramMarkdownV2CodeBlock(body string) (string, string) {

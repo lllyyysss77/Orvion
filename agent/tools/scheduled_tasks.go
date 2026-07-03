@@ -58,5 +58,14 @@ func ScheduledTaskDefinitions() []Definition {
 			Required: []string{"target", "enabled"},
 			Category: CategoryScheduledTask,
 		},
+		{
+			Name:        NameRunScheduledTask,
+			Description: "立即执行一个已有的 Orvion TG Agent 定时任务，并把执行结果返回给当前对话。该工具不会等待任务原定时间，也不会额外推送一条独立 TG 消息。",
+			Properties: map[string]any{
+				"target": stringProperty("任务名称或 ID。"),
+			},
+			Required: []string{"target"},
+			Category: CategoryScheduledTask,
+		},
 	}
 }
