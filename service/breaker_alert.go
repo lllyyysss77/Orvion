@@ -829,6 +829,7 @@ func renderTelegramAgentMarkdownV2(content string) string {
 
 func normalizeTelegramAgentMarkdownBlocks(content string) string {
 	lines := strings.Split(content, "\n")
+	lines = repairTelegramAgentMalformedCodeFences(lines)
 	normalized := make([]string, 0, len(lines))
 	inCodeBlock := false
 	for index := 0; index < len(lines); {
@@ -867,6 +868,60 @@ func normalizeTelegramAgentMarkdownBlocks(content string) string {
 		index++
 	}
 	return strings.Join(normalized, "\n")
+}
+
+func repairTelegramAgentMalformedCodeFences(lines []string) []string {
+	if len(lines) == 0 {
+		return lines
+	}
+	repaired := make([]string, 0, len(lines))
+	for index := 0; index < len(lines); index++ {
+		line := lines[index]
+		lang, ok := parseTelegramAgentMalformedCodeFenceOpen(line)
+		if !ok {
+			repaired = append(repaired, line)
+			continue
+		}
+		closeIndex := findTelegramAgentMalformedCodeFenceClose(lines, index+1)
+		if closeIndex < 0 {
+			repaired = append(repaired, line)
+			continue
+		}
+		repaired = append(repaired, "```"+lang)
+		repaired = append(repaired, lines[index+1:closeIndex]...)
+		repaired = append(repaired, "```")
+		index = closeIndex
+	}
+	return repaired
+}
+
+func parseTelegramAgentMalformedCodeFenceOpen(line string) (string, bool) {
+	trimmed := strings.TrimSpace(line)
+	if strings.HasPrefix(trimmed, "```") {
+		return "", false
+	}
+	tickCount := 0
+	for tickCount < len(trimmed) && trimmed[tickCount] == '`' {
+		tickCount++
+	}
+	if tickCount == 0 || tickCount > 2 {
+		return "", false
+	}
+	lang := strings.TrimSpace(trimmed[tickCount:])
+	if !isTelegramMarkdownV2CodeLanguage(lang) {
+		return "", false
+	}
+	return lang, true
+}
+
+func findTelegramAgentMalformedCodeFenceClose(lines []string, start int) int {
+	for index := start; index < len(lines); index++ {
+		trimmed := strings.TrimSpace(lines[index])
+		if trimmed == "`" || trimmed == "``" || trimmed == "```" {
+			return index
+		}
+	}
+	return -1
 }
 
 func isTelegramMarkdownFenceLine(line string) bool {

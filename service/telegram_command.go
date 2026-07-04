@@ -714,7 +714,7 @@ func buildTelegramSystemStatusMessage(ctx context.Context) string {
 	processUsage := collectTelegramProcessUsage(now)
 	statusPairs := formatTelegramStatusMetricPairs([]telegramStatusMetricPair{
 		{LeftLabel: "CPU", LeftValue: fmt.Sprintf("%.2f%%", processUsage.CPUPercent), RightLabel: "内存", RightValue: formatBytesBinary(processUsage.MemoryBytes)},
-		{LeftLabel: "模型总数", LeftValue: fmt.Sprintf("%d", modelTotal), RightLabel: "  启用提供方", RightValue: fmt.Sprintf("%d", modelProviderEnabled)},
+		{LeftLabel: "模型总数", LeftValue: fmt.Sprintf("%d", modelTotal), RightLabel: "启用提供方", RightValue: fmt.Sprintf("%d", modelProviderEnabled)},
 		{LeftLabel: "请求", LeftValue: fmt.Sprintf("%d", todayReqs), RightLabel: "成功率", RightValue: fmt.Sprintf("%.2f%%", successRate)},
 		{LeftLabel: "成功", LeftValue: fmt.Sprintf("%d", todaySuccess), RightLabel: "失败", RightValue: fmt.Sprintf("%d", todayFailure)},
 	})

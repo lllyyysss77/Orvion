@@ -256,14 +256,15 @@ export default function ProvidersPage() {
     return () => controller.abort();
   }, [fetchProviders]);
 
-  const fetchProviderModels = async (providerId: number) => {
+  const fetchProviderModels = async (providerId: number, forceRefresh = false) => {
     try {
       setModelsLoading(true);
-      const data = await getProviderModels(providerId);
+      const data = await getProviderModels(providerId, { forceRefresh });
       setProviderModels(data);
       setFilteredProviderModels(data);
     } catch (err) {
       console.error("获取提供商模型失败", err);
+      toast.error(`获取提供商模型失败: ${err instanceof Error ? err.message : String(err)}`);
       setProviderModels([]);
       setFilteredProviderModels([]);
     } finally {
@@ -274,7 +275,7 @@ export default function ProvidersPage() {
   const openModelsDialog = async (providerId: number) => {
     setModelsOpen(true);
     setModelsOpenId(providerId);
-    await fetchProviderModels(providerId);
+    await fetchProviderModels(providerId, true);
   };
 
   const copyModelName = async (modelName: string) => {

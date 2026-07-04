@@ -66,11 +66,29 @@ func (o *OpenAI) BuildReq(ctx context.Context, header http.Header, model string,
 func (o *OpenAI) Models(ctx context.Context) ([]Model, error) {
 	ctx, cancel := context.WithTimeout(ctx, modelsListTimeout)
 	defer cancel()
+
+	models, err := o.models(ctx, true)
+	if err != nil {
+		return nil, err
+	}
+	if len(models) > 0 || strings.TrimSpace(o.APIKey) == "" {
+		return models, nil
+	}
+	fallbackModels, err := o.models(ctx, false)
+	if err != nil {
+		return models, nil
+	}
+	return fallbackModels, nil
+}
+
+func (o *OpenAI) models(ctx context.Context, withAPIKey bool) ([]Model, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s/models", o.BaseURL), nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", nextProviderAPIKey(o.BaseURL, o.APIKey)))
+	if withAPIKey {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", nextProviderAPIKey(o.BaseURL, o.APIKey)))
+	}
 	res, err := GetClientWithProxy(modelsListTimeout, o.ProxyURL)
 	if err != nil {
 		return nil, err

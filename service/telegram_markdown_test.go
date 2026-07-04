@@ -150,6 +150,29 @@ func TestRenderTelegramAgentMarkdownV2DoesNotNormalizeInsideCodeBlock(t *testing
 	}
 }
 
+func TestRenderTelegramAgentMarkdownV2RepairsMalformedTextCodeBlock(t *testing.T) {
+	input := strings.Join([]string{
+		"`text",
+		"┌────────────────",
+		"│ 项目 / 内容",
+		"├────────────────",
+		"│ 错误 : 401 Unauthorized",
+		"└────────────────",
+		"``",
+	}, "\n")
+
+	got := renderTelegramAgentMarkdownV2(input)
+	if !strings.Contains(got, "```text\n┌────────────────") {
+		t.Fatalf("应将 `text/`` 修复为 text 代码块，实际为: %s", got)
+	}
+	if strings.HasPrefix(got, "`text\n") {
+		t.Fatalf("不应保留损坏的代码块围栏，实际为: %s", got)
+	}
+	if strings.Count(got, "```") != 2 {
+		t.Fatalf("修复后应只有一对标准代码块围栏，实际为: %s", got)
+	}
+}
+
 func TestRenderTelegramAgentMarkdownV2MovesEntityPaddingOutside(t *testing.T) {
 	got := renderTelegramAgentMarkdownV2("**🐾 具体情况分析： **")
 	if got != "*🐾 具体情况分析：* " {

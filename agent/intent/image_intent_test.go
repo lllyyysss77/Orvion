@@ -8,6 +8,17 @@ func TestDetectTextToImagePositive(t *testing.T) {
 		"生成一只大肚皮翻滚的花猫的图片",
 		"帮我画一个赛博朋克城市",
 		"做一张海报，主题是夏天",
+		"来张小猫头像",
+		"帮我搞一张雨夜城市壁纸",
+		"出图，主题是未来办公室",
+		"做个表情包，小狗戴墨镜",
+		"设计一个科幻风封面",
+		"画张水彩风花园",
+		"我想要一张未来感城市壁纸",
+		"能不能来个Q版机器人头像",
+		"给我一张海边落日电影感照片",
+		"整一张猫猫戴墨镜的表情包",
+		"make a picture of a cute cat",
 		"txt2img: a cute cat",
 	}
 	for _, tc := range cases {
@@ -25,6 +36,11 @@ func TestDetectTextToImageNegative(t *testing.T) {
 		"识别这张图片里面有什么",
 		"生成视频给我",
 		"图标加载慢怎么修复",
+		"怎么画一张透视准确的城市图",
+		"帮我画一个接口调用流程图",
+		"图片生成接口怎么用",
+		"给我一张数据表",
+		"这个 logo 图标加载慢怎么修复",
 	}
 	for _, tc := range cases {
 		result := DetectTextToImage(tc, false)

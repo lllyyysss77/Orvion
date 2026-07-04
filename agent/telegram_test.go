@@ -312,6 +312,65 @@ func TestStreamTelegramAgentReplyRetriesDirectProvider(t *testing.T) {
 	}
 }
 
+func TestStreamTelegramAgentReplyRetriesDirectProviderOnClientError(t *testing.T) {
+	previousDB := models.DB
+	defer func() {
+		models.DB = previousDB
+	}()
+	models.DB = nil
+
+	previousExecutor := telegramAgentProviderRequestExecutor
+	defer func() {
+		telegramAgentProviderRequestExecutor = previousExecutor
+	}()
+
+	attempts := 0
+	telegramAgentProviderRequestExecutor = func(ctx context.Context, selected selectedModelProvider, body []byte, stream bool, startedAt time.Time) (*http.Response, int, error) {
+		attempts++
+		switch attempts {
+		case 1:
+			return &http.Response{
+				StatusCode: http.StatusBadRequest,
+				Header:     http.Header{},
+				Body:       io.NopCloser(strings.NewReader(`{"error":"bad request"}`)),
+			}, 5, nil
+		case 2:
+			streamBody := strings.Join([]string{
+				`data: {"choices":[{"delta":{"content":"400 后重试成功"}}]}`,
+				"",
+				`data: [DONE]`,
+				"",
+			}, "\n")
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(strings.NewReader(streamBody)),
+			}, 8, nil
+		default:
+			return nil, 0, fmt.Errorf("未预期的重试次数: %d", attempts)
+		}
+	}
+
+	var answer strings.Builder
+	result, err := streamTelegramAgentReply(context.Background(), models.TelegramAgentConfig{
+		BaseURL: "https://api.example.com/v1",
+		APIKey:  "sk-test",
+		Model:   "gpt-direct",
+	}, nil, "测试 400 重试", nil, 1, func(delta string) error {
+		answer.WriteString(delta)
+		return nil
+	}, nil)
+	if err != nil {
+		t.Fatalf("TG Agent 直连 400 后应继续重试: %v", err)
+	}
+	if answer.String() != "400 后重试成功" {
+		t.Fatalf("期望收到 400 后重试成功回复，实际为 %q", answer.String())
+	}
+	if result.Retry != 1 || attempts != 2 {
+		t.Fatalf("期望 400 后重试一次成功，retry=%d attempts=%d", result.Retry, attempts)
+	}
+}
+
 func TestTelegramSessionMessagesPersistedAndNewConversationIsolated(t *testing.T) {
 	previousDB := models.DB
 	defer func() {
