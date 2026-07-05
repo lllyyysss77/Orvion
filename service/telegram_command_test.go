@@ -59,6 +59,13 @@ func TestBuildTelegramSystemStatusMessageUsesMarkdownTemplate(t *testing.T) {
 	}
 }
 
+func TestBuildTelegramHelpMessageIncludesImageCommand(t *testing.T) {
+	message := buildTelegramHelpMessage()
+	if !strings.Contains(message, "/img <提示词>") || !strings.Contains(message, "使用生图模型生成图片") {
+		t.Fatalf("帮助信息应包含 /img 生图命令，实际为: %s", message)
+	}
+}
+
 func assertTelegramStatusRightColumnsAligned(t *testing.T, message string, labels []string) {
 	t.Helper()
 	expectedWidth := -1

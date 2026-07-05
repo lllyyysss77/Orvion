@@ -43,6 +43,12 @@ func DetectTextToImage(text string, hasAttachment bool) ImageIntentResult {
 func classifyTextToImageIntent(normalized string) (int, []string) {
 	score := 0
 	reasons := make([]string, 0, 8)
+	if isTextToImageMetaQuestion(normalized) {
+		return 0, []string{"命中生图规则讨论排除"}
+	}
+	if isWeatherQueryPrompt(normalized) {
+		return 0, []string{"命中天气查询排除"}
+	}
 	for _, rule := range textToImageHardNegativeRules {
 		if strings.Contains(normalized, rule.keyword) {
 			reasons = append(reasons, rule.reason)
@@ -163,7 +169,7 @@ var textToImagePositiveRules = []intentRule{
 	{keyword: "海报", score: 25, reason: "命中图片对象"},
 }
 
-var textToImageActionWords = []string{"生成", "画", "绘制", "制作", "创建", "做", "设计", "来", "出", "整", "搞", "弄", "给我", "帮我", "想要", "要"}
+var textToImageActionWords = []string{"生成", "画", "绘制", "制作", "创建", "做", "设计", "给我", "帮我", "想要"}
 
 var textToImageObjectWords = []string{
 	"图片", "图像", "照片", "插画", "海报", "头像", "壁纸", "封面",
@@ -178,7 +184,7 @@ var textToImageStyleHintWords = []string{
 
 var textToImageSubjectHintWords = []string{
 	"猫", "狗", "小猫", "小狗", "人物", "角色", "女孩", "男孩", "美女",
-	"机器人", "城市", "房间", "花园", "风景", "山", "海边", "宇宙",
+	"机器人", "城市", "房间", "花园", "风景", "海边", "宇宙",
 	"汽车", "机甲", "动物", "办公室", "头像", "表情包",
 }
 
@@ -236,6 +242,35 @@ func scoreTextToImageOrderedPhrase(text string) bool {
 		}
 	}
 	return false
+}
+
+func isTextToImageMetaQuestion(text string) bool {
+	if !containsAnyIntentWord(text, []string{"为什么", "为何", "怎么会", "怎么又", "误触发", "走生图", "触发生图", "生图规则"}) {
+		return false
+	}
+	return containsAnyIntentWord(text, []string{"生成图片", "生成图像", "生图", "文生图", "图片"})
+}
+
+func isWeatherQueryPrompt(text string) bool {
+	if !strings.Contains(text, "天气") {
+		return false
+	}
+	if hasExplicitTextToImageProductRequest(text) {
+		return false
+	}
+	return containsAnyIntentWord(text, []string{
+		"查询", "查找", "搜索", "获取", "推送", "今天", "当前日期", "当天",
+		"天气情况", "天气结果", "天气数据", "气温", "降雨", "雨势", "风向",
+		"风力", "空气质量", "生活指数", "出行建议",
+	})
+}
+
+func hasExplicitTextToImageProductRequest(text string) bool {
+	return containsAnyIntentWord(text, []string{
+		"生成图片", "生成图像", "生成照片", "生成壁纸", "生成头像", "生成海报", "生成插画",
+		"生成一张图片", "生成张图片", "文生图", "txt2img", "生图",
+		"画一张图片", "画张图片", "出图", "出张图", "做张图",
+	})
 }
 
 func hasTextToImageCreationTone(text string) bool {

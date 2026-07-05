@@ -647,6 +647,7 @@ func buildTelegramHelpMessage() string {
 		"📊 /status - 查看系统状态摘要",
 		"🧩 /model - 查看模型与模型提供商",
 		"🧹 /new - 开启新的 TG Agent 对话",
+		"🖼️ /img <提示词> - 使用生图模型生成图片",
 		"♻️ /restart - 重启 TG Agent 并释放连接",
 		"📘 /help - 显示帮助",
 	}, "\n")
@@ -806,6 +807,7 @@ func syncTelegramCommandList(notifier *telegramNotifier) error {
 		{Command: "status", Description: "查看系统状态摘要"},
 		{Command: "model", Description: "查看模型与模型提供商状态"},
 		{Command: "new", Description: "开启新的 TG Agent 对话"},
+		{Command: "img", Description: "使用生图模型生成图片"},
 		{Command: "restart", Description: "重启 TG Agent 并释放连接"},
 		{Command: "help", Description: "显示帮助"},
 	})

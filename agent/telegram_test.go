@@ -84,6 +84,80 @@ func TestStartTelegramTypingLoopSendsTyping(t *testing.T) {
 	}
 }
 
+func TestHandleTelegramMessageImageCommandUsesImageGeneration(t *testing.T) {
+	previousDB := models.DB
+	models.DB = nil
+	t.Cleanup(func() {
+		models.DB = previousDB
+	})
+
+	previousRunner := runTelegramAgentImageGenerationFunc
+	t.Cleanup(func() {
+		runTelegramAgentImageGenerationFunc = previousRunner
+	})
+
+	var gotPrompt string
+	var gotChatID int64
+	var gotLoadHistory bool
+	runTelegramAgentImageGenerationFunc = func(_ context.Context, _ TelegramClient, chatID int64, prompt string, _ models.TelegramAgentConfig, loadHistory bool) error {
+		gotChatID = chatID
+		gotPrompt = prompt
+		gotLoadHistory = loadHistory
+		return nil
+	}
+
+	handled, err := HandleTelegramMessage(context.Background(), &telegramToolTestClient{}, TelegramMessage{
+		ChatID: 6801293687,
+		Text:   "/img@OrvionBot 一只晒太阳的小猫",
+	})
+	if err != nil {
+		t.Fatalf("/img 生图命令处理失败: %v", err)
+	}
+	if !handled {
+		t.Fatalf("/img 命令应由 TG Agent 处理")
+	}
+	if gotChatID != 6801293687 || gotPrompt != "一只晒太阳的小猫" || !gotLoadHistory {
+		t.Fatalf("/img 生图参数不正确，chat_id=%d prompt=%q load_history=%v", gotChatID, gotPrompt, gotLoadHistory)
+	}
+}
+
+func TestHandleTelegramMessageImageCommandRequiresPrompt(t *testing.T) {
+	previousDB := models.DB
+	models.DB = nil
+	t.Cleanup(func() {
+		models.DB = previousDB
+	})
+
+	previousRunner := runTelegramAgentImageGenerationFunc
+	t.Cleanup(func() {
+		runTelegramAgentImageGenerationFunc = previousRunner
+	})
+
+	called := false
+	runTelegramAgentImageGenerationFunc = func(context.Context, TelegramClient, int64, string, models.TelegramAgentConfig, bool) error {
+		called = true
+		return nil
+	}
+
+	client := &telegramToolTestClient{}
+	handled, err := HandleTelegramMessage(context.Background(), client, TelegramMessage{
+		ChatID: 6801293687,
+		Text:   "/img",
+	})
+	if err != nil {
+		t.Fatalf("/img 空提示词处理失败: %v", err)
+	}
+	if !handled {
+		t.Fatalf("/img 空提示词也应由 TG Agent 回复用法提示")
+	}
+	if called {
+		t.Fatalf("/img 空提示词不应调用生图链路")
+	}
+	if !strings.Contains(client.lastSent(), "请在 /img 后输入生图提示词") {
+		t.Fatalf("/img 空提示词应返回用法提示，实际为: %s", client.lastSent())
+	}
+}
+
 func TestReadTelegramAgentStreamCollectsOpenAIUsage(t *testing.T) {
 	stream := strings.Join([]string{
 		`data: {"choices":[{"delta":{"content":"你"}}]}`,

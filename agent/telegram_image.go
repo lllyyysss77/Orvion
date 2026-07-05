@@ -28,6 +28,8 @@ type telegramAgentGeneratedImage struct {
 	Cleanup func()
 }
 
+var runTelegramAgentImageGenerationFunc = runTelegramAgentImageGeneration
+
 func runTelegramAgentImageGeneration(ctx context.Context, client TelegramClient, chatID int64, prompt string, cfg models.TelegramAgentConfig, loadHistory bool) error {
 	placeholderID, err := client.SendMessage(ctx, chatID, "正在生成图片...")
 	if err != nil {
