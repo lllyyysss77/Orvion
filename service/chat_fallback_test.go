@@ -3,10 +3,13 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -110,8 +113,8 @@ func TestBalanceChatInternalReturnsRetryErrorWhenNoProviderCandidates(t *testing
 	}
 }
 
-func TestBalanceChatInternalDoesNotRetryNonRetryable4xx(t *testing.T) {
-	db := setupBalanceChatRetryTestDB(t, "non_retryable_4xx")
+func TestBalanceChatInternalDoesNotRetryFallbackable4xx(t *testing.T) {
+	db := setupBalanceChatRetryTestDB(t, "fallbackable_4xx")
 	requestCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestCount++
@@ -132,15 +135,146 @@ func TestBalanceChatInternalDoesNotRetryNonRetryable4xx(t *testing.T) {
 
 	_, _, err := balanceChatInternal(nil, time.Now(), consts.StyleOpenAI, "/v1/chat/completions", before, meta, models.ReqMeta{}, false)
 	if err == nil {
-		t.Fatalf("期望 400 直接返回错误")
+		t.Fatalf("期望 400 返回可触发回退的错误")
 	}
 	if statusCode, ok := UpstreamStatusCode(err); !ok || statusCode != http.StatusBadRequest {
-		t.Fatalf("期望透传 400 不可重试错误，实际 status=%d ok=%v err=%v", statusCode, ok, err)
+		t.Fatalf("期望透传 400 上游状态，实际 status=%d ok=%v err=%v", statusCode, ok, err)
+	}
+	if !errors.Is(err, errMaximumRetryAttemptsReached) {
+		t.Fatalf("400 应触发模型回退哨兵错误，实际 err=%v", err)
 	}
 	if requestCount != 1 {
 		t.Fatalf("4xx 不应继续重试或切换提供商，实际请求次数=%d", requestCount)
 	}
 	waitForBalanceChatRetryLogRows(t, db, 1)
+}
+
+func TestBalanceChatWithFallbackUsesFallbackModelForConfigured4xx(t *testing.T) {
+	db := setupBalanceChatRetryTestDB(t, "fallback_model_for_4xx")
+	if err := db.AutoMigrate(&models.Provider{}, &models.Model{}, &models.ModelWithProvider{}); err != nil {
+		t.Fatalf("migrate fallback tables: %v", err)
+	}
+
+	primaryRequestCount := 0
+	primaryServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryRequestCount++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = fmt.Fprint(w, `{"error":{"message":"bad request","type":"invalid_request_error","code":"bad_request"}}`)
+	}))
+	t.Cleanup(primaryServer.Close)
+
+	fallbackRequestCount := 0
+	fallbackServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackRequestCount++
+		body, _ := io.ReadAll(r.Body)
+		if !strings.Contains(string(body), `"model":"fallback-upstream-model"`) {
+			t.Fatalf("回退上游请求应替换为 fallback-upstream-model，实际 body=%s", string(body))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"id":"ok","choices":[{"message":{"content":"fallback ok"}}]}`)
+	}))
+	t.Cleanup(fallbackServer.Close)
+
+	config, err := json.Marshal(map[string]string{
+		"base_url": fallbackServer.URL,
+		"api_key":  "sk-test",
+	})
+	if err != nil {
+		t.Fatalf("marshal fallback provider config: %v", err)
+	}
+	fallbackModel := models.Model{
+		Name:     "fallback-model",
+		Status:   1,
+		MaxRetry: 2,
+		TimeOut:  5,
+		Strategy: consts.BalancerRotor,
+	}
+	if err := db.Create(&fallbackModel).Error; err != nil {
+		t.Fatalf("create fallback model: %v", err)
+	}
+	fallbackProvider := models.Provider{
+		Name:   "fallback-provider",
+		Status: 1,
+		Config: string(config),
+	}
+	if err := db.Create(&fallbackProvider).Error; err != nil {
+		t.Fatalf("create fallback provider: %v", err)
+	}
+	if err := db.Create(&models.ModelWithProvider{
+		ModelID:       fallbackModel.ID,
+		ProviderID:    fallbackProvider.ID,
+		ProviderModel: "fallback-upstream-model",
+		Status:        1,
+		Weight:        1,
+	}).Error; err != nil {
+		t.Fatalf("create fallback model provider: %v", err)
+	}
+
+	meta := buildBalanceChatRetryTestMeta(t, primaryServer.URL, 1, 2)
+	meta.ModelID = 100
+	meta.FallbackModelID = fallbackModel.ID
+	before := Before{
+		Model:  "primary-model",
+		Stream: false,
+		raw:    []byte(`{"model":"primary-model","messages":[{"role":"user","content":"hi"}]}`),
+	}
+
+	res, _, effectiveBefore, _, err := balanceChatWithFallback(nil, time.Now(), consts.StyleOpenAI, "/v1/chat/completions", before, meta, models.ReqMeta{}, false, make(map[uint]struct{}))
+	if err != nil {
+		t.Fatalf("400 应触发回退模型并成功，实际 err=%v", err)
+	}
+	if res == nil || res.Body == nil {
+		t.Fatalf("期望返回回退模型成功响应")
+	}
+	_ = res.Body.Close()
+	if effectiveBefore.Model != "fallback-model" {
+		t.Fatalf("期望最终使用 fallback-model，实际=%s", effectiveBefore.Model)
+	}
+	if primaryRequestCount != 1 {
+		t.Fatalf("400 不应重试主模型，主模型请求次数=%d", primaryRequestCount)
+	}
+	if fallbackRequestCount != 1 {
+		t.Fatalf("应请求一次回退模型，实际=%d", fallbackRequestCount)
+	}
+	waitForBalanceChatRetryLogRows(t, db, 1)
+}
+
+func TestBalanceChatInternalRetries429AndContinuesProviderScheduling(t *testing.T) {
+	db := setupBalanceChatRetryTestDB(t, "retryable_429")
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if requestCount <= 2 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = fmt.Fprint(w, `{"error":{"message":"You exceeded your current quota, please check your plan and billing details.","type":"invalid_request_error","code":"insufficient_quota"}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"id":"ok","choices":[{"message":{"content":"ok"}}]}`)
+	}))
+	t.Cleanup(server.Close)
+
+	meta := buildBalanceChatRetryTestMeta(t, server.URL, 2, 3)
+	before := Before{
+		Model:  "primary-model",
+		Stream: false,
+		raw:    []byte(`{"model":"primary-model","messages":[{"role":"user","content":"hi"}]}`),
+	}
+
+	res, _, err := balanceChatInternal(nil, time.Now(), consts.StyleOpenAI, "/v1/chat/completions", before, meta, models.ReqMeta{}, false)
+	if err != nil {
+		t.Fatalf("429 应进入重试/切换提供商流程后成功，实际 err=%v", err)
+	}
+	if res == nil || res.Body == nil {
+		t.Fatalf("期望返回成功响应")
+	}
+	_ = res.Body.Close()
+	if requestCount != 3 {
+		t.Fatalf("429 应先重试当前提供商再继续调度，实际请求次数=%d", requestCount)
+	}
+	waitForBalanceChatRetryLogRows(t, db, 2)
 }
 
 func TestBalanceChatInternalRetriesRetryable5xx(t *testing.T) {

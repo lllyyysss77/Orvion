@@ -37,16 +37,57 @@ func (e *NonRetryableUpstreamStatusError) Error() string {
 	return e.Message
 }
 
+func (e *NonRetryableUpstreamStatusError) UpstreamStatusCode() int {
+	if e == nil {
+		return 0
+	}
+	return e.StatusCode
+}
+
+type FallbackUpstreamStatusError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *FallbackUpstreamStatusError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return e.Message
+}
+
+func (e *FallbackUpstreamStatusError) Unwrap() error {
+	return errMaximumRetryAttemptsReached
+}
+
+func (e *FallbackUpstreamStatusError) UpstreamStatusCode() int {
+	if e == nil {
+		return 0
+	}
+	return e.StatusCode
+}
+
 func UpstreamStatusCode(err error) (int, bool) {
-	var target *NonRetryableUpstreamStatusError
-	if errors.As(err, &target) && target != nil && target.StatusCode > 0 {
-		return target.StatusCode, true
+	var nonRetryable *NonRetryableUpstreamStatusError
+	if errors.As(err, &nonRetryable) && nonRetryable.UpstreamStatusCode() > 0 {
+		return nonRetryable.UpstreamStatusCode(), true
+	}
+	var fallback *FallbackUpstreamStatusError
+	if errors.As(err, &fallback) && fallback.UpstreamStatusCode() > 0 {
+		return fallback.UpstreamStatusCode(), true
 	}
 	return 0, false
 }
 
 func newNonRetryableUpstreamStatusError(statusCode int, message string) *NonRetryableUpstreamStatusError {
 	return &NonRetryableUpstreamStatusError{
+		StatusCode: statusCode,
+		Message:    message,
+	}
+}
+
+func newFallbackUpstreamStatusError(statusCode int, message string) *FallbackUpstreamStatusError {
+	return &FallbackUpstreamStatusError{
 		StatusCode: statusCode,
 		Message:    message,
 	}
@@ -355,7 +396,12 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, requestP
 						"global_attempt", attempt,
 					)
 
-					// 4xx 属于客户端请求或权限问题，直接返回给调用方，不切换提供商也不进入模型回退。
+					// 指定 4xx 不重试当前模型，直接进入模型回退；若未配置回退模型，则保留原状态返回。
+					if runtimesvc.IsFallbackStatus(res.StatusCode) {
+						return nil, nil, newFallbackUpstreamStatusError(res.StatusCode, errorMessage)
+					}
+					// 其他不可重试 4xx 属于客户端请求或权限问题，直接返回给调用方。
+					// 429 常见于限流或配额耗尽，需要进入提供商降权、切换和模型回退流程。
 					if !runtimesvc.IsRetryableStatus(res.StatusCode) {
 						return nil, nil, newNonRetryableUpstreamStatusError(res.StatusCode, errorMessage)
 					}

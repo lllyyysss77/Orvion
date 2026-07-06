@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net/http"
 	"strings"
 
 	"github.com/racio/orvion/balancers"
@@ -31,7 +32,23 @@ func NewBalancer(strategy string, breaker bool, weightItems map[uint]int) balanc
 }
 
 func IsRetryableStatus(code int) bool {
+	if code == 429 {
+		return true
+	}
 	return code >= 500 && code <= 599
+}
+
+func IsFallbackStatus(code int) bool {
+	switch code {
+	case http.StatusBadRequest,
+		http.StatusUnauthorized,
+		http.StatusForbidden,
+		http.StatusNotFound,
+		http.StatusUnprocessableEntity:
+		return true
+	default:
+		return false
+	}
 }
 
 func LoadForwardedIPOverrideConfig(ctx context.Context) (models.ForwardedIPOverrideConfig, bool) {
