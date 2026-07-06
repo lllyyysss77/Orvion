@@ -28,6 +28,7 @@ const (
 	telegramPhotoHTTPTimeout       = 35 * time.Second
 	telegramRequestRetryMaxAttempt = 3
 	telegramRequestRetryDelay      = 800 * time.Millisecond
+	telegramMarkdownBoxBorderMax   = 33
 )
 
 var ErrTelegramNotifierNotConfigured = errors.New("telegram 告警未启用或配置不完整")
@@ -750,6 +751,10 @@ func renderTelegramAgentMarkdownV2(content string) string {
 			if end >= 0 {
 				inner := content[index+1 : index+1+end]
 				if strings.TrimSpace(inner) != "" {
+					if writeTelegramMarkdownV2EntityFromInlineCode(&out, inner) {
+						index += 1 + end + 1
+						continue
+					}
 					out.WriteByte('`')
 					out.WriteString(escapeTelegramMarkdownV2CodeText(inner))
 					out.WriteByte('`')
@@ -827,6 +832,14 @@ func renderTelegramAgentMarkdownV2(content string) string {
 	return out.String()
 }
 
+func writeTelegramMarkdownV2EntityFromInlineCode(out *strings.Builder, inner string) bool {
+	trimmed := strings.TrimSpace(inner)
+	if strings.HasPrefix(trimmed, "**") && strings.HasSuffix(trimmed, "**") && len(trimmed) > 4 {
+		return writeTelegramMarkdownV2Entity(out, strings.TrimSpace(trimmed[2:len(trimmed)-2]), "*", "*")
+	}
+	return false
+}
+
 func normalizeTelegramAgentMarkdownBlocks(content string) string {
 	lines := strings.Split(content, "\n")
 	lines = repairTelegramAgentMalformedCodeFences(lines)
@@ -846,10 +859,26 @@ func normalizeTelegramAgentMarkdownBlocks(content string) string {
 			index++
 			continue
 		}
+		if isTelegramMarkdownBlockQuoteLine(trimmed) {
+			quoteLines, nextIndex := collectTelegramMarkdownBlockQuoteCard(lines, index)
+			if len(quoteLines) > 0 {
+				normalized = append(normalized, quoteLines...)
+				index = nextIndex
+				continue
+			}
+		}
 		if isTelegramMarkdownTableRow(trimmed) && index+1 < len(lines) && isTelegramMarkdownTableSeparator(strings.TrimSpace(lines[index+1])) {
 			tableLines, nextIndex := collectTelegramMarkdownTableBox(lines, index)
 			if len(tableLines) > 0 {
 				normalized = append(normalized, tableLines...)
+				index = nextIndex
+				continue
+			}
+		}
+		if isTelegramBoxDrawingBlockStart(trimmed) {
+			boxLines, nextIndex := collectTelegramBareBoxDrawingBlock(lines, index)
+			if len(boxLines) > 0 {
+				normalized = append(normalized, boxLines...)
 				index = nextIndex
 				continue
 			}
@@ -868,6 +897,194 @@ func normalizeTelegramAgentMarkdownBlocks(content string) string {
 		index++
 	}
 	return strings.Join(normalized, "\n")
+}
+
+func collectTelegramMarkdownBlockQuoteCard(lines []string, start int) ([]string, int) {
+	index := start
+	raw := make([]string, 0, 4)
+	for index < len(lines) {
+		trimmed := strings.TrimSpace(lines[index])
+		if !isTelegramMarkdownBlockQuoteLine(trimmed) {
+			break
+		}
+		raw = append(raw, strings.TrimSpace(strings.TrimPrefix(trimmed, ">")))
+		index++
+	}
+	if len(raw) == 0 {
+		return nil, start
+	}
+
+	title := ""
+	titleLine := ""
+	items := make([]string, 0, len(raw))
+	plain := make([]string, 0, len(raw))
+	for _, line := range raw {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if item, ok := parseTelegramMarkdownQuoteListItem(line); ok {
+			items = append(items, item)
+			continue
+		}
+		if title == "" && len(items) == 0 && len(plain) == 0 {
+			titleLine = line
+			title = strings.TrimRight(strings.TrimSpace(line), "：:")
+			continue
+		}
+		plain = append(plain, line)
+	}
+
+	if len(items) == 0 {
+		out := make([]string, 0, len(plain)+1)
+		if titleLine != "" {
+			out = append(out, "• "+titleLine)
+		}
+		for _, line := range plain {
+			out = append(out, "• "+line)
+		}
+		if len(out) == 0 {
+			return nil, start
+		}
+		return out, index
+	}
+
+	out := make([]string, 0, len(items)+len(plain)+2)
+	if title != "" {
+		out = append(out, title)
+		if len(items) > 0 || len(plain) > 0 {
+			out = append(out, "━━━━━━━━━━━━")
+		}
+	}
+	for _, line := range plain {
+		out = append(out, line)
+	}
+	for _, item := range items {
+		out = append(out, "• "+item)
+	}
+	if len(out) == 0 {
+		return nil, start
+	}
+	return out, index
+}
+
+func isTelegramMarkdownBlockQuoteLine(line string) bool {
+	return strings.HasPrefix(strings.TrimSpace(line), ">")
+}
+
+func parseTelegramMarkdownQuoteListItem(line string) (string, bool) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return "", false
+	}
+	for _, prefix := range []string{"- ", "* ", "+ ", "• "} {
+		if strings.HasPrefix(line, prefix) {
+			item := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+			item = trimTelegramMarkdownQuoteListStatusIcon(item)
+			if item == "" {
+				return "", false
+			}
+			return item, true
+		}
+	}
+	return "", false
+}
+
+func trimTelegramMarkdownQuoteListStatusIcon(item string) string {
+	item = strings.TrimSpace(item)
+	for _, icon := range []string{"❌", "✅", "⚠️", "⚠", "🚫"} {
+		item = strings.TrimSpace(strings.TrimPrefix(item, icon))
+	}
+	return item
+}
+
+func collectTelegramBareBoxDrawingBlock(lines []string, start int) ([]string, int) {
+	index := start
+	body := make([]string, 0, 8)
+	hasEnd := false
+	for index < len(lines) {
+		line := lines[index]
+		trimmed := strings.TrimSpace(line)
+		if !isTelegramBoxDrawingLine(trimmed) {
+			break
+		}
+		body = append(body, line)
+		if isTelegramBoxDrawingBlockEnd(trimmed) {
+			hasEnd = true
+			index++
+			break
+		}
+		index++
+	}
+	if !hasEnd || len(body) < 3 {
+		return nil, start
+	}
+	body = normalizeTelegramBareBoxDrawingLines(body)
+	out := make([]string, 0, len(body)+2)
+	out = append(out, "```text")
+	out = append(out, body...)
+	out = append(out, "```")
+	return out, index
+}
+
+func normalizeTelegramBareBoxDrawingLines(lines []string) []string {
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		out = append(out, normalizeTelegramBoxDrawingBorderLine(line))
+	}
+	return out
+}
+
+func normalizeTelegramBoxDrawingBorderLine(line string) string {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return line
+	}
+	runes := []rune(trimmed)
+	if len(runes) < 2 {
+		return line
+	}
+	if !isTelegramBoxDrawingBorderStartRune(runes[0]) {
+		return line
+	}
+	borderWidth := 0
+	for _, r := range runes[1:] {
+		if r != '─' && r != '━' && r != '═' && !isTelegramBoxDrawingBorderEndRune(r) {
+			return line
+		}
+		if r == '─' || r == '━' || r == '═' {
+			borderWidth++
+		}
+	}
+	return string(runes[0]) + telegramMarkdownBoxBorder(borderWidth)
+}
+
+func isTelegramBoxDrawingBorderStartRune(r rune) bool {
+	return r == '┌' || r == '┏' || r == '╭' || r == '╔' || r == '├' || r == '┣' || r == '╞' || r == '╟' || r == '╠' || r == '└' || r == '┗' || r == '╰' || r == '╚'
+}
+
+func isTelegramBoxDrawingBorderEndRune(r rune) bool {
+	return r == '┐' || r == '┓' || r == '╮' || r == '╗' || r == '┤' || r == '┫' || r == '╡' || r == '╢' || r == '╣' || r == '┘' || r == '┛' || r == '╯' || r == '╝'
+}
+
+func isTelegramBoxDrawingBlockStart(line string) bool {
+	return strings.HasPrefix(line, "┌") || strings.HasPrefix(line, "┏") || strings.HasPrefix(line, "╭") || strings.HasPrefix(line, "╔")
+}
+
+func isTelegramBoxDrawingBlockEnd(line string) bool {
+	return strings.HasPrefix(line, "└") || strings.HasPrefix(line, "┗") || strings.HasPrefix(line, "╰") || strings.HasPrefix(line, "╚")
+}
+
+func isTelegramBoxDrawingLine(line string) bool {
+	if line == "" {
+		return false
+	}
+	for _, prefix := range []string{"┌", "┏", "╭", "╔", "├", "┣", "╞", "╟", "╠", "│", "┃", "║", "└", "┗", "╰", "╚"} {
+		if strings.HasPrefix(line, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func repairTelegramAgentMalformedCodeFences(lines []string) []string {
@@ -1003,7 +1220,7 @@ func renderTelegramMarkdownTableBox(header []string, rows [][]string) []string {
 		contentWidth = 1
 	}
 
-	border := strings.Repeat("─", contentWidth+2)
+	border := telegramMarkdownBoxBorder(contentWidth + 2)
 	out := make([]string, 0, len(body)+4)
 	out = append(out, "┌"+border)
 	if strings.TrimSpace(title) != "" {
@@ -1015,6 +1232,16 @@ func renderTelegramMarkdownTableBox(header []string, rows [][]string) []string {
 	}
 	out = append(out, "└"+border)
 	return out
+}
+
+func telegramMarkdownBoxBorder(width int) string {
+	if width < 1 {
+		width = 1
+	}
+	if width > telegramMarkdownBoxBorderMax {
+		width = telegramMarkdownBoxBorderMax
+	}
+	return strings.Repeat("─", width)
 }
 
 func parseTelegramMarkdownTableCells(line string) []string {
@@ -1144,17 +1371,43 @@ func parseTelegramMarkdownLink(content string, index int) (string, string, int, 
 	if textEnd+1 >= len(content) || content[textEnd+1] != '(' {
 		return "", "", 0, false
 	}
-	linkEnd := strings.IndexByte(content[textEnd+2:], ')')
+	linkEnd := findTelegramMarkdownLinkURLClose(content, textEnd+2)
 	if linkEnd < 0 {
 		return "", "", 0, false
 	}
-	linkEnd += textEnd + 2
 	text := content[index+1 : textEnd]
 	link := content[textEnd+2 : linkEnd]
 	if strings.TrimSpace(text) == "" || strings.TrimSpace(link) == "" {
 		return "", "", 0, false
 	}
 	return text, strings.TrimSpace(link), linkEnd - index + 1, true
+}
+
+func findTelegramMarkdownLinkURLClose(content string, start int) int {
+	depth := 0
+	escaped := false
+	for index := start; index < len(content); index++ {
+		c := content[index]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if c == '\\' {
+			escaped = true
+			continue
+		}
+		if c == '(' {
+			depth++
+			continue
+		}
+		if c == ')' {
+			if depth == 0 {
+				return index
+			}
+			depth--
+		}
+	}
+	return -1
 }
 
 func renderTelegramMarkdownV2CodeBlock(body string) string {
