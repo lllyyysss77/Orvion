@@ -1,17 +1,21 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { type MouseEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
   ChevronRight,
   FileCode2,
   FileText,
   Folder,
   FolderInput,
+  Loader2,
   RefreshCw,
   Save,
   Search,
+  ShieldCheck,
   Sparkles,
   Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -43,6 +47,7 @@ import {
   type SkillFileContent,
   type SkillFileNode,
   type SkillItem,
+  type SkillSecurityReviewResult,
   type TelegramAgentConfig,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -80,6 +85,10 @@ export default function SkillsPage() {
   const [savingFile, setSavingFile] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<SkillItem | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [reviewLoadingSkill, setReviewLoadingSkill] = useState<string | null>(null);
+  const [reviewResult, setReviewResult] = useState<SkillSecurityReviewResult | null>(null);
+  const [reviewError, setReviewError] = useState("");
   const zipInputRef = useRef<HTMLInputElement | null>(null);
 
   const loadConfig = useCallback(async () => {
@@ -271,6 +280,25 @@ export default function SkillsPage() {
     }
   };
 
+  const handleReviewSkill = async (skill: SkillItem, event?: MouseEvent<HTMLButtonElement>) => {
+    event?.stopPropagation();
+    setReviewOpen(true);
+    setReviewResult(null);
+    setReviewError("");
+    try {
+      setReviewLoadingSkill(skill.name);
+      const result = await skillAPI.review(skill.name);
+      setReviewResult(result);
+      toast.success(`${skill.name} 审查完成`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "审查 Skill 失败";
+      setReviewError(message);
+      toast.error(message);
+    } finally {
+      setReviewLoadingSkill(null);
+    }
+  };
+
   const handleUploadSkill = async () => {
     if (uploadFiles.length === 0) {
       toast.error("请先选择 ZIP 压缩包");
@@ -387,11 +415,29 @@ export default function SkillsPage() {
                       </p>
                     </div>
                   </div>
-                  <Switch
-                    checked={skill.enabled}
-                    onClick={(event) => event.stopPropagation()}
-                    onCheckedChange={(checked) => void handleToggleSkill(skill, checked)}
-                  />
+                  <div className="flex shrink-0 items-center gap-1">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="size-8 rounded-lg text-muted-foreground hover:bg-emerald-500/10 hover:text-emerald-700"
+                      title="安全审查"
+                      aria-label={`审查 ${skill.name}`}
+                      disabled={reviewLoadingSkill !== null}
+                      onClick={(event) => void handleReviewSkill(skill, event)}
+                    >
+                      {reviewLoadingSkill === skill.name ? (
+                        <Loader2 className="size-4 animate-spin" />
+                      ) : (
+                        <ShieldCheck className="size-4" />
+                      )}
+                    </Button>
+                    <Switch
+                      checked={skill.enabled}
+                      onClick={(event) => event.stopPropagation()}
+                      onCheckedChange={(checked) => void handleToggleSkill(skill, checked)}
+                    />
+                  </div>
                 </div>
                 <div className="mt-4 flex flex-wrap items-center gap-1.5">
                   <Badge variant={skill.enabled ? "default" : "secondary"} className="rounded-md">
@@ -522,6 +568,72 @@ export default function SkillsPage() {
               关闭
             </Button>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={reviewOpen} onOpenChange={setReviewOpen}>
+        <DialogContent className="flex max-h-[82vh] w-[92vw] !max-w-4xl flex-col overflow-hidden p-0">
+          <DialogHeader className="border-b border-border/60 px-5 py-4 pr-12">
+            <DialogTitle>Skill 安全审查</DialogTitle>
+          </DialogHeader>
+          <div className="min-h-0 flex-1 overflow-y-auto p-5">
+            {reviewLoadingSkill ? (
+              <div className="flex h-56 flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
+                <Loader2 className="size-6 animate-spin text-emerald-600" />
+                <span>正在审查 {reviewLoadingSkill}...</span>
+              </div>
+            ) : reviewError ? (
+              <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                {reviewError}
+              </div>
+            ) : reviewResult ? (
+              <div className="space-y-4">
+                <div className="rounded-lg border border-border/60 bg-muted/20 p-4">
+                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-semibold">{reviewResult.skill}</div>
+                      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                        <span>模型：{reviewResult.model || "--"}</span>
+                        <span>时间：{formatReviewDateTime(reviewResult.reviewed_at)}</span>
+                      </div>
+                    </div>
+                    <Badge className={cn("rounded-md", skillReviewRiskClassName(reviewResult.risk_level))}>
+                      风险：{reviewResult.risk_level || "未知"}
+                    </Badge>
+                  </div>
+                  {reviewResult.files.length > 0 ? (
+                    <div className="mt-3">
+                      <div className="mb-2 text-xs text-muted-foreground">审查文件</div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {reviewResult.files.map((file) => (
+                          <Badge
+                            key={file.path}
+                            variant="outline"
+                            className="max-w-full rounded-md font-mono text-[11px]"
+                            title={`${file.path} · ${formatBytes(file.size)}${file.truncated ? " · 已截断" : ""}`}
+                          >
+                            <span className="max-w-[16rem] truncate">{file.path}</span>
+                            <span className="ml-1 text-muted-foreground">· {formatBytes(file.size)}</span>
+                            {file.truncated ? <span className="ml-1 text-amber-600">已截断</span> : null}
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+                <SkillReviewMarkdown value={reviewResult.content} />
+              </div>
+            ) : (
+              <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">
+                选择一个 Skill 后开始审查
+              </div>
+            )}
+          </div>
+          <DialogFooter className="border-t border-border/60 px-5 py-3">
+            <Button type="button" variant="outline" className="h-9" onClick={() => setReviewOpen(false)}>
+              关闭
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
@@ -656,6 +768,67 @@ function SkillFileTree({
   );
 }
 
+function SkillReviewMarkdown({ value }: { value: string }) {
+  return (
+    <div className="min-h-64 rounded-lg border border-border/60 bg-background p-4 text-sm leading-6 text-foreground">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          h1: ({ children }) => <h1 className="mb-3 text-lg font-semibold leading-7">{children}</h1>,
+          h2: ({ children }) => <h2 className="mb-3 text-base font-semibold leading-6">{children}</h2>,
+          h3: ({ children }) => <h3 className="mb-2 text-sm font-semibold leading-6">{children}</h3>,
+          p: ({ children }) => <p className="mb-3 leading-6 last:mb-0">{children}</p>,
+          ul: ({ children }) => <ul className="mb-3 list-disc space-y-1 pl-5">{children}</ul>,
+          ol: ({ children }) => <ol className="mb-3 list-decimal space-y-1 pl-5">{children}</ol>,
+          blockquote: ({ children }) => (
+            <blockquote className="mb-3 border-l-2 border-emerald-500/50 pl-3 text-muted-foreground">
+              {children}
+            </blockquote>
+          ),
+          pre: ({ children }) => (
+            <pre className="mb-3 overflow-x-auto rounded-lg border border-border/60 bg-muted/60 p-3 text-xs leading-5">
+              {children}
+            </pre>
+          ),
+          code: ({ className, children, ...props }) => {
+            const isBlock = typeof className === "string" && className.includes("language-");
+            return (
+              <code
+                className={cn(
+                  "font-mono",
+                  isBlock
+                    ? "text-xs"
+                    : "rounded bg-muted px-1.5 py-0.5 text-[0.92em] text-foreground",
+                )}
+                {...props}
+              >
+                {children}
+              </code>
+            );
+          },
+          table: ({ children }) => (
+            <div className="mb-3 overflow-x-auto rounded-lg border border-border/60">
+              <table className="w-full min-w-max border-collapse text-xs">{children}</table>
+            </div>
+          ),
+          th: ({ children }) => (
+            <th className="border-b border-r border-border/60 bg-muted/60 px-3 py-2 text-left font-semibold last:border-r-0">
+              {children}
+            </th>
+          ),
+          td: ({ children }) => (
+            <td className="border-b border-r border-border/60 px-3 py-2 align-top last:border-r-0">
+              {children}
+            </td>
+          ),
+        }}
+      >
+        {value || "暂无审查报告"}
+      </ReactMarkdown>
+    </div>
+  );
+}
+
 function findFirstSkillFile(nodes: SkillFileNode[]): SkillFileNode | null {
   for (const node of nodes) {
     if (node.kind === "file" && ["skill.md", "skills.md"].includes(node.name.toLowerCase())) {
@@ -687,4 +860,30 @@ function formatBytes(size: number): string {
     return `${(size / 1024).toFixed(1)} KB`;
   }
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function formatReviewDateTime(value: string): string {
+  if (!value) {
+    return "--";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "--";
+  }
+  return date.toLocaleString();
+}
+
+function skillReviewRiskClassName(level: string): string {
+  switch (level) {
+    case "严重":
+      return "border-red-600 bg-red-600 text-white hover:bg-red-600/90";
+    case "高":
+      return "border-orange-500 bg-orange-500 text-white hover:bg-orange-500/90";
+    case "中":
+      return "border-amber-500 bg-amber-500 text-white hover:bg-amber-500/90";
+    case "低":
+      return "border-emerald-500 bg-emerald-500 text-white hover:bg-emerald-500/90";
+    default:
+      return "border-border bg-secondary text-secondary-foreground hover:bg-secondary";
+  }
 }

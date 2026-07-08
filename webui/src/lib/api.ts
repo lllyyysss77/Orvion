@@ -1075,6 +1075,21 @@ export interface SkillDeleteResponse {
   message: string;
 }
 
+export interface SkillSecurityReviewFile {
+  path: string;
+  size: number;
+  truncated: boolean;
+}
+
+export interface SkillSecurityReviewResult {
+  skill: string;
+  model: string;
+  risk_level: string;
+  reviewed_at: string;
+  files: SkillSecurityReviewFile[];
+  content: string;
+}
+
 export interface SkillListResponse {
   skills: SkillItem[];
   total: number;
@@ -1117,6 +1132,27 @@ const normalizeSkillFileNode = (raw: unknown): SkillFileNode => {
     size: typeof record.size === "number" ? record.size : 0,
     modified_at: typeof record.modified_at === "string" ? record.modified_at : "",
     children: Array.isArray(record.children) ? record.children.map(normalizeSkillFileNode) : [],
+  };
+};
+
+const normalizeSkillSecurityReviewFile = (raw: unknown): SkillSecurityReviewFile => {
+  const record = asRecord(raw);
+  return {
+    path: typeof record.path === "string" ? record.path : "",
+    size: typeof record.size === "number" ? record.size : 0,
+    truncated: toBoolean(record.truncated),
+  };
+};
+
+const normalizeSkillSecurityReviewResult = (raw: unknown): SkillSecurityReviewResult => {
+  const record = asRecord(raw);
+  return {
+    skill: typeof record.skill === "string" ? record.skill : "",
+    model: typeof record.model === "string" ? record.model : "",
+    risk_level: typeof record.risk_level === "string" ? record.risk_level : "未知",
+    reviewed_at: typeof record.reviewed_at === "string" ? record.reviewed_at : "",
+    files: Array.isArray(record.files) ? record.files.map(normalizeSkillSecurityReviewFile) : [],
+    content: typeof record.content === "string" ? record.content : "",
   };
 };
 
@@ -1196,6 +1232,11 @@ export const skillAPI = {
 
   get: (name: string) =>
     apiRequest<SkillItem>(`/skills/detail/${encodeURIComponent(name)}`).then(normalizeSkillItem),
+
+  review: (name: string) =>
+    apiRequest<SkillSecurityReviewResult>(`/skills/detail/${encodeURIComponent(name)}/review`, {
+      method: "POST",
+    }).then(normalizeSkillSecurityReviewResult),
 
   files: (name: string) =>
     apiRequest<SkillFileTreeResponse>(`/skills/detail/${encodeURIComponent(name)}/files`).then(normalizeSkillFileTreeResponse),

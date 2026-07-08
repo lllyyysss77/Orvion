@@ -243,6 +243,7 @@ func registerSkillRoutes(api *gin.RouterGroup) {
 	api.GET("/skills/detail/:name/files", adminhandler.GetSkillFiles)
 	api.GET("/skills/detail/:name/file-content", adminhandler.GetSkillFileContent)
 	api.GET("/skills/detail/:name", adminhandler.GetSkill)
+	api.POST("/skills/detail/:name/review", adminhandler.ReviewSkillSecurity)
 	api.PUT("/skills/detail/:name/file-content", adminhandler.UpdateSkillFileContent)
 	api.DELETE("/skills/detail/:name", adminhandler.DeleteSkill)
 	api.POST("/skills/reload", adminhandler.ReloadSkills)

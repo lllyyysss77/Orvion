@@ -60,6 +60,26 @@ func GetSkill(c *gin.Context) {
 	common.Success(c, result)
 }
 
+// ReviewSkillSecurity 调用模型审查指定 Skill 的系统安全风险。
+func ReviewSkillSecurity(c *gin.Context) {
+	name := strings.TrimSpace(c.Param("name"))
+	if name == "" {
+		common.BadRequest(c, "Skill 名称不能为空")
+		return
+	}
+	cfg, err := agent.LoadTelegramAgentConfig(c.Request.Context())
+	if err != nil {
+		common.InternalServerError(c, err.Error())
+		return
+	}
+	result, err := agenttools.ReviewTelegramAgentSkillSecurity(c.Request.Context(), cfg, name)
+	if err != nil {
+		common.BadRequest(c, err.Error())
+		return
+	}
+	common.Success(c, result)
+}
+
 // GetSkillFiles 返回指定 Skill 目录下的文件树。
 func GetSkillFiles(c *gin.Context) {
 	name := strings.TrimSpace(c.Param("name"))
