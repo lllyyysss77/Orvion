@@ -279,6 +279,79 @@ func TestReadTelegramAgentOpenAIStreamWithToolsFlushesContentOnlyWithoutToolCall
 	}
 }
 
+func TestStopTelegramReplySetsFlagWithoutSessionLock(t *testing.T) {
+	chatID := int64(6801293801)
+	session := getTelegramSession(chatID)
+	session.mu.Lock()
+	beginTelegramSessionReply(session)
+
+	stopped := make(chan bool, 1)
+	go func() {
+		stopped <- StopTelegramReply(chatID)
+	}()
+
+	select {
+	case ok := <-stopped:
+		if !ok {
+			t.Fatalf("/stop 应命中正在运行的回复")
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("/stop 不应等待会话消息锁")
+	}
+	if !telegramSessionReplyStopped(session) {
+		t.Fatalf("/stop 后应设置停止标记")
+	}
+	finishTelegramSessionReply(session)
+	session.mu.Unlock()
+	telegramSessions.Delete(chatID)
+}
+
+func TestStreamTelegramAgentReplyStopsBetweenAPICalls(t *testing.T) {
+	previousDB := models.DB
+	defer func() {
+		models.DB = previousDB
+	}()
+	models.DB = nil
+
+	previousExecutor := telegramAgentProviderRequestExecutor
+	defer func() {
+		telegramAgentProviderRequestExecutor = previousExecutor
+	}()
+
+	telegramAgentProviderRequestExecutor = func(ctx context.Context, selected selectedModelProvider, body []byte, stream bool, startedAt time.Time) (*http.Response, int, error) {
+		streamBody := strings.Join([]string{
+			`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read_system_logs","arguments":"{\"level\":\"ERROR\"}"}}]}}]}`,
+			"",
+			`data: [DONE]`,
+			"",
+		}, "\n")
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader(streamBody)),
+		}, 5, nil
+	}
+
+	checks := 0
+	result, err := streamTelegramAgentReply(context.Background(), models.TelegramAgentConfig{
+		BaseURL: "https://api.example.com/v1",
+		APIKey:  "sk-test",
+		Model:   "gpt-direct",
+	}, nil, "查错误日志", nil, 1, func() bool {
+		checks++
+		return checks > 1
+	}, func(delta string) error {
+		t.Fatalf("停止后不应输出普通文本: %s", delta)
+		return nil
+	}, nil)
+	if !errors.Is(err, errTelegramAgentReplyStopped) {
+		t.Fatalf("期望 API 间软中断错误，实际: %v", err)
+	}
+	if result.Size == 0 {
+		t.Fatalf("应先完成当前 API 流读取，再在下一步中断")
+	}
+}
+
 func TestBuildTelegramAgentDirectProviderPoolUsesDirectConfig(t *testing.T) {
 	previousDB := models.DB
 	defer func() {
@@ -368,7 +441,7 @@ func TestStreamTelegramAgentReplyRetriesDirectProvider(t *testing.T) {
 		BaseURL: "https://api.example.com/v1",
 		APIKey:  "sk-test",
 		Model:   "gpt-direct",
-	}, nil, "测试重试", nil, 1, func(delta string) error {
+	}, nil, "测试重试", nil, 1, nil, func(delta string) error {
 		answer.WriteString(delta)
 		return nil
 	}, nil)
@@ -430,7 +503,7 @@ func TestStreamTelegramAgentReplyRetriesDirectProviderOnClientError(t *testing.T
 		BaseURL: "https://api.example.com/v1",
 		APIKey:  "sk-test",
 		Model:   "gpt-direct",
-	}, nil, "测试 400 重试", nil, 1, func(delta string) error {
+	}, nil, "测试 400 重试", nil, 1, nil, func(delta string) error {
 		answer.WriteString(delta)
 		return nil
 	}, nil)
@@ -1204,6 +1277,12 @@ func TestTelegramAgentToolCallsNeedResultSummary(t *testing.T) {
 	}}) {
 		t.Fatalf("普通查询工具不应触发脚本结果整理状态")
 	}
+	summaryStatus := telegramAgentToolResultSummaryStatus()
+	if !strings.Contains(summaryStatus, "工具结果整理中") ||
+		!strings.Contains(summaryStatus, "类型：结果汇总") ||
+		!strings.Contains(summaryStatus, "动作：正在分析输出并生成最终回复") {
+		t.Fatalf("结果整理状态内容不完整: %s", summaryStatus)
+	}
 }
 
 func TestTelegramAgentToolRunningStatus(t *testing.T) {
@@ -1213,7 +1292,10 @@ func TestTelegramAgentToolRunningStatus(t *testing.T) {
 			Arguments: `{"query":"广州天气"}`,
 		},
 	})
-	if !strings.Contains(searchText, "正在查找 广州天气") {
+	if !strings.Contains(searchText, "工具调用中") ||
+		!strings.Contains(searchText, "类型：Skills 管理") ||
+		!strings.Contains(searchText, "动作：正在查找") ||
+		!strings.Contains(searchText, "目标：广州天气") {
 		t.Fatalf("期望显示 Skill 查找状态，实际为: %s", searchText)
 	}
 
@@ -1223,7 +1305,10 @@ func TestTelegramAgentToolRunningStatus(t *testing.T) {
 			Arguments: `{"skill":"ultimate-search","command":"bash","command_args":["dual-search.sh","--query","广州天气"]}`,
 		},
 	})
-	if !strings.Contains(runText, "ultimate-search") || !strings.Contains(runText, "正在搜索 广州天气") {
+	if !strings.Contains(runText, "工具：`ultimate-search`") ||
+		!strings.Contains(runText, "类型：搜索检索") ||
+		!strings.Contains(runText, "动作：正在搜索") ||
+		!strings.Contains(runText, "目标：广州天气") {
 		t.Fatalf("期望显示命令搜索状态，实际为: %s", runText)
 	}
 
@@ -1233,7 +1318,9 @@ func TestTelegramAgentToolRunningStatus(t *testing.T) {
 			Arguments: `{"command":"bash","command_args":["sync.sh"]}`,
 		},
 	})
-	if !strings.Contains(commandText, "bash") || !strings.Contains(commandText, "正在运行") {
+	if !strings.Contains(commandText, "工具：`bash`") ||
+		!strings.Contains(commandText, "类型：本地命令") ||
+		!strings.Contains(commandText, "动作：正在运行") {
 		t.Fatalf("期望显示命令运行状态，实际为: %s", commandText)
 	}
 
@@ -1243,7 +1330,11 @@ func TestTelegramAgentToolRunningStatus(t *testing.T) {
 			Arguments: `{"skill":"local-z-image-turbo","command":"python3","command_args":["scripts/generate.py","--query","一只小猫"]}`,
 		},
 	})
-	if !strings.Contains(imageText, "local-z-image-turbo") || !strings.Contains(imageText, "正在生成图片 一只小猫") || strings.Contains(imageText, "正在搜索") {
+	if !strings.Contains(imageText, "工具：`local-z-image-turbo`") ||
+		!strings.Contains(imageText, "类型：图片生成") ||
+		!strings.Contains(imageText, "动作：正在生成图片") ||
+		!strings.Contains(imageText, "目标：一只小猫") ||
+		strings.Contains(imageText, "动作：正在搜索") {
 		t.Fatalf("期望显示图片生成状态，实际为: %s", imageText)
 	}
 
@@ -1253,14 +1344,23 @@ func TestTelegramAgentToolRunningStatus(t *testing.T) {
 			Arguments: `{"skill":"local-z-image-turbo","command":"python3","command_args":["scripts/generate.py"]}`,
 		},
 	})
-	if imageNoPromptText != "local-z-image-turbo 正在生成图片..." {
+	if !strings.Contains(imageNoPromptText, "工具：`local-z-image-turbo`") ||
+		!strings.Contains(imageNoPromptText, "类型：图片生成") ||
+		!strings.Contains(imageNoPromptText, "动作：正在生成图片") ||
+		strings.Contains(imageNoPromptText, "目标：") {
 		t.Fatalf("期望无提示词时只显示生成图片状态，实际为: %s", imageNoPromptText)
 	}
 }
 
 func TestTelegramAgentEditableMessageContentStatusOverridesAnswer(t *testing.T) {
-	content := telegramAgentEditableMessageContent("前置回答内容", "ultimate-search 正在搜索 广州天气...")
-	if content != "ultimate-search 正在搜索 广州天气..." {
+	status := telegramAgentToolRunningStatus(telegramAgentOpenAIToolCall{
+		Function: telegramAgentOpenAIFunctionCall{
+			Name:      telegramAgentToolRunTerminalCommand,
+			Arguments: `{"skill":"ultimate-search","command":"bash","command_args":["dual-search.sh","--query","广州天气"]}`,
+		},
+	})
+	content := telegramAgentEditableMessageContent("前置回答内容", status)
+	if content != status {
 		t.Fatalf("工具状态应覆盖占位消息内容，实际为: %s", content)
 	}
 	if got := telegramAgentEditableMessageContent("最终回答", ""); got != "最终回答" {

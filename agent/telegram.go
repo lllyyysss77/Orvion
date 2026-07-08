@@ -76,6 +76,9 @@ type chatMessage struct {
 
 type chatSession struct {
 	mu             sync.Mutex
+	controlMu      sync.Mutex
+	running        bool
+	stopRequested  bool
 	conversationID string
 	messages       []chatMessage
 }
@@ -124,6 +127,11 @@ func (selected selectedModelProvider) supportsFunctionTools() bool {
 
 type streamDeltaHandler func(delta string) error
 type streamStatusHandler func(status string) error
+type telegramAgentStopChecker func() bool
+
+func telegramAgentNeverStop() bool {
+	return false
+}
 
 type telegramAgentReplyResult struct {
 	Selected         selectedModelProvider
@@ -138,6 +146,8 @@ type telegramAgentReplyResult struct {
 }
 
 var telegramSessions sync.Map
+
+var errTelegramAgentReplyStopped = errors.New("TG Agent 当前回复已停止")
 
 // HandleTelegramMessage 处理普通 TG 文本消息，并用消息编辑模拟流式回复。
 func HandleTelegramMessage(ctx context.Context, client TelegramClient, message TelegramMessage) (bool, error) {
@@ -196,6 +206,8 @@ func runTelegramAgentConversationWithHistoryMode(ctx context.Context, client Tel
 	session := getTelegramSession(chatID)
 	session.mu.Lock()
 	defer session.mu.Unlock()
+	beginTelegramSessionReply(session)
+	defer finishTelegramSessionReply(session)
 
 	attachments = normalizeTelegramAgentInputAttachments(attachments)
 	if shouldHandleTelegramAgentImageIntent(cfg, prompt, len(attachments) > 0) {
@@ -248,7 +260,9 @@ func runTelegramAgentConversationWithHistoryMode(ctx context.Context, client Tel
 		return edit(true)
 	}
 
-	_, err = streamTelegramAgentReply(ctx, cfg, history, prompt, attachments, chatID, func(delta string) error {
+	_, err = streamTelegramAgentReply(ctx, cfg, history, prompt, attachments, chatID, func() bool {
+		return telegramSessionReplyStopped(session)
+	}, func(delta string) error {
 		if delta == "" {
 			return nil
 		}
@@ -257,6 +271,13 @@ func runTelegramAgentConversationWithHistoryMode(ctx context.Context, client Tel
 		return edit(false)
 	}, updateStatus)
 	if err != nil {
+		if errors.Is(err, errTelegramAgentReplyStopped) {
+			statusText = ""
+			if editErr := client.EditMessage(ctx, chatID, placeholderID, "已停止当前回复。"); editErr != nil {
+				return editErr
+			}
+			return nil
+		}
 		errorText := "对话失败：" + err.Error()
 		if editErr := client.EditMessage(ctx, chatID, placeholderID, trimTelegramMessage(errorText)); editErr != nil {
 			return fmt.Errorf("%v; 编辑失败消息也失败: %w", err, editErr)
@@ -357,9 +378,12 @@ func startTelegramTypingLoop(ctx context.Context, client TelegramClient, chatID 
 	}
 }
 
-func streamTelegramAgentReply(ctx context.Context, cfg models.TelegramAgentConfig, history []chatMessage, prompt string, attachments []TelegramInputAttachment, chatID int64, onDelta streamDeltaHandler, onStatus streamStatusHandler) (telegramAgentReplyResult, error) {
+func streamTelegramAgentReply(ctx context.Context, cfg models.TelegramAgentConfig, history []chatMessage, prompt string, attachments []TelegramInputAttachment, chatID int64, shouldStop telegramAgentStopChecker, onDelta streamDeltaHandler, onStatus streamStatusHandler) (telegramAgentReplyResult, error) {
 	result := telegramAgentReplyResult{
 		StartedAt: time.Now(),
+	}
+	if shouldStop == nil {
+		shouldStop = telegramAgentNeverStop
 	}
 
 	pool, err := buildTelegramAgentDirectProviderPool(cfg, false)
@@ -368,7 +392,10 @@ func streamTelegramAgentReply(ctx context.Context, cfg models.TelegramAgentConfi
 	}
 
 	if toolPool, ok := pool.functionToolPool(); ok {
-		return streamTelegramAgentReplyWithFunctionTools(ctx, cfg, toolPool, history, prompt, attachments, chatID, onDelta, onStatus)
+		return streamTelegramAgentReplyWithFunctionTools(ctx, cfg, toolPool, history, prompt, attachments, chatID, shouldStop, onDelta, onStatus)
+	}
+	if shouldStop() {
+		return result, errTelegramAgentReplyStopped
 	}
 
 	attempt, err := performTelegramAgentProviderRequestWithRetry(ctx, pool, true, result.StartedAt, func(requestCtx context.Context, selected selectedModelProvider) ([]byte, context.Context, error) {
@@ -1145,6 +1172,49 @@ func getTelegramSession(chatID int64) *chatSession {
 	return value.(*chatSession)
 }
 
+func beginTelegramSessionReply(session *chatSession) {
+	session.controlMu.Lock()
+	session.running = true
+	session.stopRequested = false
+	session.controlMu.Unlock()
+}
+
+func finishTelegramSessionReply(session *chatSession) {
+	session.controlMu.Lock()
+	session.running = false
+	session.stopRequested = false
+	session.controlMu.Unlock()
+}
+
+func telegramSessionReplyStopped(session *chatSession) bool {
+	session.controlMu.Lock()
+	defer session.controlMu.Unlock()
+	return session.stopRequested
+}
+
+func requestTelegramSessionReplyStop(session *chatSession) bool {
+	session.controlMu.Lock()
+	defer session.controlMu.Unlock()
+	if !session.running {
+		return false
+	}
+	session.stopRequested = true
+	return true
+}
+
+func StopTelegramReply(chatID int64) bool {
+	value, ok := telegramSessions.Load(chatID)
+	if !ok {
+		return false
+	}
+	session, ok := value.(*chatSession)
+	if !ok {
+		telegramSessions.Delete(chatID)
+		return false
+	}
+	return requestTelegramSessionReplyStop(session)
+}
+
 func ForgetTelegramConversation(chatID int64, conversationID string) {
 	conversationID = strings.TrimSpace(conversationID)
 	value, ok := telegramSessions.Load(chatID)
@@ -1170,6 +1240,7 @@ func ResetTelegramRuntime(ctx context.Context, chatID int64) (TelegramRuntimeRes
 	telegramSessions.Range(func(key any, value any) bool {
 		session, ok := value.(*chatSession)
 		if ok {
+			requestTelegramSessionReplyStop(session)
 			session.mu.Lock()
 			session.conversationID = ""
 			session.messages = nil

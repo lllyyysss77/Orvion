@@ -294,6 +294,13 @@ func telegramCommandLoop(ctx context.Context) {
 			if handledRestart {
 				continue
 			}
+			handledStop, stopErr := handleTelegramStopCommand(ctx, notifier, *update.Message, allowedChat)
+			if stopErr != nil {
+				slog.Warn("处理 TG /stop 命令失败", "error", stopErr)
+			}
+			if handledStop {
+				continue
+			}
 			handledStatus, statusErr := handleTelegramStatusCommand(ctx, notifier, *update.Message, allowedChat)
 			if statusErr != nil {
 				slog.Warn("处理 TG /status 命令失败", "error", statusErr)
@@ -647,6 +654,7 @@ func buildTelegramHelpMessage() string {
 		"📊 /status - 查看系统状态摘要",
 		"🧩 /model - 查看模型与模型提供商",
 		"🧹 /new - 开启新的 TG Agent 对话",
+		"⏹️ /stop - 中断当前 TG Agent 回复",
 		"🖼️ /img <提示词> - 使用生图模型生成图片",
 		"♻️ /restart - 重启 TG Agent 并释放连接",
 		"📘 /help - 显示帮助",
@@ -807,6 +815,7 @@ func syncTelegramCommandList(notifier *telegramNotifier) error {
 		{Command: "status", Description: "查看系统状态摘要"},
 		{Command: "model", Description: "查看模型与模型提供商状态"},
 		{Command: "new", Description: "开启新的 TG Agent 对话"},
+		{Command: "stop", Description: "中断当前 TG Agent 回复"},
 		{Command: "img", Description: "使用生图模型生成图片"},
 		{Command: "restart", Description: "重启 TG Agent 并释放连接"},
 		{Command: "help", Description: "显示帮助"},
@@ -1024,6 +1033,23 @@ func handleTelegramRestartCommand(ctx context.Context, notifier *telegramNotifie
 	return true, notifier.sendText(content)
 }
 
+func handleTelegramStopCommand(ctx context.Context, notifier *telegramNotifier, message telegramMessage, allowedChatID string) (bool, error) {
+	if notifier == nil {
+		return false, nil
+	}
+	if !isAllowedTelegramChat(message.Chat.ID, allowedChatID) {
+		return false, nil
+	}
+
+	cmd := extractTelegramCommand(strings.ToLower(strings.TrimSpace(message.Text)))
+	if cmd != "/stop" {
+		return false, nil
+	}
+	_ = ctx
+	agent.StopTelegramReply(message.Chat.ID)
+	return true, nil
+}
+
 func sendTelegramHelpMessage(ctx context.Context, notifier *telegramNotifier, chatID string) error {
 	content := buildTelegramHelpMessage()
 	return sendTelegramCaptionWithStatusImage(ctx, notifier, chatID, content)
@@ -1134,12 +1160,42 @@ func handleTelegramAgentMessage(ctx context.Context, notifier *telegramNotifier,
 		}
 		return false, nil
 	}
-	return agent.HandleTelegramMessage(ctx, telegramAgentClient{notifier: notifier}, agent.TelegramMessage{
+	if !shouldDispatchTelegramAgentMessage(message, attachments) {
+		return false, nil
+	}
+	agentMessage := agent.TelegramMessage{
 		ChatID:      message.Chat.ID,
 		MessageID:   message.MessageID,
 		Text:        resolveTelegramMessageText(message),
 		Attachments: attachments,
+	}
+	pkg.GoSafe("service.telegram_agent_message", func() {
+		handled, err := agent.HandleTelegramMessage(ctx, telegramAgentClient{notifier: notifier}, agentMessage)
+		if err != nil {
+			slog.Warn("处理 TG Agent 消息失败", "chat_id", message.Chat.ID, "message_id", message.MessageID, "error", err)
+			return
+		}
+		if !handled {
+			slog.Debug("TG Agent 消息未处理", "chat_id", message.Chat.ID, "message_id", message.MessageID)
+		}
 	})
+	return true, nil
+}
+
+func shouldDispatchTelegramAgentMessage(message telegramMessage, attachments []agent.TelegramInputAttachment) bool {
+	raw := strings.TrimSpace(resolveTelegramMessageText(message))
+	if raw == "" {
+		return len(attachments) > 0
+	}
+	cmd := extractTelegramCommand(strings.ToLower(raw))
+	switch cmd {
+	case "":
+		return true
+	case "/new", "/reset", "/img":
+		return true
+	default:
+		return false
+	}
 }
 
 func resolveTelegramMessageText(message telegramMessage) string {

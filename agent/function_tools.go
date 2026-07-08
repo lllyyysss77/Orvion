@@ -85,9 +85,12 @@ type telegramAgentOpenAIStreamReadResult struct {
 
 type telegramAgentToolResultPayload = agenttools.ResultPayload
 
-func streamTelegramAgentReplyWithFunctionTools(ctx context.Context, cfg models.TelegramAgentConfig, pool telegramAgentModelProviderPool, history []chatMessage, prompt string, attachments []TelegramInputAttachment, chatID int64, onDelta streamDeltaHandler, onStatus streamStatusHandler) (telegramAgentReplyResult, error) {
+func streamTelegramAgentReplyWithFunctionTools(ctx context.Context, cfg models.TelegramAgentConfig, pool telegramAgentModelProviderPool, history []chatMessage, prompt string, attachments []TelegramInputAttachment, chatID int64, shouldStop telegramAgentStopChecker, onDelta streamDeltaHandler, onStatus streamStatusHandler) (telegramAgentReplyResult, error) {
 	result := telegramAgentReplyResult{
 		StartedAt: time.Now(),
+	}
+	if shouldStop == nil {
+		shouldStop = telegramAgentNeverStop
 	}
 	if len(pool.Candidates) == 0 {
 		return result, errors.New("当前 TG Agent 模型提供商暂不支持 function call 工具调用")
@@ -101,6 +104,9 @@ func streamTelegramAgentReplyWithFunctionTools(ctx context.Context, cfg models.T
 
 	messages := toTelegramAgentOpenAIMessages(systemPrompt, history, prompt, attachments)
 	for round := 0; round < telegramAgentToolLoopMaxRounds; round++ {
+		if shouldStop() {
+			return result, errTelegramAgentReplyStopped
+		}
 		body, err := buildTelegramAgentOpenAIChatBody(ctx, cfg, messages, true, true)
 		if err != nil {
 			return result, err
@@ -136,6 +142,9 @@ func streamTelegramAgentReplyWithFunctionTools(ctx context.Context, cfg models.T
 			normalizeTelegramAgentUsage(&result.Usage)
 			return result, nil
 		}
+		if shouldStop() {
+			return result, errTelegramAgentReplyStopped
+		}
 
 		messages = append(messages, telegramAgentOpenAIMessage{
 			Role:      "assistant",
@@ -146,6 +155,9 @@ func streamTelegramAgentReplyWithFunctionTools(ctx context.Context, cfg models.T
 		if err != nil {
 			return result, err
 		}
+		if shouldStop() {
+			return result, errTelegramAgentReplyStopped
+		}
 		if directFinalText != "" {
 			if err := onDelta(directFinalText); err != nil {
 				return result, err
@@ -154,7 +166,7 @@ func streamTelegramAgentReplyWithFunctionTools(ctx context.Context, cfg models.T
 			return result, nil
 		}
 		if telegramAgentToolCallsNeedResultSummary(streamResult.ToolCalls) && onStatus != nil {
-			if err := onStatus("脚本已执行完成，正在整理结果..."); err != nil {
+			if err := onStatus(telegramAgentToolResultSummaryStatus()); err != nil {
 				return result, err
 			}
 		}
@@ -233,27 +245,41 @@ func telegramAgentToolRunningStatus(toolCall telegramAgentOpenAIToolCall) string
 
 	label := telegramAgentToolStatusLabel(name, args)
 	action, detail := telegramAgentToolStatusAction(name, args)
-	if detail != "" {
-		return fmt.Sprintf("%s %s %s...", label, action, detail)
+	category := telegramAgentToolStatusCategory(name, args)
+	hint := telegramAgentToolStatusHint(category)
+
+	lines := []string{
+		"**🔧 工具调用中**",
+		"",
+		fmt.Sprintf("🧰 工具：`%s`", label),
+		fmt.Sprintf("📦 类型：%s", category),
+		fmt.Sprintf("⚙️ 动作：%s", action),
 	}
-	return fmt.Sprintf("%s %s...", label, action)
+	if detail != "" {
+		lines = append(lines, fmt.Sprintf("🎯 目标：%s", detail))
+	}
+	lines = append(lines, "⏳ 状态：已开始执行，正在等待工具返回结果...")
+	if hint != "" {
+		lines = append(lines, "💡 提示："+hint)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func telegramAgentToolStatusLabel(name string, args telegramAgentToolCallArgs) string {
 	switch name {
 	case telegramAgentToolRunTerminalCommand:
 		if skill := strings.TrimSpace(args.Skill); skill != "" {
-			return skill
+			return sanitizeTelegramAgentToolStatusValue(skill)
 		}
 		if command := strings.TrimSpace(args.Command); command != "" {
-			return command
+			return sanitizeTelegramAgentToolStatusValue(command)
 		}
 	case telegramAgentToolReadSkill:
 		if skill := strings.TrimSpace(args.Skill); skill != "" {
-			return skill
+			return sanitizeTelegramAgentToolStatusValue(skill)
 		}
 	}
-	return name
+	return sanitizeTelegramAgentToolStatusValue(name)
 }
 
 func telegramAgentToolStatusAction(name string, args telegramAgentToolCallArgs) (string, string) {
@@ -285,6 +311,70 @@ func telegramAgentToolStatusAction(name string, args telegramAgentToolCallArgs) 
 		return "正在处理", query
 	}
 	return "正在运行", ""
+}
+
+func telegramAgentToolStatusCategory(name string, args telegramAgentToolCallArgs) string {
+	if name == telegramAgentToolRunTerminalCommand {
+		switch {
+		case telegramAgentToolLooksLikeVideoGeneration(args):
+			return "视频生成"
+		case telegramAgentToolLooksLikeImageGeneration(args):
+			return "图片生成"
+		case telegramAgentToolLooksLikeSearch(args):
+			return "搜索检索"
+		default:
+			return "本地命令"
+		}
+	}
+
+	switch name {
+	case telegramAgentToolListSkills, telegramAgentToolReadSkill:
+		return "Skills 管理"
+	case telegramAgentToolReadSystemLogs, telegramAgentToolReadRequestLogs:
+		return "日志排查"
+	case telegramAgentToolListModels, telegramAgentToolListProviders, telegramAgentToolGetProviderConfig:
+		return "模型与提供商"
+	case telegramAgentToolSetModelStatus, telegramAgentToolSetModelsStatusBatch, telegramAgentToolSetProviderStatus, telegramAgentToolUpdateProviderConfig:
+		return "模型与提供商配置"
+	case telegramAgentToolGetSystemStatus, telegramAgentToolGetPerformanceStats, telegramAgentToolListImageCache, telegramAgentToolDeleteImageCache, telegramAgentToolRefreshImageCache, telegramAgentToolGetBackgroundTasks, telegramAgentToolTriggerBackgroundTask:
+		return "系统管理"
+	case telegramAgentToolListAuthKeys, telegramAgentToolCreateAuthKey, telegramAgentToolUpdateAuthKey:
+		return "密钥管理"
+	case telegramAgentToolListScheduledTasks, telegramAgentToolCreateScheduledTask, telegramAgentToolUpdateScheduledTask, telegramAgentToolSetScheduledTaskStatus, telegramAgentToolRunScheduledTask:
+		return "定时任务"
+	default:
+		return "Agent 工具"
+	}
+}
+
+func telegramAgentToolStatusHint(category string) string {
+	switch category {
+	case "图片生成":
+		return "生成完成后会直接把图片发送到当前对话。"
+	case "视频生成":
+		return "视频生成可能较慢，完成后会继续整理结果。"
+	case "搜索检索":
+		return "拿到结果后会筛选关键信息，再继续给出结论。"
+	case "日志排查":
+		return "会优先整理关键错误、时间线和可疑请求。"
+	case "Skills 管理":
+		return "正在读取本地 Skill 元数据和说明内容。"
+	case "模型与提供商配置", "密钥管理", "定时任务", "系统管理":
+		return "这是管理类工具，执行完成后会回传结果摘要。"
+	default:
+		return "工具完成后会继续生成最终回复。"
+	}
+}
+
+func telegramAgentToolResultSummaryStatus() string {
+	return strings.Join([]string{
+		"**🧾 工具结果整理中**",
+		"",
+		"✅ 工具：已返回执行结果",
+		"📦 类型：结果汇总",
+		"🧠 动作：正在分析输出并生成最终回复",
+		"⏳ 状态：马上整理重点...",
+	}, "\n")
 }
 
 func telegramAgentToolStatusQuery(args telegramAgentToolCallArgs) string {
@@ -392,6 +482,7 @@ func sanitizeTelegramAgentToolStatusValue(value string) string {
 	value = strings.TrimSpace(value)
 	value = strings.ReplaceAll(value, "\r", " ")
 	value = strings.ReplaceAll(value, "\n", " ")
+	value = strings.ReplaceAll(value, "`", "'")
 	value = strings.Join(strings.Fields(value), " ")
 	if len([]rune(value)) > 48 {
 		runes := []rune(value)
