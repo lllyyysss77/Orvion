@@ -161,7 +161,7 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 	pr, pipeWriter := io.Pipe()
 	// 用 asyncMirrorWriter 把 pw 写入解耦:RecordLog 消费慢或 io.Pipe 32KiB
 	// 缓冲吃满时,Write 不阻塞,保证上游响应读链不被拖死。
-	pw := newAsyncMirrorWriter(pipeWriter, 256)
+	pw := newAsyncMirrorWriter(pipeWriter, 256, logRef.ID, logRef.UUID)
 	// 异步处理输出并记录 tokens
 	pkg.GoSafe("handler.record_log", func() {
 		service.RecordLog(context.Background(), startReq, log.FirstChunkTimeMs, pr, postProcessor, logRef, log.AuthKeyID, effectiveBefore, effectiveProvidersWithMeta.IOLog, logStyle)

@@ -1415,7 +1415,7 @@ func queryRequestLogsByMonthlyTables(ctx context.Context, params common.Paginati
 	columns := models.ChatLogColumnsSQL()
 	filterSQL, filterArgs := buildChatLogFilterSQL(filter)
 	offset := (params.Page - 1) * params.PageSize
-	return models.QueryChatLogsPage(
+	return models.QueryChatLogListPage(
 		ctx,
 		models.ChatLogQueryScope{StartAt: filter.StartAt, EndAt: filter.EndAt},
 		columns,

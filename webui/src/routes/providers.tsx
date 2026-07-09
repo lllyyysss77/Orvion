@@ -49,11 +49,12 @@ import {
   deleteProvider,
   getProviderTemplates,
   getProviderModels,
+  configAPI,
 } from "@/lib/api";
-import type { Provider, ProviderTemplate, ProviderModel } from "@/lib/api";
-import { openExternalUrl } from "@/lib/utils";
+import type { NetworkForwardingConfig, Provider, ProviderTemplate, ProviderModel } from "@/lib/api";
+import { cn, openExternalUrl } from "@/lib/utils";
 import { toast } from "sonner";
-import { Shield, ExternalLink, Pencil, Trash2, Boxes, Plus, Copy } from "lucide-react";
+import { ChevronDown, Network, Shield, ExternalLink, Pencil, Trash2, Boxes, Plus, Copy, X } from "lucide-react";
 
 type ProviderCapability = "chat" | "openai" | "claude";
 
@@ -133,8 +134,12 @@ export default function ProvidersPage() {
   const [modelsLoading, setModelsLoading] = useState(false);
   const [providerStatusLoadingId, setProviderStatusLoadingId] = useState<number | null>(null);
   const [structuredConfigEnabled, setStructuredConfigEnabled] = useState(false);
+  const [networkProxyURL, setNetworkProxyURL] = useState("");
+  const [proxyPickerOpen, setProxyPickerOpen] = useState(false);
+  const [proxyInputFocused, setProxyInputFocused] = useState(false);
   const configCacheRef = useRef<Record<string, string>>({});
   const providerConfigEditorRef = useRef<ProviderConfigEditorRef | null>(null);
+  const proxyInputRef = useRef<HTMLInputElement | null>(null);
 
   // 筛选条件
   const [nameFilter, setNameFilter] = useState<string>("");
@@ -169,6 +174,30 @@ export default function ProvidersPage() {
     if (values.includes("claude")) options.push({ value: "messages", label: "/v1/messages" });
     return options;
   }, [selectedCapabilities]);
+
+  const fetchNetworkForwardingConfig = useCallback(async () => {
+    try {
+      const response = await configAPI.getConfig("network_forwarding");
+      if (!response.value) {
+        setNetworkProxyURL("");
+        return;
+      }
+      const networkCfg = JSON.parse(response.value) as Partial<NetworkForwardingConfig>;
+      setNetworkProxyURL(typeof networkCfg.telegram_proxy_url === "string" ? networkCfg.telegram_proxy_url.trim() : "");
+    } catch (err) {
+      setNetworkProxyURL("");
+      console.error("获取网络转发配置失败", err);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!open) {
+      setProxyPickerOpen(false);
+      setProxyInputFocused(false);
+      return;
+    }
+    void fetchNetworkForwardingConfig();
+  }, [open, fetchNetworkForwardingConfig]);
 
   useEffect(() => {
     if (!open) {
@@ -701,9 +730,120 @@ export default function ProvidersPage() {
                   render={({ field }) => (
                     <FormItem className="min-w-0">
                       <FormLabel>代理地址（可选）</FormLabel>
-                      <FormControl>
-                        <Input {...field} placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080" />
-                      </FormControl>
+                      <div className="relative">
+                        <FormControl>
+                          <Input
+                            {...field}
+                            ref={(node) => {
+                              field.ref(node);
+                              proxyInputRef.current = node;
+                            }}
+                            value={field.value || ""}
+                            placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080"
+                            className={cn(
+                              "pr-10",
+                              field.value && !proxyInputFocused && "text-transparent caret-transparent selection:bg-transparent"
+                            )}
+                            onFocus={() => {
+                              setProxyInputFocused(true);
+                              setProxyPickerOpen(true);
+                            }}
+                            onBlur={() => {
+                              field.onBlur();
+                              window.setTimeout(() => {
+                                setProxyInputFocused(false);
+                                setProxyPickerOpen(false);
+                              }, 120);
+                            }}
+                            onChange={(event) => {
+                              field.onChange(event.target.value);
+                              setProxyPickerOpen(true);
+                            }}
+                          />
+                        </FormControl>
+                        {field.value && !proxyInputFocused && (
+                          <button
+                            type="button"
+                            title={field.value}
+                            className="absolute inset-y-1 left-2 right-10 flex min-w-0 items-center"
+                            onMouseDown={(event) => {
+                              event.preventDefault();
+                              setProxyInputFocused(true);
+                              setProxyPickerOpen(true);
+                              window.requestAnimationFrame(() => proxyInputRef.current?.focus());
+                            }}
+                          >
+                            <span className="max-w-full truncate rounded-full border border-slate-200 bg-slate-100 px-3 py-1 text-left font-mono text-xs leading-none text-slate-700 shadow-inner">
+                              {field.value}
+                            </span>
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className="absolute right-1.5 top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                          title="选择系统代理"
+                          aria-label="选择系统代理"
+                          onMouseDown={(event) => {
+                            event.preventDefault();
+                            setProxyInputFocused(true);
+                            setProxyPickerOpen(true);
+                            window.requestAnimationFrame(() => proxyInputRef.current?.focus());
+                          }}
+                        >
+                          <ChevronDown className="size-4" />
+                        </button>
+                        {proxyPickerOpen && (
+                          <div className="absolute left-0 right-0 top-full z-50 mt-1 overflow-hidden rounded-xl border border-border/80 bg-popover p-1 shadow-xl">
+                            {networkProxyURL ? (
+                              <button
+                                type="button"
+                                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-muted"
+                                onMouseDown={(event) => {
+                                  event.preventDefault();
+                                  field.onChange(networkProxyURL);
+                                  form.clearErrors("proxy_url");
+                                  setProxyInputFocused(false);
+                                  setProxyPickerOpen(false);
+                                  window.requestAnimationFrame(() => proxyInputRef.current?.blur());
+                                }}
+                              >
+                                <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-600">
+                                  <Network className="size-4" />
+                                </span>
+                                <span className="min-w-0 flex-1">
+                                  <span className="block text-sm font-medium text-foreground">网络转发配置代理</span>
+                                  <span className="block truncate font-mono text-xs text-muted-foreground" title={networkProxyURL}>
+                                    {networkProxyURL}
+                                  </span>
+                                </span>
+                              </button>
+                            ) : (
+                              <div className="rounded-lg px-3 py-2 text-xs text-muted-foreground">
+                                网络转发配置暂无代理地址
+                              </div>
+                            )}
+                            {field.value && (
+                              <button
+                                type="button"
+                                className="mt-1 flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                                onMouseDown={(event) => {
+                                  event.preventDefault();
+                                  field.onChange("");
+                                  form.clearErrors("proxy_url");
+                                  setProxyInputFocused(false);
+                                  setProxyPickerOpen(false);
+                                  window.requestAnimationFrame(() => proxyInputRef.current?.blur());
+                                }}
+                              >
+                                <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-muted">
+                                  <X className="size-4" />
+                                </span>
+                                清空代理地址
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
                       <FormMessage />
                     </FormItem>
                   )}

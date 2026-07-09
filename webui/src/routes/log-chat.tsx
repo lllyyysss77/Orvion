@@ -1318,13 +1318,12 @@ export default function LogChatPage() {
   const [loading, setLoading] = useState(true);
   const [loadErrorMessage, setLoadErrorMessage] = useState<string | null>(null);
   const syntaxStyle = duotoneLight;
-  const outputList = chatIO?.OfStringArray ?? [];
-  const hasArrayOutput = outputList.length > 0;
+  const outputList = chatIO?.OfStringArray;
   const singleOutput = chatIO?.OfString ?? "";
   const normalizedOutputRaw = useMemo(() => {
-    if (!hasArrayOutput) return singleOutput;
+    if (!outputList?.length) return singleOutput;
     return outputList.join("\n");
-  }, [hasArrayOutput, outputList, singleOutput]);
+  }, [outputList, singleOutput]);
   useEffect(() => {
     if (!logId) {
       const message = "缺少日志 ID";

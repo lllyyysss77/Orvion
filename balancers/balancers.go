@@ -24,8 +24,14 @@ type Lottery struct {
 }
 
 func NewLottery(items map[uint]int) *Lottery {
+	store := make(map[uint]int, len(items))
+	for key, weight := range items {
+		if weight > 0 {
+			store[key] = weight
+		}
+	}
 	return &Lottery{
-		store:   items,
+		store:   store,
 		fails:   map[uint]struct{}{},
 		reduces: map[uint]struct{}{},
 	}
@@ -35,8 +41,12 @@ func (w *Lottery) Pop() (uint, error) {
 	if len(w.store) == 0 {
 		return 0, fmt.Errorf("no provide items or all items are disabled")
 	}
+	allowReduced := !w.hasUnreducedActive()
 	total := 0
-	for _, v := range w.store {
+	for key, v := range w.store {
+		if _, reduced := w.reduces[key]; reduced && !allowReduced {
+			continue
+		}
 		total += v
 	}
 	if total <= 0 {
@@ -44,6 +54,9 @@ func (w *Lottery) Pop() (uint, error) {
 	}
 	r := rand.IntN(total)
 	for k, v := range w.store {
+		if _, reduced := w.reduces[k]; reduced && !allowReduced {
+			continue
+		}
 		if r < v {
 			return k, nil
 		}
@@ -58,12 +71,29 @@ func (w *Lottery) Delete(key uint) {
 }
 
 func (w *Lottery) Reduce(key uint) {
+	weight, ok := w.store[key]
+	if !ok {
+		return
+	}
 	w.reduces[key] = struct{}{}
-	w.store[key] -= w.store[key] / 3
+	// 至少保留一个权重，确保所有提供商都降权时仍可继续尝试；
+	// Pop 会优先选择未降权的提供商，因此权重为 1 时也能生效。
+	if reduction := max(1, weight/3); weight > reduction {
+		w.store[key] = weight - reduction
+	}
 }
 
 func (w *Lottery) Success(key uint) {
 	w.success = key
+}
+
+func (w *Lottery) hasUnreducedActive() bool {
+	for key := range w.store {
+		if _, reduced := w.reduces[key]; !reduced {
+			return true
+		}
+	}
+	return false
 }
 
 // 按权重展开后顺序轮转。

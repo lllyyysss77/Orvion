@@ -95,6 +95,39 @@ type LogFilterState = {
   providerName: string;
   status: string;
   authKeyId: string;
+  timeRange: LogTimeRange;
+};
+
+type LogTimeRange = "today" | "7d" | "30d" | "all";
+
+const logTimeRangeOptions: { value: LogTimeRange; label: string }[] = [
+  { value: "today", label: "今天" },
+  { value: "7d", label: "7 天" },
+  { value: "30d", label: "30 天" },
+  { value: "all", label: "全部历史" },
+];
+
+const normalizeLogTimeRange = (value: unknown): LogTimeRange => {
+  if (value === "24h" || value === "today") return "today";
+  if (value === "7d" || value === "30d" || value === "all") return value;
+  return "7d";
+};
+
+const getLogTimeRangeBounds = (filterState: LogFilterState) => {
+  if (filterState.timeRange === "all") {
+    return {};
+  }
+
+  const endAt = new Date();
+  const startAt = new Date(endAt);
+  if (filterState.timeRange === "today") {
+    startAt.setHours(0, 0, 0, 0);
+  } else if (filterState.timeRange === "7d") {
+    startAt.setDate(startAt.getDate() - 7);
+  } else {
+    startAt.setDate(startAt.getDate() - 30);
+  }
+  return { startAt: startAt.toISOString(), endAt: endAt.toISOString() };
 };
 
 type LogListPreference = {
@@ -108,6 +141,7 @@ const defaultLogFilters: LogFilterState = {
   providerName: "",
   status: "",
   authKeyId: "",
+  timeRange: "7d",
 };
 
 const readStoredLogPreferences = (): LogListPreference => {
@@ -124,6 +158,7 @@ const readStoredLogPreferences = (): LogListPreference => {
       providerName: typeof parsed.filters?.providerName === "string" ? parsed.filters.providerName : "",
       status: typeof parsed.filters?.status === "string" ? parsed.filters.status : "",
       authKeyId: typeof parsed.filters?.authKeyId === "string" ? parsed.filters.authKeyId : "",
+      timeRange: normalizeLogTimeRange(parsed.filters?.timeRange),
     };
     const pageSize = parsed.pageSize === 20 || parsed.pageSize === 50 ? parsed.pageSize : 10;
     return { filters, pageSize };
@@ -446,10 +481,12 @@ export default function LogsPage() {
   const fetchLogs = useCallback(async () => {
     setLoading(true);
     try {
+      const timeBounds = getLogTimeRangeBounds(filters);
       const result = await getLogs(page, pageSize, {
         providerName: filters.providerName || undefined,
         status: filters.status || undefined,
         authKeyId: !isAuthKeyMode ? (filters.authKeyId || undefined) : undefined,
+        ...timeBounds,
       });
       setLogs(result.data);
       setTotal(result.total);
@@ -499,6 +536,9 @@ export default function LogsPage() {
   };
   const handleRefresh = () => {
     void fetchLogs();
+  };
+  const handleTimeRangeChange = (timeRange: LogTimeRange) => {
+    setDraftFilters((prev) => ({ ...prev, timeRange }));
   };
   const handleCleanTypeChange = (type: 'count' | 'days') => {
     setCleanType(type);
@@ -578,6 +618,26 @@ export default function LogsPage() {
         </div>
         <div className="rounded-xl border border-border/60 bg-card/80 p-3">
           <div className="flex flex-wrap items-center gap-1.5">
+            <div className="inline-flex h-8 overflow-hidden rounded-md border border-border/70 bg-background/50 p-0.5" role="group" aria-label="日志时间范围">
+              {logTimeRangeOptions.map((option) => {
+                const selected = draftFilters.timeRange === option.value;
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    aria-pressed={selected}
+                    className={`rounded-[4px] px-2 text-xs transition-colors ${
+                      selected
+                        ? "bg-primary text-primary-foreground shadow-sm"
+                        : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                    }`}
+                    onClick={() => handleTimeRangeChange(option.value)}
+                  >
+                    {option.label}
+                  </button>
+                );
+              })}
+            </div>
             {!isAuthKeyMode ? (
               <Select
                 value={draftFilters.providerName || "all"}

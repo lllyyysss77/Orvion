@@ -1,12 +1,17 @@
 package providers
 
 import (
+	"crypto/sha256"
 	"strings"
 	"sync"
-	"sync/atomic"
 )
 
-var apiKeyRotationCounters sync.Map
+const maxAPIKeyRotationCounters = 1024
+
+var apiKeyRotationCounters = struct {
+	sync.Mutex
+	values map[string]uint64
+}{values: make(map[string]uint64)}
 
 func splitProviderAPIKeys(raw string) []string {
 	normalized := strings.NewReplacer("，", ",", "\n", ",", "\r", ",").Replace(raw)
@@ -31,9 +36,20 @@ func nextProviderAPIKey(scope string, raw string) string {
 		return keys[0]
 	}
 
-	counterKey := strings.TrimSpace(scope) + "\x00" + strings.Join(keys, "\x00")
-	value, _ := apiKeyRotationCounters.LoadOrStore(counterKey, &atomic.Uint64{})
-	counter := value.(*atomic.Uint64)
-	index := counter.Add(1) - 1
+	// 缓存键不能保留原始 API Key；配置变更会生成新哈希，旧计数器会在容量到达上限时清理。
+	counterKey := providerAPIKeyRotationKey(scope, keys)
+	apiKeyRotationCounters.Lock()
+	if len(apiKeyRotationCounters.values) >= maxAPIKeyRotationCounters {
+		clear(apiKeyRotationCounters.values)
+	}
+	index := apiKeyRotationCounters.values[counterKey]
+	apiKeyRotationCounters.values[counterKey] = index + 1
+	apiKeyRotationCounters.Unlock()
 	return keys[int(index%uint64(len(keys)))]
+}
+
+func providerAPIKeyRotationKey(scope string, keys []string) string {
+	value := strings.TrimSpace(scope) + "\x00" + strings.Join(keys, "\x00")
+	sum := sha256.Sum256([]byte(value))
+	return string(sum[:])
 }

@@ -40,7 +40,7 @@ const DESKTOP_SIDEBAR_WIDTH = "14rem";
 const DESKTOP_SIDEBAR_COLLAPSED_WIDTH = "4rem";
 const SIDEBAR_GROUP_PADDING = "p-1.5";
 const SIDEBAR_BUTTON_BASE =
-  "flex h-10 w-full items-center gap-2 overflow-hidden rounded-[18px] px-2.5 py-2 text-left text-[13px] outline-none ring-sidebar-ring transition-all duration-200 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2";
+  "flex h-9 w-full items-center gap-2 overflow-hidden rounded-md px-2.5 py-2 text-left text-[13px] outline-none ring-sidebar-ring transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2";
 const AGENT_ROUTE_PREFIXES = ["/skills", "/action", "/tg-agent-schedules"] as const;
 
 const navSections = [
@@ -474,12 +474,12 @@ export default function Layout() {
     return (
       <aside
         className={cn(
-          "fixed top-14 bottom-0 left-0 z-40 hidden overflow-hidden transition-[width] duration-200 ease-linear md:block",
+          "fixed top-14 bottom-0 left-0 z-40 hidden overflow-hidden border-r border-sidebar-border/70 bg-sidebar/70 transition-[width] duration-200 ease-linear md:block",
           sidebarCollapsed ? "w-16" : "w-56"
         )}
       >
-        <div className="h-full pr-2 pb-0 pl-0">
-          <div className="flex h-full w-full flex-col rounded-tr-[24px] rounded-br-none rounded-l-none border border-l-0 border-sidebar-border/70 bg-sidebar text-sidebar-foreground shadow-sm">
+        <div className="h-full px-2 py-2">
+          <div className="flex h-full w-full flex-col rounded-lg border border-sidebar-border/70 bg-sidebar text-sidebar-foreground shadow-sm">
             <div className="relative flex min-h-0 flex-1 flex-col pt-2">
               <div className={cn("flex min-h-0 flex-1 flex-col gap-1 overflow-auto", sidebarCollapsed && "pt-3")}>
                 {renderNavGroups()}
@@ -551,13 +551,13 @@ export default function Layout() {
       <div className="pointer-events-none fixed inset-x-0 top-0 z-[80] h-[3px] overflow-hidden">
         <div
           className={cn(
-            "h-full rounded-r-full bg-primary shadow-[0_0_14px_rgba(180,104,56,0.45)] transition-[width,opacity] duration-300 ease-out",
+            "h-full rounded-r-full bg-primary transition-[width,opacity] duration-300 ease-out",
             navigationProgressVisible ? "opacity-100" : "opacity-0"
           )}
           style={{ width: `${navigationProgressValue}%` }}
         />
       </div>
-      <header className="bg-background/95 supports-[backdrop-filter]:bg-background/60 fixed top-0 z-50 w-full border-b border-border/60 backdrop-blur">
+      <header className="bg-background/95 supports-[backdrop-filter]:bg-background/75 fixed top-0 z-50 w-full border-b border-border backdrop-blur">
         <div className="flex h-14 items-center justify-between px-4 md:px-6">
           <div className="flex items-center gap-2 pl-0 md:pl-2">
             <Button
@@ -660,8 +660,8 @@ export default function Layout() {
 
       <main className="pt-14">
         <div className="h-[calc(100vh-3.5rem)] transition-[padding-left] duration-200 ease-linear md:pl-[var(--sidebar-offset)]" style={sidebarOffsetStyle}>
-          <div className="h-full p-3 md:p-4">
-            <div className="mx-auto h-full max-w-[1680px] min-w-0 overflow-hidden">
+          <div className="h-full p-3 md:p-5">
+            <div className="mx-auto h-full max-w-[1720px] min-w-0 overflow-hidden">
               {renderRouteContent()}
             </div>
           </div>

@@ -61,6 +61,18 @@ var (
 		"prompt_tokens_details",
 		"total_cost",
 	}
+	chatLogListCountColumnList = []string{
+		"id",
+		"created_at",
+		"uuid",
+		"name",
+		"provider_model",
+		"provider_name",
+		"model_with_provider_id",
+		"status",
+		"style",
+		"auth_key_id",
+	}
 )
 
 type chatLogMonthlyIndexSpec struct {
@@ -598,6 +610,22 @@ func QueryChatLogCountWithColumns(ctx context.Context, scope ChatLogQueryScope, 
 }
 
 func QueryChatLogsPage(ctx context.Context, scope ChatLogQueryScope, columns string, whereSQL string, orderSQL string, limit int, offset int, args ...any) ([]ChatLog, int64, error) {
+	return queryChatLogsPage(ctx, scope, columns, columns, whereSQL, orderSQL, limit, offset, args...)
+}
+
+// QueryChatLogListPage 为请求日志列表查询分页数据。计数查询只读取筛选所需列，
+// 避免跨月表 COUNT 为完整日志记录构建宽行。
+func QueryChatLogListPage(ctx context.Context, scope ChatLogQueryScope, columns string, whereSQL string, orderSQL string, limit int, offset int, args ...any) ([]ChatLog, int64, error) {
+	return queryChatLogsPage(ctx, scope, columns, ChatLogListCountColumnsSQL(), whereSQL, orderSQL, limit, offset, args...)
+}
+
+func queryChatLogsPage(ctx context.Context, scope ChatLogQueryScope, columns string, countColumns string, whereSQL string, orderSQL string, limit int, offset int, args ...any) ([]ChatLog, int64, error) {
+	if strings.TrimSpace(columns) == "" {
+		columns = ChatLogColumnsSQL()
+	}
+	if strings.TrimSpace(countColumns) == "" {
+		countColumns = columns
+	}
 	union, err := BuildChatLogUnionQuery(scope, columns)
 	if err != nil || union.SQL == "" {
 		return []ChatLog{}, 0, err
@@ -605,8 +633,12 @@ func QueryChatLogsPage(ctx context.Context, scope ChatLogQueryScope, columns str
 
 	sqlWhere := normalizeWhereSQL(whereSQL)
 
+	countUnion, err := BuildChatLogUnionQuery(scope, countColumns)
+	if err != nil || countUnion.SQL == "" {
+		return []ChatLog{}, 0, err
+	}
 	var total CountRow
-	countSQL := "SELECT COUNT(1) AS total FROM (" + union.SQL + ") AS logs" + sqlWhere
+	countSQL := "SELECT COUNT(1) AS total FROM (" + countUnion.SQL + ") AS logs" + sqlWhere
 	if err := DB.WithContext(ctx).Raw(countSQL, args...).Scan(&total).Error; err != nil {
 		return nil, 0, err
 	}
@@ -1098,6 +1130,11 @@ func QueryChatLogDailyModelCost(ctx context.Context, startAt time.Time, endAt ti
 // ChatLogColumnsSQL 返回 chat_logs 列清单 SQL 片段。
 func ChatLogColumnsSQL() string {
 	return strings.Join(chatLogColumnList, ", ")
+}
+
+// ChatLogListCountColumnsSQL 返回请求日志列表计数所需的最小列集。
+func ChatLogListCountColumnsSQL() string {
+	return strings.Join(chatLogListCountColumnList, ", ")
 }
 
 func normalizeWhereSQL(whereSQL string) string {

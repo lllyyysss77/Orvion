@@ -47,6 +47,24 @@ func TestRotorReduceSkipsReducedProviderWhenOtherProvidersAvailable(t *testing.T
 	}
 }
 
+func TestLotteryReduceSkipsReducedProviderWithWeightOne(t *testing.T) {
+	lottery := NewLottery(map[uint]int{
+		101: 1,
+		202: 1,
+	})
+
+	lottery.Reduce(101)
+	for range 20 {
+		got, err := lottery.Pop()
+		if err != nil {
+			t.Fatalf("Pop 返回错误: %v", err)
+		}
+		if got != 202 {
+			t.Fatalf("权重为 1 的降权提供商应被跳过，实际返回 %d", got)
+		}
+	}
+}
+
 func resetRotorCursorForTest(items map[uint]int) {
 	rotorMu.Lock()
 	defer rotorMu.Unlock()

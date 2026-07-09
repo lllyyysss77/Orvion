@@ -84,7 +84,7 @@ func GetAuthKeyRequestLogs(c *gin.Context) {
 
 	whereSQL := strings.Join(clauses, " AND ")
 	offset := (params.Page - 1) * params.PageSize
-	logs, total, err := models.QueryChatLogsPage(
+	logs, total, err := models.QueryChatLogListPage(
 		c.Request.Context(),
 		models.ChatLogQueryScope{StartAt: startAt, EndAt: endAt},
 		models.ChatLogColumnsSQL(),

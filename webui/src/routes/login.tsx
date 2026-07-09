@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import iconSvg from "@/assets/icon.svg";
-import { ChevronDown, ChevronLeft, Layers, Megaphone, Puzzle, Rocket, Sparkles, SunMoon } from "lucide-react";
+import { ChevronDown, KeyRound, Layers, Megaphone, Puzzle, Rocket, ShieldCheck, Sparkles, SunMoon, X } from "lucide-react";
 import CliSection from "./login/CliSection";
 import OrvionLineLogo from "./login/OrvionLineLogo";
 import AetherCliArtwork from "./login/AetherCliArtwork";
@@ -334,9 +334,11 @@ export default function LoginPage() {
 
   const fixedLogoStyle = useMemo<CSSProperties>(() => {
     const isDesktop = windowWidth >= 768;
+    const isWideDesktop = windowWidth >= 1280;
     const desktopLeftOffset = "26vw";
     const desktopRightOffset = "20vw";
     const desktopCliLift = "-6vh";
+    const centeredCliTransform = "translateY(-6vh) scale(0.88)";
     if (currentSection === SECTION_INDEX.home) {
       return {
         transform: "scale(1.1) translateY(-12vh)",
@@ -346,27 +348,27 @@ export default function LoginPage() {
     }
     if (currentSection === SECTION_INDEX.claude) {
       return {
-        transform: isDesktop
+        transform: isWideDesktop
           ? `translate(calc(-1 * ${desktopLeftOffset}), ${desktopCliLift}) scale(1)`
-          : "translateY(-30vh) scale(0.6)",
+          : isDesktop ? centeredCliTransform : "translateY(-30vh) scale(0.6)",
         opacity: isDesktop ? 1 : 0.2,
         transition: "transform 0.8s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.6s ease-out",
       };
     }
     if (currentSection === SECTION_INDEX.openai) {
       return {
-        transform: isDesktop
+        transform: isWideDesktop
           ? `translate(${desktopRightOffset}, ${desktopCliLift}) scale(1)`
-          : "translateY(-30vh) scale(0.6)",
+          : isDesktop ? centeredCliTransform : "translateY(-30vh) scale(0.6)",
         opacity: isDesktop ? 1 : 0.2,
         transition: "transform 0.8s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.6s ease-out",
       };
     }
     if (currentSection === SECTION_INDEX.gemini) {
       return {
-        transform: isDesktop
+        transform: isWideDesktop
           ? `translate(calc(-1 * ${desktopLeftOffset}), ${desktopCliLift}) scale(1)`
-          : "translateY(-30vh) scale(0.6)",
+          : isDesktop ? centeredCliTransform : "translateY(-30vh) scale(0.6)",
         opacity: isDesktop ? 1 : 0.2,
         transition: "transform 0.8s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.6s ease-out",
       };
@@ -704,48 +706,79 @@ export default function LoginPage() {
       </div>
 
       {showLoginForm && (
-        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/45 px-4 backdrop-blur-sm">
-          <Card className={`w-full max-w-md ${darkMode ? "border-[rgba(227,224,211,0.12)] bg-[#24211d] text-[#f1ead8]" : "border-[#e5e4df] bg-white text-[#191919]"} shadow-2xl`}>
-            <CardHeader>
+        <div className="fixed inset-0 z-[120] flex items-center justify-center px-4 py-6">
+          <button
+            type="button"
+            aria-label="关闭登录窗口"
+            className="absolute inset-0 cursor-default bg-black/50 backdrop-blur-sm"
+            onClick={() => setShowLoginForm(false)}
+          />
+          <Card
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="login-dialog-title"
+            className={`relative z-10 w-full max-w-[26rem] gap-0 overflow-hidden rounded-xl border py-0 shadow-[0_24px_72px_rgba(0,0,0,0.28)] animate-in fade-in-0 zoom-in-95 duration-200 ${
+              darkMode ? "border-[rgba(227,224,211,0.14)] bg-[#24211d] text-[#f1ead8]" : "border-[#e5e4df] bg-white text-[#191919]"
+            }`}
+          >
+            <CardHeader className={`relative gap-3 border-b py-5 ${darkMode ? "border-[rgba(227,224,211,0.12)]" : "border-[#e4ebe6]"}`}>
               <Button
+                type="button"
                 variant="ghost"
-                className={`-ml-2 mb-2 h-8 w-fit px-2 ${darkMode ? "hover:bg-[#312c26]" : "hover:bg-[#f0f0eb]"}`}
+                size="icon"
+                className={`absolute right-3 top-3 size-8 ${darkMode ? "hover:bg-white/10" : "hover:bg-[#f1f5f2]"}`}
                 onClick={() => setShowLoginForm(false)}
+                aria-label="关闭登录窗口"
+                title="关闭"
               >
-                <ChevronLeft className="mr-1 h-4 w-4" />
-                返回主页
+                <X className="size-4" />
               </Button>
-              <CardTitle className="text-2xl">登录</CardTitle>
-              <CardDescription className={normalTextClass}>输入访问令牌进入系统</CardDescription>
+              <div className="flex items-center gap-3 pr-8">
+                <span className={`flex size-10 shrink-0 items-center justify-center rounded-lg border ${darkMode ? "border-[#d4a27f]/25 bg-[#d4a27f]/10 text-[#e8b395]" : "border-[#cc785c]/20 bg-[#cc785c]/10 text-[#cc785c]"}`}>
+                  <KeyRound className="size-5" />
+                </span>
+                <div className="min-w-0">
+                  <p className={`text-xs font-medium ${darkMode ? "text-[#c9c3b4]" : "text-[#666663]"}`}>Orvion 控制台</p>
+                  <CardTitle id="login-dialog-title" className="mt-0.5 text-xl">登录</CardTitle>
+                </div>
+              </div>
+              <CardDescription className={normalTextClass}>输入访问令牌以继续进入管理界面</CardDescription>
             </CardHeader>
             <form onSubmit={handleLogin}>
-              <CardContent className="grid gap-4">
+              <CardContent className="grid gap-4 py-5">
                 <div className="grid gap-2">
-                  <Label htmlFor="token">访问令牌</Label>
-                  <Input
-                    id="token"
-                    type="password"
-                    value={token}
-                    onChange={(e) => {
-                      setToken(e.target.value);
-                      if (loginError) setLoginError("");
-                    }}
-                    placeholder="输入您的访问令牌"
-                    required
-                    className={darkMode ? "border-[rgba(227,224,211,0.18)] bg-[#1a1714]" : ""}
-                  />
-                  {loginError && (
-                    <p className="text-xs text-red-500">{loginError}</p>
+                  <Label htmlFor="token" className="text-sm font-medium">访问令牌</Label>
+                  <div className="relative">
+                    <KeyRound className={`pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 ${darkMode ? "text-[#c9c3b4]" : "text-[#77736d]"}`} />
+                    <Input
+                      id="token"
+                      type="password"
+                      value={token}
+                      onChange={(e) => {
+                        setToken(e.target.value);
+                        if (loginError) setLoginError("");
+                      }}
+                      placeholder="输入您的访问令牌"
+                      autoComplete="current-password"
+                      required
+                      className={`h-11 pl-10 ${darkMode ? "border-[rgba(227,224,211,0.18)] bg-[#1a1714]" : "border-[#ddd8d1] bg-[#fbfaf7]"}`}
+                    />
+                  </div>
+                  {loginError ? (
+                    <p role="alert" className="text-xs text-red-500">{loginError}</p>
+                  ) : (
+                    <p className={`text-xs ${darkMode ? "text-[#c9c3b4]" : "text-[#77736d]"}`}>令牌仅用于当前浏览器会话验证。</p>
                   )}
                 </div>
               </CardContent>
-              <CardFooter>
+              <CardFooter className={`flex-col gap-3 border-t py-4 ${darkMode ? "border-[rgba(227,224,211,0.12)]" : "border-[#e4ebe6]"}`}>
                 <Button
-                  className="mt-5 w-full bg-[#cc785c] text-white hover:bg-[#d4a27f]"
+                  className="h-10 w-full bg-[#cc785c] text-white shadow-sm hover:bg-[#b9654d]"
                   type="submit"
                   disabled={submitting}
                 >
-                  {submitting ? "校验中..." : "登录"}
+                  <ShieldCheck className="size-4" />
+                  {submitting ? "正在校验..." : "安全登录"}
                 </Button>
               </CardFooter>
             </form>

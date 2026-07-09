@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef, useLayoutEffect } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, useLayoutEffect, type CSSProperties } from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
@@ -84,6 +84,14 @@ import { resolveModelIcon } from "@/lib/model-icon";
 const capabilityValues = ["chat", "vision", "video", "embedding", "rerank"] as const;
 type ModelCapability = (typeof capabilityValues)[number];
 type ModelColumnKey = "model" | "input" | "output" | "capabilities" | "connectivity" | "status" | "actions";
+type ModelGridStyle = CSSProperties & { "--model-cols": string };
+
+function modelGridStyle(template: string, transform?: string): ModelGridStyle {
+  return {
+    "--model-cols": template,
+    ...(transform ? { transform } : {}),
+  } as ModelGridStyle;
+}
 type ConnectivityState = {
   status: "idle" | "testing" | "success" | "partial" | "error";
   result?: ModelConnectivityTestResult;
@@ -1106,7 +1114,7 @@ export default function ModelsPage() {
             <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-[28px] border border-border/70 bg-card/88 shadow-[0_18px_50px_rgba(98,71,47,0.08)]">
               <div
                 className="hidden xl:grid xl:[grid-template-columns:var(--model-cols)] items-center gap-3 border-b border-border/60 px-5 py-2.5 text-xs font-medium text-muted-foreground"
-                style={{ ["--model-cols" as any]: desktopGridTemplate }}
+                style={modelGridStyle(desktopGridTemplate)}
               >
                 {columnVisibility.model ? <div>模型</div> : null}
                 {columnVisibility.input ? <div className="text-center">输入</div> : null}
@@ -1150,10 +1158,7 @@ export default function ModelsPage() {
                       data-index={virtualRow.index}
                       ref={rowVirtualizer.measureElement}
                       className="group absolute left-0 top-0 grid w-full gap-3 overflow-hidden border-b border-border/50 px-4 py-2 transform-gpu transition-[background-color,transform,box-shadow,border-color] duration-200 hover:translate-x-1 hover:border-border/30 hover:bg-gradient-to-r hover:from-primary/5 hover:via-background hover:to-background hover:shadow-[0_10px_22px_rgba(98,71,47,0.09)] last:border-b-0 xl:[grid-template-columns:var(--model-cols)] xl:items-center xl:px-5"
-                      style={{
-                        transform: `translateY(${virtualRow.start}px)`,
-                        ["--model-cols" as any]: desktopGridTemplate,
-                      }}
+                      style={modelGridStyle(desktopGridTemplate, `translateY(${virtualRow.start}px)`)}
                     >
                       <div className="pointer-events-none absolute inset-y-2 left-0 w-1 rounded-r-full bg-primary/0 transition-all duration-200 group-hover:bg-primary/70 group-hover:shadow-[0_0_18px_rgba(180,104,56,0.28)]" />
                       {columnVisibility.model ? (

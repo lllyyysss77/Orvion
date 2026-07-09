@@ -2,6 +2,7 @@ package handler
 
 import (
 	"io"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 
@@ -21,20 +22,24 @@ type asyncMirrorWriter struct {
 	pw        *io.PipeWriter
 	ch        chan []byte
 	done      chan struct{}
+	logID     uint
+	logUUID   string
 	dropped   atomic.Int64
 	closeOnce sync.Once
 	errOnce   sync.Once
 	err       error
 }
 
-func newAsyncMirrorWriter(pw *io.PipeWriter, bufChunks int) *asyncMirrorWriter {
+func newAsyncMirrorWriter(pw *io.PipeWriter, bufChunks int, logID uint, logUUID string) *asyncMirrorWriter {
 	if bufChunks <= 0 {
 		bufChunks = 64
 	}
 	w := &asyncMirrorWriter{
-		pw:   pw,
-		ch:   make(chan []byte, bufChunks),
-		done: make(chan struct{}),
+		pw:      pw,
+		ch:      make(chan []byte, bufChunks),
+		done:    make(chan struct{}),
+		logID:   logID,
+		logUUID: logUUID,
 	}
 	pkg.GoSafe("handler.async_mirror_writer", w.run)
 	return w
@@ -81,6 +86,9 @@ func (w *asyncMirrorWriter) Write(p []byte) (int, error) {
 func (w *asyncMirrorWriter) Close() error {
 	w.closeOnce.Do(func() { close(w.ch) })
 	<-w.done
+	if dropped := w.Dropped(); dropped > 0 {
+		slog.Warn("响应日志镜像发生数据丢弃，日志与用量估算可能不完整", "log_id", w.logID, "log_uuid", w.logUUID, "dropped_bytes", dropped)
+	}
 	return nil
 }
 
