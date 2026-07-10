@@ -450,7 +450,6 @@ export default function LogsPage() {
   const [providerOptions, setProviderOptions] = useState<Provider[]>([]);
   const [authKeyOptions, setAuthKeyOptions] = useState<AuthKeyItem[]>([]);
   const [filters, setFilters] = useState<LogFilterState>(storedPreferences.filters);
-  const [draftFilters, setDraftFilters] = useState<LogFilterState>(storedPreferences.filters);
   const navigate = useNavigate();
   // 详情弹窗
   const [selectedLog, setSelectedLog] = useState<ChatLog | null>(null);
@@ -515,15 +514,14 @@ export default function LogsPage() {
     );
   }, [filters, pageSize]);
 
-  const applyFilters = () => {
-    setPage(1);
-    setFilters(draftFilters);
-  };
-
   const resetFilters = () => {
     setPage(1);
-    setDraftFilters(defaultLogFilters);
     setFilters(defaultLogFilters);
+  };
+
+  const updateFilters = (patch: Partial<LogFilterState>) => {
+    setPage(1);
+    setFilters((prev) => ({ ...prev, ...patch }));
   };
 
   const handlePageChange = (newPage: number) => {
@@ -538,7 +536,7 @@ export default function LogsPage() {
     void fetchLogs();
   };
   const handleTimeRangeChange = (timeRange: LogTimeRange) => {
-    setDraftFilters((prev) => ({ ...prev, timeRange }));
+    updateFilters({ timeRange });
   };
   const handleCleanTypeChange = (type: 'count' | 'days') => {
     setCleanType(type);
@@ -618,15 +616,15 @@ export default function LogsPage() {
         </div>
         <div className="rounded-xl border border-border/60 bg-card/80 p-3">
           <div className="flex flex-wrap items-center gap-1.5">
-            <div className="inline-flex h-8 overflow-hidden rounded-md border border-border/70 bg-background/50 p-0.5" role="group" aria-label="日志时间范围">
+            <div className="inline-flex h-9 overflow-hidden rounded-md border border-border/70 bg-background/50 p-0.5" role="group" aria-label="日志时间范围">
               {logTimeRangeOptions.map((option) => {
-                const selected = draftFilters.timeRange === option.value;
+                const selected = filters.timeRange === option.value;
                 return (
                   <button
                     key={option.value}
                     type="button"
                     aria-pressed={selected}
-                    className={`rounded-[4px] px-2 text-xs transition-colors ${
+                    className={`h-full rounded-[4px] px-2 text-xs transition-colors ${
                       selected
                         ? "bg-primary text-primary-foreground shadow-sm"
                         : "text-muted-foreground hover:bg-muted hover:text-foreground"
@@ -640,10 +638,10 @@ export default function LogsPage() {
             </div>
             {!isAuthKeyMode ? (
               <Select
-                value={draftFilters.providerName || "all"}
-                onValueChange={(value) => setDraftFilters((prev) => ({ ...prev, providerName: value === "all" ? "" : value }))}
+                value={filters.providerName || "all"}
+                onValueChange={(value) => updateFilters({ providerName: value === "all" ? "" : value })}
               >
-                <SelectTrigger className="h-8 w-[150px] text-xs">
+                <SelectTrigger className="h-9 w-[150px] text-xs">
                   <SelectValue placeholder="提供商" />
                 </SelectTrigger>
                 <SelectContent>
@@ -657,10 +655,10 @@ export default function LogsPage() {
               </Select>
             ) : null}
             <Select
-              value={draftFilters.status || "all"}
-              onValueChange={(value) => setDraftFilters((prev) => ({ ...prev, status: value === "all" ? "" : value }))}
+              value={filters.status || "all"}
+              onValueChange={(value) => updateFilters({ status: value === "all" ? "" : value })}
             >
-              <SelectTrigger className="h-8 w-[120px] text-xs">
+              <SelectTrigger className="h-9 w-[120px] text-xs">
                 <SelectValue placeholder="状态" />
               </SelectTrigger>
               <SelectContent>
@@ -671,10 +669,10 @@ export default function LogsPage() {
             </Select>
             {!isAuthKeyMode ? (
               <Select
-                value={draftFilters.authKeyId || "all"}
-                onValueChange={(value) => setDraftFilters((prev) => ({ ...prev, authKeyId: value === "all" ? "" : value }))}
+                value={filters.authKeyId || "all"}
+                onValueChange={(value) => updateFilters({ authKeyId: value === "all" ? "" : value })}
               >
-                <SelectTrigger className="h-8 w-[170px] text-xs">
+                <SelectTrigger className="h-9 w-[170px] text-xs">
                   <SelectValue placeholder="AuthKey" />
                 </SelectTrigger>
                 <SelectContent>
@@ -687,11 +685,8 @@ export default function LogsPage() {
                 </SelectContent>
               </Select>
             ) : null}
-            <Button variant="outline" size="sm" className="h-8 text-xs" onClick={resetFilters}>
+            <Button variant="outline" size="sm" className="h-9 text-xs" onClick={resetFilters}>
               重置
-            </Button>
-            <Button size="sm" className="h-8 text-xs" onClick={applyFilters}>
-              应用筛选
             </Button>
           </div>
         </div>

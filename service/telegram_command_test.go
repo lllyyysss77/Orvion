@@ -66,6 +66,42 @@ func TestBuildTelegramHelpMessageIncludesImageCommand(t *testing.T) {
 	}
 }
 
+func TestWidenTelegramMessagePadsShortText(t *testing.T) {
+	message := widenTelegramMessageForTelegram("正在思考...")
+	lines := strings.Split(message, "\n")
+	if len(lines) != 2 {
+		t.Fatalf("短消息应追加一行宽度填充，实际为 %q", message)
+	}
+	if lines[0] != "正在思考..." {
+		t.Fatalf("短消息正文不应改变，实际为 %q", lines[0])
+	}
+	if telegramTextDisplayWidth(lines[1]) < telegramWideMessageWidth {
+		t.Fatalf("填充行宽度不足，宽度=%d 内容=%q", telegramTextDisplayWidth(lines[1]), lines[1])
+	}
+}
+
+func TestWidenTelegramMessageIsIdempotent(t *testing.T) {
+	once := widenTelegramMessageForTelegram("完成。")
+	twice := widenTelegramMessageForTelegram(once)
+	if once != twice {
+		t.Fatalf("重复补宽不应追加第二次，once=%q twice=%q", once, twice)
+	}
+}
+
+func TestWidenTelegramMessageSkipsWideText(t *testing.T) {
+	wide := strings.Repeat("A", telegramWideMessageWidth)
+	if got := widenTelegramMessageForTelegram(wide); got != wide {
+		t.Fatalf("已有足够宽度的消息不应追加填充，实际为 %q", got)
+	}
+}
+
+func TestWidenTelegramCaptionSkipsLongCaption(t *testing.T) {
+	longCaption := strings.Repeat("短", telegramWideCaptionMaxRunes+1)
+	if got := widenTelegramCaptionForTelegram(longCaption); got != longCaption {
+		t.Fatalf("过长 caption 不应追加填充，实际长度=%d", len([]rune(got)))
+	}
+}
+
 func assertTelegramStatusRightColumnsAligned(t *testing.T, message string, labels []string) {
 	t.Helper()
 	expectedWidth := -1

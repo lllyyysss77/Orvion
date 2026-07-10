@@ -497,7 +497,9 @@ export default function ProvidersPage() {
       <div className="flex flex-col gap-4 flex-shrink-0">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
-            <h2 className="text-3xl font-semibold tracking-tight">提供商管理</h2>
+            <h2 className="text-3xl font-semibold tracking-tight text-white drop-shadow-[0_2px_12px_rgba(15,23,42,0.65)]">
+              提供商管理
+            </h2>
           </div>
           <div className="flex w-full sm:w-auto items-center justify-end gap-2">
             <Label className="sr-only">提供商名称</Label>
@@ -533,7 +535,17 @@ export default function ProvidersPage() {
                 {providers.map((provider) => (
                   <div
                     key={provider.ID}
-                    className="group rounded-[26px] border border-border/70 bg-card/88 p-5 shadow-[0_18px_50px_rgba(98,71,47,0.08)] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_24px_60px_rgba(98,71,47,0.12)]"
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`编辑提供商 ${provider.Name}`}
+                    onClick={() => openEditDialog(provider)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        openEditDialog(provider);
+                      }
+                    }}
+                    className="group cursor-pointer rounded-[26px] border border-border/60 bg-card/72 p-5 shadow-[0_18px_50px_rgba(98,71,47,0.08)] backdrop-blur-[1.5px] transition-all duration-200 hover:-translate-y-0.5 hover:bg-card/78 hover:shadow-[0_24px_60px_rgba(98,71,47,0.12)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/55 focus-visible:ring-offset-2"
                   >
                     {(() => {
                       const hasProxy = Boolean(provider.ProxyURL && provider.ProxyURL.trim() !== "");
@@ -553,7 +565,10 @@ export default function ProvidersPage() {
                           title={providerEnabled ? "关闭提供商" : "启用提供商"}
                           aria-label={providerEnabled ? "关闭提供商" : "启用提供商"}
                           disabled={statusLoading}
-                          onClick={() => void handleToggleProviderStatus(provider)}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void handleToggleProviderStatus(provider);
+                          }}
                           className={`relative flex size-7 shrink-0 items-center justify-center rounded-full border shadow-sm transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/50 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60 ${
                             providerEnabled
                               ? "border-emerald-200 bg-emerald-50 text-emerald-600 shadow-emerald-500/10 hover:border-emerald-300 hover:bg-emerald-100 hover:text-emerald-700"
@@ -580,7 +595,8 @@ export default function ProvidersPage() {
                         size="icon"
                         className="h-8 w-8 rounded-full"
                         disabled={!provider.Console}
-                        onClick={() => {
+                        onClick={(event) => {
+                          event.stopPropagation();
                           if (!openExternalUrl(provider.Console)) {
                             toast.error("控制台地址无效或浏览器阻止了弹窗（仅支持 http/https）");
                           }
@@ -593,7 +609,10 @@ export default function ProvidersPage() {
                         variant="outline"
                         size="icon"
                         className="h-8 w-8 rounded-full"
-                        onClick={() => openEditDialog(provider)}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          openEditDialog(provider);
+                        }}
                       >
                         <Pencil className="h-4 w-4" />
                       </Button>
@@ -602,7 +621,10 @@ export default function ProvidersPage() {
                         variant="secondary"
                         size="icon"
                         className="h-8 w-8 rounded-full"
-                        onClick={() => openModelsDialog(provider.ID)}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          openModelsDialog(provider.ID);
+                        }}
                       >
                         <Boxes className="h-4 w-4" />
                       </Button>
@@ -611,7 +633,10 @@ export default function ProvidersPage() {
                         variant="destructive"
                         size="icon"
                         className="h-8 w-8 rounded-full"
-                        onClick={() => openDeleteDialog(provider.ID)}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          openDeleteDialog(provider.ID);
+                        }}
                       >
                         <Trash2 className="h-4 w-4" />
                       </Button>

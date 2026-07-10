@@ -6,6 +6,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { cn, openExternalUrl } from "@/lib/utils";
 import Loading from "@/components/loading";
 import iconSvg from "@/assets/icon.svg";
+import providerPageAnimeBg from "@/assets/ainme.png";
 import {
   Activity,
   Bot,
@@ -128,6 +129,7 @@ export default function Layout() {
   const effectiveUIFont: UIFontOption = uiFont;
   const layoutFontClass = UI_FONT_CLASS_MAP[effectiveUIFont];
   const isAuthKeyToken = getStoredAuthTokenMode() === "auth_key";
+  const isProvidersRoute = location.pathname === "/providers";
   const isAgentRoute = AGENT_ROUTE_PREFIXES.some((path) => (
     location.pathname === path || location.pathname.startsWith(`${path}/`)
   ));
@@ -659,9 +661,26 @@ export default function Layout() {
       {renderMobileSidebar()}
 
       <main className="pt-14">
-        <div className="h-[calc(100vh-3.5rem)] transition-[padding-left] duration-200 ease-linear md:pl-[var(--sidebar-offset)]" style={sidebarOffsetStyle}>
-          <div className="h-full p-3 md:p-5">
-            <div className="mx-auto h-full max-w-[1720px] min-w-0 overflow-hidden">
+        <div
+          className="h-[calc(100vh-3.5rem)] transition-[padding-left] duration-200 ease-linear md:pl-[var(--sidebar-offset)]"
+          style={sidebarOffsetStyle}
+        >
+          <div
+            className={cn(
+              "h-full p-3 md:p-5",
+              isProvidersRoute && "overflow-hidden rounded-lg bg-no-repeat"
+            )}
+            style={isProvidersRoute
+              ? {
+                backgroundImage: `linear-gradient(115deg, color-mix(in srgb, var(--background) 22%, transparent) 0%, color-mix(in srgb, var(--background) 14%, transparent) 52%, color-mix(in srgb, var(--background) 6%, transparent) 100%), url(${providerPageAnimeBg})`,
+                backgroundPosition: "center 18%",
+                backgroundSize: "100% 100%",
+              }
+              : undefined}
+          >
+            <div
+              className="mx-auto h-full max-w-[1720px] min-w-0 overflow-hidden"
+            >
               {renderRouteContent()}
             </div>
           </div>

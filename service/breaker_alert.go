@@ -29,9 +29,14 @@ const (
 	telegramRequestRetryMaxAttempt = 3
 	telegramRequestRetryDelay      = 800 * time.Millisecond
 	telegramMarkdownBoxBorderMax   = 33
+	telegramWideMessageWidth       = 42
+	telegramWideMessageMaxRunes    = 3500
+	telegramWideCaptionMaxRunes    = 900
 )
 
 var ErrTelegramNotifierNotConfigured = errors.New("telegram 告警未启用或配置不完整")
+
+var telegramWideMessagePad = strings.Repeat("\u2800", telegramWideMessageWidth)
 
 type telegramNotifier struct {
 	endpoint string
@@ -443,6 +448,7 @@ func (n *telegramNotifier) sendTextWithMarkupToChat(chatID string, content strin
 }
 
 func (n *telegramNotifier) sendTextWithMarkupToChatWithParseMode(chatID string, content string, replyMarkup any, parseMode string) error {
+	content = widenTelegramMessageForTelegram(content)
 	payload := telegramSendMessageRequest{
 		ChatID:      chatID,
 		Text:        content,
@@ -470,10 +476,48 @@ func (n *telegramNotifier) sendMarkdownTextToChatAndReturnMessageID(ctx context.
 	return n.sendTextToChatAndReturnMessageIDWithParseMode(ctx, chatID, content, "")
 }
 
+func widenTelegramMessageForTelegram(content string) string {
+	return widenTelegramTextForTelegram(content, telegramWideMessageMaxRunes)
+}
+
+func widenTelegramCaptionForTelegram(content string) string {
+	return widenTelegramTextForTelegram(content, telegramWideCaptionMaxRunes)
+}
+
+func widenTelegramTextForTelegram(content string, maxRunes int) string {
+	if strings.TrimSpace(content) == "" {
+		return content
+	}
+	trimmed := strings.TrimRight(content, "\r\n")
+	if strings.HasSuffix(trimmed, telegramWideMessagePad) {
+		return content
+	}
+	if len([]rune(trimmed)) > maxRunes {
+		return content
+	}
+	if telegramTextMaxLineDisplayWidth(trimmed) >= telegramWideMessageWidth {
+		return content
+	}
+	return trimmed + "\n" + telegramWideMessagePad
+}
+
+func telegramTextMaxLineDisplayWidth(content string) int {
+	maxWidth := 0
+	normalized := strings.ReplaceAll(content, "\r\n", "\n")
+	for _, line := range strings.Split(normalized, "\n") {
+		width := telegramTextDisplayWidth(strings.TrimRight(line, "\r"))
+		if width > maxWidth {
+			maxWidth = width
+		}
+	}
+	return maxWidth
+}
+
 func (n *telegramNotifier) sendTextToChatAndReturnMessageIDWithParseMode(ctx context.Context, chatID string, content string, parseMode string) (int64, error) {
 	if n == nil {
 		return 0, fmt.Errorf("telegram notifier is nil")
 	}
+	content = widenTelegramMessageForTelegram(content)
 	payload := telegramSendMessageRequest{
 		ChatID:    strings.TrimSpace(chatID),
 		Text:      content,
@@ -573,7 +617,7 @@ func (n *telegramNotifier) sendPhotoURLToChat(ctx context.Context, chatID string
 	return n.postTelegramMethod(ctx, "sendPhoto", telegramSendPhotoRequest{
 		ChatID:  chatID,
 		Photo:   photoURL,
-		Caption: strings.TrimSpace(caption),
+		Caption: widenTelegramCaptionForTelegram(strings.TrimSpace(caption)),
 	})
 }
 
@@ -596,7 +640,7 @@ func (n *telegramNotifier) sendDocumentURLToChat(ctx context.Context, chatID str
 	return n.postTelegramMethod(ctx, "sendDocument", telegramSendDocumentRequest{
 		ChatID:   chatID,
 		Document: documentURL,
-		Caption:  strings.TrimSpace(caption),
+		Caption:  widenTelegramCaptionForTelegram(strings.TrimSpace(caption)),
 	})
 }
 
@@ -627,8 +671,9 @@ func (n *telegramNotifier) sendMultipartBinaryToChat(ctx context.Context, method
 	if err := writer.WriteField("chat_id", chatID); err != nil {
 		return err
 	}
-	if strings.TrimSpace(caption) != "" {
-		if err := writer.WriteField("caption", strings.TrimSpace(caption)); err != nil {
+	caption = widenTelegramCaptionForTelegram(strings.TrimSpace(caption))
+	if caption != "" {
+		if err := writer.WriteField("caption", caption); err != nil {
 			return err
 		}
 	}
@@ -657,6 +702,7 @@ func (n *telegramNotifier) sendMultipartBinaryToChat(ctx context.Context, method
 }
 
 func (n *telegramNotifier) editMessageTextWithMarkup(chatID int64, messageID int64, content string, replyMarkup any) error {
+	content = widenTelegramMessageForTelegram(content)
 	payload := telegramEditMessageTextRequest{
 		ChatID:      chatID,
 		MessageID:   messageID,
@@ -673,10 +719,11 @@ func (n *telegramNotifier) editMessageTextWithMarkup(chatID int64, messageID int
 }
 
 func (n *telegramNotifier) editMarkdownMessageText(chatID int64, messageID int64, content string) error {
+	rendered := widenTelegramMessageForTelegram(renderTelegramAgentMarkdownV2(content))
 	payload := telegramEditMessageTextRequest{
 		ChatID:    chatID,
 		MessageID: messageID,
-		Text:      renderTelegramAgentMarkdownV2(content),
+		Text:      rendered,
 		ParseMode: "MarkdownV2",
 	}
 	if err := n.postTelegramMethod(context.Background(), "editMessageText", payload); err != nil {

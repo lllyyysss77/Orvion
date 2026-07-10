@@ -160,7 +160,7 @@ function SessionButton({
         <div className="flex items-center gap-3">
           <div className="min-w-0">
             <div className="truncate text-sm font-medium">会话 {shortConversationID(session.conversation_id)}</div>
-            <div className="mt-1 text-xs text-muted-foreground">Chat {session.chat_id} · {formatDateTime(session.latest_at)}</div>
+            <div className="mt-1 text-xs text-muted-foreground">{formatDateTime(session.latest_at)}</div>
           </div>
         </div>
       </button>

@@ -8,7 +8,6 @@ import {
   Loader2,
   RefreshCw,
   Save,
-  Search,
   ShieldCheck,
   Sparkles,
   Trash2,
@@ -42,33 +41,17 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import Loading from "@/components/loading";
 import {
-  configAPI,
   skillAPI,
   type SkillFileContent,
   type SkillFileNode,
   type SkillItem,
   type SkillSecurityReviewResult,
-  type TelegramAgentConfig,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
-
-const defaultTelegramAgentConfig: TelegramAgentConfig = {
-  enabled: true,
-  model: "",
-  system_prompt: "你是 Orvion 的 Telegram 对话助手。请用简体中文回答，保持简洁、准确、友好。",
-  max_history_messages: 20,
-  max_tokens: 2048,
-  edit_interval_ms: 1200,
-  skills_enabled: false,
-};
 
 export default function SkillsPage() {
   const [loading, setLoading] = useState(true);
   const [skills, setSkills] = useState<SkillItem[]>([]);
-  const [query, setQuery] = useState("");
-  const [skillsEnabled, setSkillsEnabled] = useState(false);
-  const [agentConfig, setAgentConfig] = useState<TelegramAgentConfig>(defaultTelegramAgentConfig);
-  const [savingConfig, setSavingConfig] = useState(false);
   const [reloading, setReloading] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [importName, setImportName] = useState("");
@@ -91,92 +74,36 @@ export default function SkillsPage() {
   const [reviewError, setReviewError] = useState("");
   const zipInputRef = useRef<HTMLInputElement | null>(null);
 
-  const loadConfig = useCallback(async () => {
-    const response = await configAPI.getConfig("telegram_agent");
-    const parsed = response.value ? JSON.parse(response.value) as Partial<TelegramAgentConfig> : {};
-    const next = {
-      enabled: parsed.enabled,
-      base_url: parsed.base_url,
-      api_key: parsed.api_key,
-      model: parsed.model || defaultTelegramAgentConfig.model,
-      system_prompt: parsed.system_prompt || defaultTelegramAgentConfig.system_prompt,
-      max_history_messages: Number(parsed.max_history_messages || defaultTelegramAgentConfig.max_history_messages),
-      max_tokens: Number(parsed.max_tokens || defaultTelegramAgentConfig.max_tokens),
-      temperature: parsed.temperature,
-      edit_interval_ms: Number(parsed.edit_interval_ms || defaultTelegramAgentConfig.edit_interval_ms),
-      skills_enabled: parsed.skills_enabled === true,
-    };
-    setAgentConfig(next);
-    setSkillsEnabled(next.skills_enabled === true);
-  }, []);
-
-  const loadSkills = useCallback(async (nextQuery = "") => {
-    const response = await skillAPI.list({ query: nextQuery.trim() });
+  const loadSkills = useCallback(async () => {
+    const response = await skillAPI.list({});
     setSkills(response.skills ?? []);
-    setSkillsEnabled(response.skills_enabled === true);
   }, []);
 
   const loadPage = useCallback(async () => {
     try {
       setLoading(true);
-      await loadConfig();
       await loadSkills();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "加载 Skills 失败");
     } finally {
       setLoading(false);
     }
-  }, [loadConfig, loadSkills]);
+  }, [loadSkills]);
 
   useEffect(() => {
     void loadPage();
   }, [loadPage]);
 
-  const handleSearch = async () => {
-    try {
-      await loadSkills(query);
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "检索 Skills 失败");
-    }
-  };
-
   const handleReload = async () => {
     try {
       setReloading(true);
-      const response = await skillAPI.reload({ query: query.trim() });
+      const response = await skillAPI.reload({});
       setSkills(response.skills ?? []);
-      setSkillsEnabled(response.skills_enabled === true);
       toast.success(response.message || "Skills 已热重载");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "热重载 Skills 失败");
     } finally {
       setReloading(false);
-    }
-  };
-
-  const handleSaveConfig = async () => {
-    const nextConfig: TelegramAgentConfig = {
-      enabled: agentConfig.enabled,
-      base_url: agentConfig.base_url,
-      api_key: agentConfig.api_key,
-      model: agentConfig.model,
-      system_prompt: agentConfig.system_prompt,
-      max_history_messages: agentConfig.max_history_messages,
-      max_tokens: agentConfig.max_tokens,
-      temperature: agentConfig.temperature,
-      edit_interval_ms: agentConfig.edit_interval_ms,
-      skills_enabled: skillsEnabled,
-    };
-    try {
-      setSavingConfig(true);
-      await configAPI.updateConfig("telegram_agent", nextConfig);
-      setAgentConfig(nextConfig);
-      toast.success("Skills 配置已保存");
-      await loadSkills(query);
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "保存 Skills 配置失败");
-    } finally {
-      setSavingConfig(false);
     }
   };
 
@@ -252,7 +179,7 @@ export default function SkillsPage() {
       setFileContent(updated);
       setDraftContent(updated.content ?? "");
       toast.success("Skill 文件已保存");
-      await loadSkills(query);
+      await loadSkills();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "保存 Skill 文件失败");
     } finally {
@@ -272,7 +199,7 @@ export default function SkillsPage() {
         handleEditorOpenChange(false);
       }
       setDeleteTarget(null);
-      await loadSkills(query);
+      await loadSkills();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "移除 Skill 失败");
     } finally {
@@ -315,7 +242,7 @@ export default function SkillsPage() {
       setUploadFiles([]);
       setImportName("");
       setUploadOpen(false);
-      await loadSkills(query);
+      await loadSkills();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "上传 Skill 失败");
     } finally {
@@ -349,36 +276,6 @@ export default function SkillsPage() {
           </Button>
         </div>
       </div>
-
-      <Card className="rounded-2xl border border-border/60 bg-card/90">
-        <CardContent className="grid grid-cols-1 gap-3 p-4 lg:grid-cols-[minmax(9rem,0.45fr)_minmax(0,1fr)_auto]">
-          <div className="flex h-9 items-center justify-between rounded-lg border border-border/60 bg-muted/50 px-3">
-            <Label className="text-xs text-muted-foreground">启用 Skills</Label>
-            <Switch checked={skillsEnabled} onCheckedChange={setSkillsEnabled} />
-          </div>
-          <div className="flex min-w-0 gap-2">
-            <Input
-              className="h-9"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") void handleSearch();
-              }}
-              placeholder="搜索 Skill"
-            />
-          </div>
-          <div className="flex gap-2">
-            <Button variant="outline" className="h-9 gap-2" onClick={handleSearch}>
-              <Search className="size-4" />
-              检索
-            </Button>
-            <Button className="h-9 gap-2" onClick={handleSaveConfig} disabled={savingConfig}>
-              <Save className="size-4" />
-              保存
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
 
       {skills.length === 0 ? (
         <Card className="rounded-2xl border border-dashed border-border/70 bg-card/70">
