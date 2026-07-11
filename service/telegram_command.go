@@ -1117,13 +1117,13 @@ func (c telegramAgentClient) SendPhoto(ctx context.Context, chatID int64, source
 	}
 	chatIDText := strconv.FormatInt(chatID, 10)
 	if isTelegramAgentAttachmentURL(source) {
-		return c.notifier.sendPhotoURLToChat(ctx, chatIDText, source, caption)
+		return c.notifier.sendPhotoURLToChatWithoutCaptionWidening(ctx, chatIDText, source, caption)
 	}
 	data, filename, err := readTelegramAgentAttachmentFile(source, telegramAgentPhotoMaxBytes)
 	if err != nil {
 		return err
 	}
-	return c.notifier.sendPhotoBinaryToChat(chatIDText, filename, data, caption)
+	return c.notifier.sendMultipartBinaryToChatWithoutCaptionWidening(ctx, "sendPhoto", "photo", chatIDText, filename, data, caption, "", telegramPhotoHTTPTimeout)
 }
 
 func (c telegramAgentClient) SendDocument(ctx context.Context, chatID int64, source string, caption string) error {

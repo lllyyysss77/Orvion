@@ -2087,6 +2087,16 @@ func TestMergeTelegramAgentConfigIgnoresStoredSkillsDir(t *testing.T) {
 	}
 }
 
+func TestMergeTelegramAgentConfigKeepsIntentEngineSettings(t *testing.T) {
+	merged := mergeTelegramAgentConfig(
+		models.TelegramAgentConfig{IntentEngine: "local"},
+		models.TelegramAgentConfig{IntentEngine: "AI", IntentModel: "gpt-intent"},
+	)
+	if merged.IntentEngine != "ai" || merged.IntentModel != "gpt-intent" {
+		t.Fatalf("规则引擎配置合并不正确: engine=%q model=%q", merged.IntentEngine, merged.IntentModel)
+	}
+}
+
 func writeTelegramAgentTestSkill(t *testing.T, root string, name string, fileName string, description string, scriptName string) string {
 	return writeTelegramAgentTestSkillWithMetaName(t, root, name, name, fileName, description, scriptName)
 }

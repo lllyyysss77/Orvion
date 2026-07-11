@@ -46,6 +46,12 @@ func classifyTextToImageIntent(normalized string) (int, []string) {
 	if isTextToImageMetaQuestion(normalized) {
 		return 0, []string{"命中生图规则讨论排除"}
 	}
+	if isTextToImageSkillReference(normalized) {
+		return 0, []string{"命中生图 Skill 引用排除"}
+	}
+	if reason, excluded := textToImageNonCreationReason(normalized); excluded {
+		return 0, []string{reason}
+	}
 	if isWeatherQueryPrompt(normalized) {
 		return 0, []string{"命中天气查询排除"}
 	}
@@ -249,6 +255,64 @@ func isTextToImageMetaQuestion(text string) bool {
 		return false
 	}
 	return containsAnyIntentWord(text, []string{"生成图片", "生成图像", "生图", "文生图", "图片"})
+}
+
+func isTextToImageSkillReference(text string) bool {
+	if !containsAnyIntentWord(text, []string{"skill", "技能"}) {
+		return false
+	}
+	return containsAnyIntentWord(text, []string{
+		"图片生成", "图像生成", "生成图片", "生成图像", "生图", "文生图",
+		"imagegen", "generateimage", "texttoimage", "txt2img",
+	})
+}
+
+func textToImageNonCreationReason(text string) (string, bool) {
+	if !hasTextToImageTopic(text) {
+		return "", false
+	}
+	if containsAnyIntentWord(text, []string{
+		"不要生成图片", "不要生成图像", "不用生成图片", "无需生成图片",
+		"别生成图片", "别生成图像", "不要生图", "不用生图", "别生图",
+		"停止生图", "取消生图", "关闭生图",
+	}) {
+		return "命中取消或否定生图请求", true
+	}
+	if containsAnyIntentWord(text, []string{
+		"生图怎么用", "文生图怎么用", "图片生成怎么用", "图像生成怎么用",
+		"如何使用生图", "如何使用文生图", "图片生成使用方法", "生图教程",
+		"生图原理", "文生图原理", "图片生成原理", "图像生成原理",
+		"介绍生图", "介绍文生图", "解释生图", "解释文生图",
+		"生图区别", "文生图区别", "生图对比", "文生图对比",
+		"优化生图", "优化图片生成", "优化图像生成", "修改生图", "检查生图",
+		"测试生图", "调试生图", "修复生图", "配置生图",
+		"生图规则", "文生图规则", "图片生成规则", "生成图片规则",
+		"生图路由", "文生图路由", "图片生成路由", "图像生成路由",
+		"生图误判", "生图误触发", "图片生成误判", "图片生成误触发",
+		"生图失败", "文生图失败", "生成图片失败", "生成图像失败",
+		"生图报错", "文生图报错", "生成图片报错", "生成图像报错",
+		"生成图片翻译", "生成图像翻译",
+	}) || (containsAnyIntentWord(text, []string{"解释", "介绍"}) &&
+		!containsAnyIntentWord(text, []string{"不要解释", "无需解释", "不用解释", "别解释"})) ||
+		(strings.Contains(text, "翻译") && hasQuotedTextToImageTopic(text)) {
+		return "命中生图能力或技术讨论排除", true
+	}
+	return "", false
+}
+
+func hasQuotedTextToImageTopic(text string) bool {
+	return containsAnyIntentWord(text, []string{
+		"“生成图片”", "‘生成图片’", "\"生成图片\"",
+		"“生成图像”", "‘生成图像’", "\"生成图像\"",
+		"“生图”", "‘生图’", "\"生图\"",
+	})
+}
+
+func hasTextToImageTopic(text string) bool {
+	return containsAnyIntentWord(text, []string{
+		"生成图片", "生成图像", "图片生成", "图像生成", "生图", "文生图",
+		"imagegen", "generateimage", "texttoimage", "txt2img",
+	})
 }
 
 func isWeatherQueryPrompt(text string) bool {

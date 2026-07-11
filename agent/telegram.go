@@ -210,7 +210,7 @@ func runTelegramAgentConversationWithHistoryMode(ctx context.Context, client Tel
 	defer finishTelegramSessionReply(session)
 
 	attachments = normalizeTelegramAgentInputAttachments(attachments)
-	if shouldHandleTelegramAgentImageIntent(cfg, prompt, len(attachments) > 0) {
+	if shouldHandleTelegramAgentImageIntent(ctx, cfg, prompt, len(attachments) > 0) {
 		return runTelegramAgentImageGeneration(ctx, client, chatID, prompt, cfg, loadHistory)
 	}
 
@@ -330,12 +330,52 @@ func runTelegramAgentConversationWithHistoryMode(ctx context.Context, client Tel
 	return nil
 }
 
-func shouldHandleTelegramAgentImageIntent(cfg models.TelegramAgentConfig, prompt string, hasAttachment bool) bool {
+func shouldHandleTelegramAgentImageIntent(ctx context.Context, cfg models.TelegramAgentConfig, prompt string, hasAttachment bool) bool {
 	if cfg.IntentRulesEnabled == nil || !*cfg.IntentRulesEnabled {
 		return false
 	}
+	if strings.EqualFold(strings.TrimSpace(cfg.IntentEngine), "ai") && strings.TrimSpace(cfg.IntentModel) != "" {
+		intent, err := classifyTelegramAgentImageIntentWithAI(ctx, cfg, prompt, hasAttachment)
+		if err == nil {
+			return intent
+		}
+		slog.Warn("TG Agent AI 规则引擎调用失败，回退本地规则", "model", cfg.IntentModel, "error", err)
+	}
 	result := agentintent.DetectTextToImage(prompt, hasAttachment)
 	return result.Intent == agentintent.IntentTextToImage
+}
+
+func classifyTelegramAgentImageIntentWithAI(ctx context.Context, cfg models.TelegramAgentConfig, prompt string, hasAttachment bool) (bool, error) {
+	if hasAttachment {
+		return false, nil
+	}
+	classifierCfg := cfg
+	classifierCfg.Model = strings.TrimSpace(cfg.IntentModel)
+	classifierCfg.SystemPrompt = "你是意图分类器。判断用户是否明确要求立即生成一张新图片。只输出 txt2img 或 chat；能力咨询、规则讨论、搜索图片、识图、否定请求均输出 chat。"
+	classifierCfg.MaxTokens = 8
+	temperature := float64(0)
+	classifierCfg.Temperature = &temperature
+	classifierCfg.MemoryEnabled = boolPtr(false)
+	pool, err := buildTelegramAgentDirectProviderPool(classifierCfg, false)
+	if err != nil {
+		return false, err
+	}
+	var answer strings.Builder
+	_, err = streamTelegramAgentPlainReplyWithPool(ctx, classifierCfg, pool, nil, prompt, func(delta string) error {
+		answer.WriteString(delta)
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	result := strings.ToLower(strings.TrimSpace(answer.String()))
+	if strings.Contains(result, agentintent.IntentTextToImage) {
+		return true, nil
+	}
+	if strings.Contains(result, agentintent.IntentChat) {
+		return false, nil
+	}
+	return false, fmt.Errorf("AI 规则引擎返回无法识别的结果: %q", result)
 }
 
 func telegramAgentEditableMessageContent(answer string, status string) string {
@@ -1064,6 +1104,7 @@ func loadTelegramAgentConfig(ctx context.Context) (models.TelegramAgentConfig, e
 		SkillsDir:          agenttools.DefaultSkillsDir,
 		MemoryEnabled:      boolPtr(true),
 		IntentRulesEnabled: boolPtr(false),
+		IntentEngine:       "local",
 	}
 
 	if models.DB == nil {
@@ -1131,6 +1172,12 @@ func mergeTelegramAgentConfig(base models.TelegramAgentConfig, override models.T
 	}
 	if override.IntentRulesEnabled != nil {
 		base.IntentRulesEnabled = override.IntentRulesEnabled
+	}
+	if engine := strings.ToLower(strings.TrimSpace(override.IntentEngine)); engine == "local" || engine == "ai" {
+		base.IntentEngine = engine
+	}
+	if strings.TrimSpace(override.IntentModel) != "" {
+		base.IntentModel = strings.TrimSpace(override.IntentModel)
 	}
 	if strings.TrimSpace(override.ImageModel) != "" {
 		base.ImageModel = strings.TrimSpace(override.ImageModel)

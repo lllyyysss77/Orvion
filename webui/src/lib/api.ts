@@ -1024,6 +1024,8 @@ export interface TelegramAgentConfig {
   edit_interval_ms: number;
   skills_enabled?: boolean;
   intent_rules_enabled?: boolean;
+  intent_engine?: 'local' | 'ai';
+  intent_model?: string;
   image_model?: string;
 }
 

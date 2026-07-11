@@ -29,7 +29,7 @@ const (
 	telegramRequestRetryMaxAttempt = 3
 	telegramRequestRetryDelay      = 800 * time.Millisecond
 	telegramMarkdownBoxBorderMax   = 33
-	telegramWideMessageWidth       = 42
+	telegramWideMessageWidth       = 72
 	telegramWideMessageMaxRunes    = 3500
 	telegramWideCaptionMaxRunes    = 900
 )
@@ -603,6 +603,14 @@ func (n *telegramNotifier) sendPhotoBinaryToChatWithParseMode(ctx context.Contex
 }
 
 func (n *telegramNotifier) sendPhotoURLToChat(ctx context.Context, chatID string, photoURL string, caption string) error {
+	return n.sendPhotoURLToChatWithCaptionWidening(ctx, chatID, photoURL, caption, true)
+}
+
+func (n *telegramNotifier) sendPhotoURLToChatWithoutCaptionWidening(ctx context.Context, chatID string, photoURL string, caption string) error {
+	return n.sendPhotoURLToChatWithCaptionWidening(ctx, chatID, photoURL, caption, false)
+}
+
+func (n *telegramNotifier) sendPhotoURLToChatWithCaptionWidening(ctx context.Context, chatID string, photoURL string, caption string, widenCaption bool) error {
 	if n == nil {
 		return fmt.Errorf("telegram notifier is nil")
 	}
@@ -614,10 +622,14 @@ func (n *telegramNotifier) sendPhotoURLToChat(ctx context.Context, chatID string
 	if photoURL == "" {
 		return fmt.Errorf("photo url is empty")
 	}
+	caption = strings.TrimSpace(caption)
+	if widenCaption {
+		caption = widenTelegramCaptionForTelegram(caption)
+	}
 	return n.postTelegramMethod(ctx, "sendPhoto", telegramSendPhotoRequest{
 		ChatID:  chatID,
 		Photo:   photoURL,
-		Caption: widenTelegramCaptionForTelegram(strings.TrimSpace(caption)),
+		Caption: caption,
 	})
 }
 
@@ -645,6 +657,14 @@ func (n *telegramNotifier) sendDocumentURLToChat(ctx context.Context, chatID str
 }
 
 func (n *telegramNotifier) sendMultipartBinaryToChat(ctx context.Context, method string, fieldName string, chatID string, filename string, fileData []byte, caption string, parseMode string, timeout time.Duration) error {
+	return n.sendMultipartBinaryToChatWithCaptionWidening(ctx, method, fieldName, chatID, filename, fileData, caption, parseMode, timeout, true)
+}
+
+func (n *telegramNotifier) sendMultipartBinaryToChatWithoutCaptionWidening(ctx context.Context, method string, fieldName string, chatID string, filename string, fileData []byte, caption string, parseMode string, timeout time.Duration) error {
+	return n.sendMultipartBinaryToChatWithCaptionWidening(ctx, method, fieldName, chatID, filename, fileData, caption, parseMode, timeout, false)
+}
+
+func (n *telegramNotifier) sendMultipartBinaryToChatWithCaptionWidening(ctx context.Context, method string, fieldName string, chatID string, filename string, fileData []byte, caption string, parseMode string, timeout time.Duration, widenCaption bool) error {
 	if n == nil {
 		return fmt.Errorf("telegram notifier is nil")
 	}
@@ -671,7 +691,10 @@ func (n *telegramNotifier) sendMultipartBinaryToChat(ctx context.Context, method
 	if err := writer.WriteField("chat_id", chatID); err != nil {
 		return err
 	}
-	caption = widenTelegramCaptionForTelegram(strings.TrimSpace(caption))
+	caption = strings.TrimSpace(caption)
+	if widenCaption {
+		caption = widenTelegramCaptionForTelegram(caption)
+	}
 	if caption != "" {
 		if err := writer.WriteField("caption", caption); err != nil {
 			return err

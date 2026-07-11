@@ -73,6 +73,8 @@ type TelegramAgentConfig struct {
 	SkillsDir          string   `json:"-"`
 	MemoryEnabled      *bool    `json:"memory_enabled,omitempty"`
 	IntentRulesEnabled *bool    `json:"intent_rules_enabled,omitempty"`
+	IntentEngine       string   `json:"intent_engine,omitempty"`
+	IntentModel        string   `json:"intent_model,omitempty"`
 	ImageModel         string   `json:"image_model,omitempty"`
 }
 

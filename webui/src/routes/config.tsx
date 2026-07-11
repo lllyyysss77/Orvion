@@ -93,6 +93,8 @@ const telegramAgentSchema = z.object({
   enabled: z.boolean(),
   skills_enabled: z.boolean(),
   intent_rules_enabled: z.boolean(),
+  intent_engine: z.enum(['local', 'ai']),
+  intent_model: z.string().trim(),
   image_model: z.string().trim(),
   base_url: z.string().trim(),
   api_key: z.string().trim(),
@@ -116,6 +118,9 @@ const telegramAgentSchema = z.object({
 }).refine((data) => !data.enabled || !data.intent_rules_enabled || data.image_model.length > 0, {
   message: '启用规则引擎时必须填写生图模型',
   path: ['image_model'],
+}).refine((data) => !data.enabled || !data.intent_rules_enabled || data.intent_engine !== 'ai' || data.intent_model.length > 0, {
+  message: '使用 AI 规则引擎时必须选择 AI 模型',
+  path: ['intent_model'],
 });
 
 const systemLogCleanupSchema = z.object({
@@ -151,6 +156,8 @@ const telegramAgentDefaultValues: TelegramAgentForm = {
   enabled: true,
   skills_enabled: false,
   intent_rules_enabled: false,
+  intent_engine: 'local',
+  intent_model: '',
   image_model: '',
   base_url: '',
   api_key: '',
@@ -304,13 +311,13 @@ export default function ConfigPage() {
   const [telegramAgentSaving, setTelegramAgentSaving] = useState(false);
   const [telegramAgentPromptDialogOpen, setTelegramAgentPromptDialogOpen] = useState(false);
   const [telegramAgentModelDialogOpen, setTelegramAgentModelDialogOpen] = useState(false);
+  const [telegramAgentIntentDialogOpen, setTelegramAgentIntentDialogOpen] = useState(false);
   const [telegramAgentAPIKeyVisible, setTelegramAgentAPIKeyVisible] = useState(false);
   const [telegramAgentModelsLoading, setTelegramAgentModelsLoading] = useState(false);
   const [telegramAgentModelOptions, setTelegramAgentModelOptions] = useState<ProviderModel[]>([]);
   const [telegramAgentModelDropdownOpen, setTelegramAgentModelDropdownOpen] = useState(false);
   const [telegramAgentImageModelsLoading, setTelegramAgentImageModelsLoading] = useState(false);
   const [telegramAgentImageModelOptions, setTelegramAgentImageModelOptions] = useState<Model[]>([]);
-  const [telegramAgentImageModelDropdownOpen, setTelegramAgentImageModelDropdownOpen] = useState(false);
   const [displayConfigSaving, setDisplayConfigSaving] = useState(false);
   const [coreConfigSaving, setCoreConfigSaving] = useState(false);
   const [networkForwardingSaving, setNetworkForwardingSaving] = useState(false);
@@ -424,6 +431,8 @@ export default function ConfigPage() {
           enabled: agentCfg.enabled !== false,
           skills_enabled: agentCfg.skills_enabled === true,
           intent_rules_enabled: agentCfg.intent_rules_enabled === true,
+          intent_engine: agentCfg.intent_engine === 'ai' ? 'ai' as const : 'local' as const,
+          intent_model: agentCfg.intent_model || '',
           image_model: agentCfg.image_model || '',
           base_url: agentCfg.base_url || '',
           api_key: agentCfg.api_key || '',
@@ -625,6 +634,8 @@ export default function ConfigPage() {
       base_url: values.base_url.trim(),
       api_key: values.api_key.trim(),
       model: values.model.trim(),
+      intent_engine: values.intent_engine,
+      intent_model: values.intent_model.trim(),
       image_model: values.image_model.trim(),
       system_prompt: values.system_prompt.trim(),
     };
@@ -711,7 +722,6 @@ export default function ConfigPage() {
         .sort((a, b) => a.Name.localeCompare(b.Name));
 
       setTelegramAgentImageModelOptions(imageModels);
-      setTelegramAgentImageModelDropdownOpen(imageModels.length > 0);
       if (imageModels.length > 0) {
         toast.success(`已获取 ${imageModels.length} 个启用的生图模型`);
       } else {
@@ -720,7 +730,6 @@ export default function ConfigPage() {
     } catch (error) {
       console.error('Failed to fetch telegram agent image models:', error);
       setTelegramAgentImageModelOptions([]);
-      setTelegramAgentImageModelDropdownOpen(false);
       toast.error(error instanceof Error ? error.message : '获取生图模型失败');
     } finally {
       setTelegramAgentImageModelsLoading(false);
@@ -737,6 +746,9 @@ export default function ConfigPage() {
       errors.edit_interval_ms
     ) {
       setTelegramAgentModelDialogOpen(true);
+    }
+    if (errors.intent_model || errors.image_model) {
+      setTelegramAgentIntentDialogOpen(true);
     }
   };
 
@@ -1193,7 +1205,7 @@ export default function ConfigPage() {
                     />
                   </div>
 
-                  <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-[11rem_minmax(0,1fr)]">
+                  <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-2">
                     <FormField
                       control={telegramAgentForm.control}
                       name="intent_rules_enabled"
@@ -1210,82 +1222,16 @@ export default function ConfigPage() {
                       )}
                     />
 
-                    <FormField
-                      control={telegramAgentForm.control}
-                      name="image_model"
-                      render={({ field }) => {
-                        const keyword = String(field.value || '').trim().toLowerCase();
-                        const filteredModels = keyword
-                          ? telegramAgentImageModelOptions.filter((model) => model.Name.toLowerCase().includes(keyword))
-                          : telegramAgentImageModelOptions;
-                        return (
-                          <FormItem className="min-w-0 space-y-1">
-                            <div className="flex min-w-0 gap-2">
-                              <FormControl>
-                                <div className="relative min-w-0 flex-1">
-                                  <Input
-                                    className="h-9"
-                                    placeholder="生图模型"
-                                    {...field}
-                                    onChange={(event) => {
-                                      field.onChange(event.target.value);
-                                      if (telegramAgentImageModelOptions.length > 0) {
-                                        setTelegramAgentImageModelDropdownOpen(true);
-                                      }
-                                    }}
-                                    onFocus={() => {
-                                      if (telegramAgentImageModelOptions.length > 0) {
-                                        setTelegramAgentImageModelDropdownOpen(true);
-                                        return;
-                                      }
-                                      if (!telegramAgentImageModelsLoading) {
-                                        void handleFetchTelegramAgentImageModels();
-                                      }
-                                    }}
-                                    onClick={() => {
-                                      if (telegramAgentImageModelOptions.length > 0) {
-                                        setTelegramAgentImageModelDropdownOpen(true);
-                                        return;
-                                      }
-                                      if (!telegramAgentImageModelsLoading) {
-                                        void handleFetchTelegramAgentImageModels();
-                                      }
-                                    }}
-                                    onBlur={() => {
-                                      window.setTimeout(() => setTelegramAgentImageModelDropdownOpen(false), 120);
-                                    }}
-                                  />
-                                  {telegramAgentImageModelDropdownOpen && telegramAgentImageModelOptions.length > 0 ? (
-                                    <div className="absolute left-0 right-0 top-full z-50 mt-1 max-h-40 overflow-y-auto rounded-md border border-border/70 bg-popover p-1 text-popover-foreground shadow-lg">
-                                      {filteredModels.length > 0 ? (
-                                        filteredModels.slice(0, 80).map((model) => (
-                                          <button
-                                            key={model.ID}
-                                            type="button"
-                                            className="flex h-8 w-full items-center rounded-sm px-2 text-left text-xs hover:bg-accent hover:text-accent-foreground"
-                                            onMouseDown={(event) => {
-                                              event.preventDefault();
-                                              field.onChange(model.Name);
-                                              setTelegramAgentImageModelDropdownOpen(false);
-                                            }}
-                                            title={model.Name}
-                                          >
-                                            <span className="truncate">{model.Name}</span>
-                                          </button>
-                                        ))
-                                      ) : (
-                                        <div className="px-2 py-2 text-xs text-muted-foreground">无匹配模型</div>
-                                      )}
-                                    </div>
-                                  ) : null}
-                                </div>
-                              </FormControl>
-                            </div>
-                            <FormMessage />
-                          </FormItem>
-                        );
-                      }}
-                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="h-9 w-full justify-start gap-2"
+                      disabled={!telegramAgentForm.watch('intent_rules_enabled')}
+                      onClick={() => setTelegramAgentIntentDialogOpen(true)}
+                    >
+                      <Settings className="size-4" />
+                      规则引擎详细
+                    </Button>
                   </div>
 
                   <Button
@@ -1555,6 +1501,106 @@ export default function ConfigPage() {
               重新测试
             </Button>
             <Button type="button" onClick={() => setProxyTestOpen(false)}>关闭</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={telegramAgentIntentDialogOpen} onOpenChange={setTelegramAgentIntentDialogOpen}>
+        <DialogContent className="w-[92vw] !max-w-xl overflow-hidden p-0">
+          <DialogHeader className="border-b border-border/70 px-5 py-4 pr-12">
+            <DialogTitle className="flex items-center gap-2 text-base">
+              <Gauge className="size-4 text-emerald-600" />
+              规则引擎详细
+            </DialogTitle>
+            <DialogDescription>选择意图识别方式，以及规则引擎使用的 AI 与生图模型。</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 px-5 py-4">
+            <Form {...telegramAgentForm}>
+              <FormField
+                control={telegramAgentForm.control}
+                name="intent_engine"
+                render={({ field }) => (
+                  <FormItem className="space-y-1">
+                    <FormLabel className="text-xs text-muted-foreground">规则引擎类型</FormLabel>
+                    <Select value={field.value} onValueChange={field.onChange}>
+                      <FormControl><SelectTrigger className="w-full"><SelectValue /></SelectTrigger></FormControl>
+                      <SelectContent>
+                        <SelectItem value="local">本地规则引擎</SelectItem>
+                        <SelectItem value="ai">AI 规则引擎</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              {telegramAgentForm.watch('intent_engine') === 'ai' ? (
+                <FormField
+                  control={telegramAgentForm.control}
+                  name="intent_model"
+                  render={({ field }) => (
+                    <FormItem className="space-y-1">
+                      <FormLabel className="text-xs text-muted-foreground">AI 规则模型</FormLabel>
+                      <Select
+                        value={field.value}
+                        onValueChange={field.onChange}
+                        onOpenChange={(open) => {
+                          if (open && telegramAgentModelOptions.length === 0 && !telegramAgentModelsLoading) {
+                            void handleFetchTelegramAgentModels();
+                          }
+                        }}
+                      >
+                          <FormControl>
+                            <SelectTrigger className="w-full">
+                              <SelectValue placeholder={telegramAgentModelsLoading ? '正在获取模型...' : '选择 AI 模型'} />
+                            </SelectTrigger>
+                          </FormControl>
+                          <SelectContent>
+                            {telegramAgentModelsLoading ? <SelectItem value="__loading" disabled>正在获取模型...</SelectItem> : null}
+                            {telegramAgentModelOptions.map((model) => <SelectItem key={model.id} value={model.id}>{model.id}</SelectItem>)}
+                            {!telegramAgentModelsLoading && telegramAgentModelOptions.length === 0 ? <SelectItem value="__empty" disabled>暂无可用模型</SelectItem> : null}
+                          </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              ) : null}
+
+              <FormField
+                control={telegramAgentForm.control}
+                name="image_model"
+                render={({ field }) => (
+                  <FormItem className="space-y-1">
+                    <FormLabel className="text-xs text-muted-foreground">生图模型</FormLabel>
+                    <Select
+                      value={field.value}
+                      onValueChange={field.onChange}
+                      onOpenChange={(open) => {
+                        if (open && telegramAgentImageModelOptions.length === 0 && !telegramAgentImageModelsLoading) {
+                          void handleFetchTelegramAgentImageModels();
+                        }
+                      }}
+                    >
+                        <FormControl>
+                          <SelectTrigger className="w-full">
+                            <SelectValue placeholder={telegramAgentImageModelsLoading ? '正在获取模型...' : '选择生图模型'} />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          {telegramAgentImageModelsLoading ? <SelectItem value="__loading" disabled>正在获取模型...</SelectItem> : null}
+                          {telegramAgentImageModelOptions.map((model) => <SelectItem key={model.ID} value={model.Name}>{model.Name}</SelectItem>)}
+                          {!telegramAgentImageModelsLoading && telegramAgentImageModelOptions.length === 0 ? <SelectItem value="__empty" disabled>暂无可用模型</SelectItem> : null}
+                        </SelectContent>
+                    </Select>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </Form>
+          </div>
+          <DialogFooter className="border-t border-border/70 px-5 py-4">
+            <Button type="button" onClick={() => setTelegramAgentIntentDialogOpen(false)}>完成</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
