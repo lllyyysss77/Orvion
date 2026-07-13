@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"unicode/utf16"
 )
 
 const (
@@ -119,8 +120,17 @@ func sendTelegramAgentAttachments(ctx context.Context, client TelegramClient, ch
 
 func limitTelegramAgentAttachmentCaption(caption string) string {
 	caption = strings.TrimSpace(caption)
-	if len(caption) <= telegramAgentAttachmentCaptionMax {
-		return caption
+	runes := []rune(caption)
+	units := 0
+	for index, r := range runes {
+		width := utf16.RuneLen(r)
+		if width < 1 {
+			width = 1
+		}
+		if units+width > telegramAgentAttachmentCaptionMax {
+			return string(runes[:index])
+		}
+		units += width
 	}
-	return caption[:telegramAgentAttachmentCaptionMax]
+	return caption
 }

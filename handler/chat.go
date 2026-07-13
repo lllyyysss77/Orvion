@@ -158,29 +158,41 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 		return
 	}
 
-	pr, pipeWriter := io.Pipe()
-	// 用 asyncMirrorWriter 把 pw 写入解耦:RecordLog 消费慢或 io.Pipe 32KiB
-	// 缓冲吃满时,Write 不阻塞,保证上游响应读链不被拖死。
-	pw := newAsyncMirrorWriter(pipeWriter, 256, logRef.ID, logRef.UUID)
-	// 异步处理输出并记录 tokens
-	pkg.GoSafe("handler.record_log", func() {
-		service.RecordLog(context.Background(), startReq, log.FirstChunkTimeMs, pr, postProcessor, logRef, log.AuthKeyID, effectiveBefore, effectiveProvidersWithMeta.IOLog, logStyle)
-	})
+	spool, err := newResponseSpool()
+	if err != nil {
+		common.InternalServerError(c, "create response spool: "+err.Error())
+		return
+	}
+	var streamErr error
+	defer func() {
+		reader, readerErr := spool.Reader(streamErr)
+		if readerErr != nil {
+			captureError := "response capture incomplete: " + readerErr.Error()
+			if updateErr := models.UpdateMonthlyChatLogByRef(context.Background(), logRef, map[string]any{"error": captureError}); updateErr != nil {
+				slog.Error("标记响应日志不完整失败", "log_id", logRef.ID, "log_uuid", logRef.UUID, "error", updateErr)
+			}
+			slog.Error("响应日志暂存失败，Usage 与 IO 日志不完整", "log_id", logRef.ID, "log_uuid", logRef.UUID, "error", readerErr)
+			return
+		}
+		pkg.GoSafe("handler.record_log", func() {
+			service.RecordLog(context.Background(), startReq, log.FirstChunkTimeMs, reader, postProcessor, logRef, log.AuthKeyID, effectiveBefore, effectiveProvidersWithMeta.IOLog, logStyle)
+		})
+	}()
 
 	clientWriter := &countingWriter{writer: c.Writer}
-	mirror := io.MultiWriter(clientWriter, pw)
+	mirror := io.MultiWriter(spool, clientWriter)
 	if logStyle == consts.StyleOpenAI {
 		if before.Stream {
 			writeHeader(c, true, res.Header, logStyle)
 			if err := runtimesvc.CopyStreamWithTransform(res.Body, mirror, runtimesvc.NormalizeOpenAIStreamLine); err != nil {
-				_ = pw.CloseWithError(err)
+				streamErr = err
 				logStreamCopyError("stream copy", err)
 				return
 			}
 		} else {
 			body, readErr := io.ReadAll(res.Body)
 			if readErr != nil {
-				_ = pw.CloseWithError(readErr)
+				streamErr = readErr
 				slog.Error("read response body", "err", readErr)
 				return
 			}
@@ -199,23 +211,20 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 			normalized := runtimesvc.NormalizeOpenAIChatCompletionPayload(body, false)
 			writeHeader(c, false, openAINonStreamHeader(res.Header), logStyle)
 			if _, writeErr := mirror.Write(normalized); writeErr != nil {
-				_ = pw.CloseWithError(writeErr)
+				streamErr = writeErr
 				slog.Error("write response body", "err", writeErr)
 				return
 			}
 		}
-		_ = pw.Close()
 		return
 	}
 
 	writeHeader(c, before.Stream, res.Header, logStyle)
-	tee := io.TeeReader(res.Body, pw)
-	if _, err := io.Copy(clientWriter, tee); err != nil {
-		_ = pw.CloseWithError(err)
+	if _, err := io.Copy(mirror, res.Body); err != nil {
+		streamErr = err
 		logStreamCopyError("io copy", err)
 		return
 	}
-	_ = pw.Close()
 }
 
 func openAINonStreamHeader(header http.Header) http.Header {

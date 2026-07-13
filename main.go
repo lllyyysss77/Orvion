@@ -86,8 +86,12 @@ func resolveLogWriter() io.Writer {
 }
 
 func main() {
-	token := os.Getenv("TOKEN")
-	if strings.TrimSpace(token) == "" {
+	token := strings.TrimSpace(os.Getenv("TOKEN"))
+	if err := validateStartupSecurity(token, os.Getenv("ORVION_ENV")); err != nil {
+		slog.Error("启动安全校验失败", "error", err)
+		os.Exit(1)
+	}
+	if token == "" {
 		slog.Warn("TOKEN 未配置: /api/* 管理接口将完全跳过鉴权,生产环境请务必设置")
 	}
 	router := buildRouter(token)
@@ -160,6 +164,17 @@ func main() {
 	}
 
 	slog.Info("Server shutdown completed")
+}
+
+func validateStartupSecurity(token string, environment string) error {
+	environment = strings.ToLower(strings.TrimSpace(environment))
+	if environment != "production" && environment != "prod" {
+		return nil
+	}
+	if strings.TrimSpace(token) == "" {
+		return errors.New("生产模式必须配置 TOKEN，拒绝启动未鉴权的管理接口")
+	}
+	return nil
 }
 
 func resolveShutdownTimeout() time.Duration {

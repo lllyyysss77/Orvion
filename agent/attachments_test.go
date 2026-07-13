@@ -2,7 +2,10 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"testing"
+	"unicode/utf16"
+	"unicode/utf8"
 )
 
 type telegramAttachmentTestClient struct {
@@ -64,5 +67,22 @@ func TestSendTelegramAgentTextWithAttachments(t *testing.T) {
 	}
 	if len(client.documents) != 1 || client.documents[0] != "/tmp/a.txt|文件" {
 		t.Fatalf("文件发送不符合预期: %#v", client.documents)
+	}
+}
+
+func TestLimitTelegramAgentAttachmentCaptionKeepsValidUTF8(t *testing.T) {
+	caption := strings.Repeat("图", telegramAgentAttachmentCaptionMax+10)
+	got := limitTelegramAgentAttachmentCaption(caption)
+	if !utf8.ValidString(got) {
+		t.Fatalf("caption 截断后必须保持合法 UTF-8")
+	}
+	if len([]rune(got)) != telegramAgentAttachmentCaptionMax {
+		t.Fatalf("中文 caption 应按字符安全截断，实际字符数=%d", len([]rune(got)))
+	}
+
+	emoji := strings.Repeat("😀", telegramAgentAttachmentCaptionMax)
+	got = limitTelegramAgentAttachmentCaption(emoji)
+	if units := len(utf16.Encode([]rune(got))); units > telegramAgentAttachmentCaptionMax {
+		t.Fatalf("emoji caption 不应超过 Telegram UTF-16 长度限制，实际=%d", units)
 	}
 }

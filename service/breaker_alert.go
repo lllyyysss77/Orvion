@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf16"
 	"unicode/utf8"
 
 	"github.com/racio/orvion/balancers"
@@ -32,6 +33,7 @@ const (
 	telegramWideMessageWidth       = 72
 	telegramWideMessageMaxRunes    = 3500
 	telegramWideCaptionMaxRunes    = 900
+	telegramPhotoCaptionMaxUTF16   = 1024
 )
 
 var ErrTelegramNotifierNotConfigured = errors.New("telegram 告警未启用或配置不完整")
@@ -493,6 +495,9 @@ func widenTelegramTextForTelegram(content string, maxRunes int) string {
 	if strings.TrimSpace(content) == "" {
 		return content
 	}
+	if strings.TrimSpace(content) == "正在思考..." {
+		return "正在思考..."
+	}
 	trimmed := strings.TrimRight(content, "\r\n")
 	if strings.HasSuffix(trimmed, telegramWideMessagePad) {
 		return content
@@ -604,18 +609,18 @@ func (n *telegramNotifier) sendPhotoBinaryToChat(chatID string, filename string,
 }
 
 func (n *telegramNotifier) sendPhotoBinaryToChatWithParseMode(ctx context.Context, chatID string, filename string, photoData []byte, caption string, parseMode string) error {
-	return n.sendMultipartBinaryToChat(ctx, "sendPhoto", "photo", chatID, filename, photoData, caption, strings.TrimSpace(parseMode), telegramPhotoHTTPTimeout)
+	caption = normalizeTelegramPhotoCaption(caption)
+	if telegramTextUTF16Length(caption) > telegramPhotoCaptionMaxUTF16 {
+		return fmt.Errorf("telegram photo caption exceeds %d UTF-16 units", telegramPhotoCaptionMaxUTF16)
+	}
+	return n.sendMultipartBinaryToChatWithoutCaptionWidening(ctx, "sendPhoto", "photo", chatID, filename, photoData, caption, strings.TrimSpace(parseMode), telegramPhotoHTTPTimeout)
 }
 
 func (n *telegramNotifier) sendPhotoURLToChat(ctx context.Context, chatID string, photoURL string, caption string) error {
-	return n.sendPhotoURLToChatWithCaptionWidening(ctx, chatID, photoURL, caption, true)
+	return n.sendPhotoURLToChatWithoutCaptionWidening(ctx, chatID, photoURL, caption)
 }
 
 func (n *telegramNotifier) sendPhotoURLToChatWithoutCaptionWidening(ctx context.Context, chatID string, photoURL string, caption string) error {
-	return n.sendPhotoURLToChatWithCaptionWidening(ctx, chatID, photoURL, caption, false)
-}
-
-func (n *telegramNotifier) sendPhotoURLToChatWithCaptionWidening(ctx context.Context, chatID string, photoURL string, caption string, widenCaption bool) error {
 	if n == nil {
 		return fmt.Errorf("telegram notifier is nil")
 	}
@@ -627,15 +632,23 @@ func (n *telegramNotifier) sendPhotoURLToChatWithCaptionWidening(ctx context.Con
 	if photoURL == "" {
 		return fmt.Errorf("photo url is empty")
 	}
-	caption = strings.TrimSpace(caption)
-	if widenCaption {
-		caption = widenTelegramCaptionForTelegram(caption)
+	caption = normalizeTelegramPhotoCaption(caption)
+	if telegramTextUTF16Length(caption) > telegramPhotoCaptionMaxUTF16 {
+		return fmt.Errorf("telegram photo caption exceeds %d UTF-16 units", telegramPhotoCaptionMaxUTF16)
 	}
 	return n.postTelegramMethod(ctx, "sendPhoto", telegramSendPhotoRequest{
 		ChatID:  chatID,
 		Photo:   photoURL,
 		Caption: caption,
 	})
+}
+
+func normalizeTelegramPhotoCaption(caption string) string {
+	return strings.TrimSpace(caption)
+}
+
+func telegramTextUTF16Length(content string) int {
+	return len(utf16.Encode([]rune(content)))
 }
 
 func (n *telegramNotifier) sendDocumentBinaryToChat(ctx context.Context, chatID string, filename string, documentData []byte, caption string) error {
@@ -799,80 +812,93 @@ func renderTelegramAgentMarkdownV2(content string) string {
 		return ""
 	}
 	content = normalizeTelegramAgentMarkdownBlocks(content)
+	return renderTelegramMarkdownV2Inline(content, true)
+}
 
+func renderTelegramMarkdownV2Inline(content string, allowCodeAndLinks bool) string {
 	var out strings.Builder
 	for index := 0; index < len(content); {
-		if strings.HasPrefix(content[index:], "```") {
-			end := strings.Index(content[index+3:], "```")
-			if end >= 0 {
-				body := content[index+3 : index+3+end]
-				out.WriteString(renderTelegramMarkdownV2CodeBlock(body))
-				index += 3 + end + 3
+		if escaped, size, ok := parseTelegramMarkdownEscapedRune(content, index); ok {
+			out.WriteString(escapeTelegramMarkdownV2Rune(escaped))
+			index += size
+			continue
+		}
+		if allowCodeAndLinks {
+			if rendered, advance, ok := parseTelegramMarkdownFencedBlock(content, index); ok {
+				out.WriteString(rendered)
+				index += advance
 				continue
 			}
 		}
 		if strings.HasPrefix(content[index:], "**") {
-			end := strings.Index(content[index+2:], "**")
+			end := findTelegramMarkdownUnescapedToken(content, index+2, "**")
 			if end >= 0 {
-				inner := content[index+2 : index+2+end]
+				inner := content[index+2 : end]
 				if writeTelegramMarkdownV2Entity(&out, inner, "*", "*") {
-					index += 2 + end + 2
+					index = end + 2
 					continue
 				}
 			}
 		}
-		if content[index] == '`' {
-			end := strings.IndexByte(content[index+1:], '`')
+		if allowCodeAndLinks && content[index] == '`' {
+			delimiterLength := 1
+			for index+delimiterLength < len(content) && content[index+delimiterLength] == '`' {
+				delimiterLength++
+			}
+			delimiter := strings.Repeat("`", delimiterLength)
+			end := findTelegramMarkdownUnescapedToken(content, index+delimiterLength, delimiter)
 			if end >= 0 {
-				inner := content[index+1 : index+1+end]
+				inner := content[index+delimiterLength : end]
 				if strings.TrimSpace(inner) != "" {
 					if writeTelegramMarkdownV2EntityFromInlineCode(&out, inner) {
-						index += 1 + end + 1
+						index = end + delimiterLength
 						continue
 					}
 					out.WriteByte('`')
 					out.WriteString(escapeTelegramMarkdownV2CodeText(inner))
 					out.WriteByte('`')
-					index += 1 + end + 1
+					index = end + delimiterLength
 					continue
 				}
 			}
 		}
-		if text, link, advance, ok := parseTelegramMarkdownLink(content, index); ok {
-			out.WriteByte('[')
-			out.WriteString(escapeTelegramMarkdownV2Text(text))
-			out.WriteString("](")
-			out.WriteString(escapeTelegramMarkdownV2LinkURL(link))
-			out.WriteByte(')')
-			index += advance
-			continue
+		if allowCodeAndLinks {
+			if text, link, advance, ok := parseTelegramMarkdownLink(content, index); ok {
+				out.WriteByte('[')
+				out.WriteString(escapeTelegramMarkdownV2Text(text))
+				out.WriteString("](")
+				out.WriteString(escapeTelegramMarkdownV2LinkURL(link))
+				out.WriteByte(')')
+				index += advance
+				continue
+			}
 		}
 		if strings.HasPrefix(content[index:], "__") {
-			end := strings.Index(content[index+2:], "__")
+			end := findTelegramMarkdownUnescapedToken(content, index+2, "__")
 			if end >= 0 {
-				inner := content[index+2 : index+2+end]
+				inner := content[index+2 : end]
 				if writeTelegramMarkdownV2Entity(&out, inner, "__", "__") {
-					index += 2 + end + 2
+					index = end + 2
 					continue
 				}
 			}
 		}
 		if strings.HasPrefix(content[index:], "~~") {
-			end := strings.Index(content[index+2:], "~~")
+			end := findTelegramMarkdownUnescapedToken(content, index+2, "~~")
 			if end >= 0 {
-				inner := content[index+2 : index+2+end]
+				inner := content[index+2 : end]
 				if writeTelegramMarkdownV2Entity(&out, inner, "~", "~") {
-					index += 2 + end + 2
+					index = end + 2
 					continue
 				}
 			}
 		}
 		if strings.HasPrefix(content[index:], "||") {
-			end := strings.Index(content[index+2:], "||")
+			end := findTelegramMarkdownUnescapedToken(content, index+2, "||")
 			if end >= 0 {
-				inner := content[index+2 : index+2+end]
+				inner := content[index+2 : end]
 				if writeTelegramMarkdownV2Entity(&out, inner, "||", "||") {
-					index += 2 + end + 2
+					index = end + 2
 					continue
 				}
 			}
@@ -919,18 +945,25 @@ func normalizeTelegramAgentMarkdownBlocks(content string) string {
 	lines := strings.Split(content, "\n")
 	lines = repairTelegramAgentMalformedCodeFences(lines)
 	normalized := make([]string, 0, len(lines))
-	inCodeBlock := false
+	activeFenceMarker := byte(0)
+	activeFenceCount := 0
 	for index := 0; index < len(lines); {
 		line := lines[index]
 		trimmed := strings.TrimSpace(line)
-		if isTelegramMarkdownFenceLine(trimmed) {
-			normalized = append(normalized, line)
-			inCodeBlock = !inCodeBlock
+		marker, markerCount, isFence := telegramMarkdownFencePrefix(trimmed)
+		if isFence && activeFenceMarker == 0 {
+			normalized = append(normalized, trimmed)
+			activeFenceMarker = marker
+			activeFenceCount = markerCount
 			index++
 			continue
 		}
-		if inCodeBlock {
+		if activeFenceMarker != 0 {
 			normalized = append(normalized, line)
+			if isFence && marker == activeFenceMarker && markerCount >= activeFenceCount && strings.TrimSpace(trimmed[markerCount:]) == "" {
+				activeFenceMarker = 0
+				activeFenceCount = 0
+			}
 			index++
 			continue
 		}
@@ -1216,8 +1249,16 @@ func findTelegramAgentMalformedCodeFenceClose(lines []string, start int) int {
 	return -1
 }
 
-func isTelegramMarkdownFenceLine(line string) bool {
-	return strings.HasPrefix(strings.TrimSpace(line), "```")
+func telegramMarkdownFencePrefix(line string) (byte, int, bool) {
+	if line == "" || (line[0] != '`' && line[0] != '~') {
+		return 0, 0, false
+	}
+	marker := line[0]
+	count := 1
+	for count < len(line) && line[count] == marker {
+		count++
+	}
+	return marker, count, count >= 3
 }
 
 func collectTelegramMarkdownTableBox(lines []string, start int) ([]string, int) {
@@ -1321,8 +1362,9 @@ func telegramMarkdownBoxBorder(width int) string {
 
 func parseTelegramMarkdownTableCells(line string) []string {
 	trimmed := strings.TrimSpace(line)
-	trimmed = strings.Trim(trimmed, "|")
-	parts := strings.Split(trimmed, "|")
+	trimmed = strings.TrimPrefix(trimmed, "|")
+	trimmed = strings.TrimSuffix(trimmed, "|")
+	parts := splitTelegramMarkdownTableRow(trimmed)
 	cells := make([]string, 0, len(parts))
 	for _, part := range parts {
 		cell := cleanTelegramMarkdownTableCell(part)
@@ -1332,6 +1374,57 @@ func parseTelegramMarkdownTableCells(line string) []string {
 		cells = append(cells, cell)
 	}
 	return cells
+}
+
+func splitTelegramMarkdownTableRow(line string) []string {
+	parts := make([]string, 0, 4)
+	var cell strings.Builder
+	codeTicks := 0
+	escaped := false
+	for index := 0; index < len(line); {
+		if escaped {
+			if line[index] != '|' && line[index] != '\\' {
+				cell.WriteByte('\\')
+			}
+			cell.WriteByte(line[index])
+			escaped = false
+			index++
+			continue
+		}
+		if line[index] == '\\' {
+			escaped = true
+			index++
+			continue
+		}
+		if line[index] == '`' {
+			run := 1
+			for index+run < len(line) && line[index+run] == '`' {
+				run++
+			}
+			if codeTicks == 0 {
+				codeTicks = run
+			} else if codeTicks == run {
+				codeTicks = 0
+			}
+			cell.WriteString(line[index : index+run])
+			index += run
+			continue
+		}
+		if line[index] == '|' && codeTicks == 0 {
+			parts = append(parts, cell.String())
+			cell.Reset()
+			index++
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(line[index:])
+		cell.WriteRune(r)
+		index += size
+	}
+	if escaped {
+		cell.WriteByte('\\')
+	}
+	parts = append(parts, cell.String())
+	return parts
 }
 
 func cleanTelegramMarkdownTableCell(value string) string {
@@ -1403,7 +1496,7 @@ func parseTelegramMarkdownHeadingText(line string) string {
 
 func findTelegramMarkdownSingleDelimiterEnd(content string, start int, delimiter byte) int {
 	for index := start; index < len(content); index++ {
-		if content[index] == delimiter && canCloseTelegramMarkdownSingleDelimiter(content, index) {
+		if content[index] == delimiter && !isTelegramMarkdownEscapedPosition(content, index) && canCloseTelegramMarkdownSingleDelimiter(content, index) {
 			return index
 		}
 	}
@@ -1411,38 +1504,99 @@ func findTelegramMarkdownSingleDelimiterEnd(content string, start int, delimiter
 }
 
 func canOpenTelegramMarkdownSingleDelimiter(content string, index int) bool {
-	if index+1 >= len(content) || isTelegramMarkdownASCIIWhitespace(content[index+1]) {
+	if isTelegramMarkdownEscapedPosition(content, index) {
 		return false
 	}
-	return index == 0 || !isTelegramMarkdownASCIIAlnum(content[index-1])
+	next, ok := telegramMarkdownRuneAfter(content, index+1)
+	if !ok || unicode.IsSpace(next) {
+		return false
+	}
+	previous, ok := telegramMarkdownRuneBefore(content, index)
+	return !ok || !isTelegramMarkdownWordRune(previous)
 }
 
 func canCloseTelegramMarkdownSingleDelimiter(content string, index int) bool {
-	if index == 0 || isTelegramMarkdownASCIIWhitespace(content[index-1]) {
+	if isTelegramMarkdownEscapedPosition(content, index) {
 		return false
 	}
-	return index+1 >= len(content) || !isTelegramMarkdownASCIIAlnum(content[index+1])
+	previous, ok := telegramMarkdownRuneBefore(content, index)
+	if !ok || unicode.IsSpace(previous) {
+		return false
+	}
+	next, ok := telegramMarkdownRuneAfter(content, index+1)
+	return !ok || !isTelegramMarkdownWordRune(next)
 }
 
-func isTelegramMarkdownASCIIAlnum(value byte) bool {
-	return (value >= 'a' && value <= 'z') ||
-		(value >= 'A' && value <= 'Z') ||
-		(value >= '0' && value <= '9')
+func isTelegramMarkdownWordRune(value rune) bool {
+	return unicode.IsLetter(value) || unicode.IsDigit(value)
 }
 
-func isTelegramMarkdownASCIIWhitespace(value byte) bool {
-	return value == ' ' || value == '\n' || value == '\r' || value == '\t'
+func telegramMarkdownRuneBefore(content string, index int) (rune, bool) {
+	if index <= 0 || index > len(content) {
+		return 0, false
+	}
+	r, _ := utf8.DecodeLastRuneInString(content[:index])
+	return r, true
+}
+
+func telegramMarkdownRuneAfter(content string, index int) (rune, bool) {
+	if index < 0 || index >= len(content) {
+		return 0, false
+	}
+	r, _ := utf8.DecodeRuneInString(content[index:])
+	return r, true
+}
+
+func parseTelegramMarkdownEscapedRune(content string, index int) (rune, int, bool) {
+	if index < 0 || index >= len(content) || content[index] != '\\' || isTelegramMarkdownEscapedPosition(content, index) {
+		return 0, 0, false
+	}
+	r, size := utf8.DecodeRuneInString(content[index+1:])
+	if size == 0 || !isTelegramMarkdownEscapableRune(r) {
+		return 0, 0, false
+	}
+	return r, size + 1, true
+}
+
+func isTelegramMarkdownEscapableRune(r rune) bool {
+	return (r >= '!' && r <= '/') ||
+		(r >= ':' && r <= '@') ||
+		(r >= '[' && r <= '`') ||
+		(r >= '{' && r <= '~')
+}
+
+func isTelegramMarkdownEscapedPosition(content string, index int) bool {
+	backslashes := 0
+	for index > 0 && content[index-1] == '\\' {
+		backslashes++
+		index--
+	}
+	return backslashes%2 == 1
+}
+
+func findTelegramMarkdownUnescapedToken(content string, start int, token string) int {
+	for start >= 0 && start < len(content) {
+		relative := strings.Index(content[start:], token)
+		if relative < 0 {
+			return -1
+		}
+		index := start + relative
+		if !isTelegramMarkdownEscapedPosition(content, index) {
+			return index
+		}
+		start = index + len(token)
+	}
+	return -1
 }
 
 func parseTelegramMarkdownLink(content string, index int) (string, string, int, bool) {
 	if index >= len(content) || content[index] != '[' {
 		return "", "", 0, false
 	}
-	textEnd := strings.IndexByte(content[index+1:], ']')
+	textEnd := findTelegramMarkdownUnescapedToken(content, index+1, "]")
 	if textEnd < 0 {
 		return "", "", 0, false
 	}
-	textEnd += index + 1
 	if textEnd+1 >= len(content) || content[textEnd+1] != '(' {
 		return "", "", 0, false
 	}
@@ -1485,8 +1639,57 @@ func findTelegramMarkdownLinkURLClose(content string, start int) int {
 	return -1
 }
 
+func parseTelegramMarkdownFencedBlock(content string, index int) (string, int, bool) {
+	if index < 0 || index >= len(content) || (index > 0 && content[index-1] != '\n') {
+		return "", 0, false
+	}
+	lineEnd := strings.IndexByte(content[index:], '\n')
+	if lineEnd < 0 {
+		return "", 0, false
+	}
+	lineEnd += index
+	openingLine := strings.TrimSpace(content[index:lineEnd])
+	marker, markerCount, ok := telegramMarkdownFencePrefix(openingLine)
+	if !ok {
+		return "", 0, false
+	}
+	info := strings.TrimSpace(openingLine[markerCount:])
+	codeStart := lineEnd + 1
+	for lineStart := codeStart; lineStart <= len(content); {
+		nextNewline := strings.IndexByte(content[lineStart:], '\n')
+		lineStop := len(content)
+		advanceStop := lineStop
+		if nextNewline >= 0 {
+			lineStop = lineStart + nextNewline
+			advanceStop = lineStop + 1
+		}
+		candidate := strings.TrimSpace(content[lineStart:lineStop])
+		closeMarker, closeCount, closeOK := telegramMarkdownFencePrefix(candidate)
+		if closeOK && closeMarker == marker && closeCount >= markerCount && strings.TrimSpace(candidate[closeCount:]) == "" {
+			code := content[codeStart:lineStart]
+			code = strings.TrimSuffix(code, "\n")
+			lang := ""
+			if isTelegramMarkdownV2CodeLanguage(info) {
+				lang = info
+			} else if info != "" {
+				code = info + "\n" + code
+			}
+			return renderTelegramMarkdownV2CodeBlockParts(lang, code), advanceStop - index, true
+		}
+		if nextNewline < 0 {
+			break
+		}
+		lineStart = lineStop + 1
+	}
+	return "", 0, false
+}
+
 func renderTelegramMarkdownV2CodeBlock(body string) string {
 	lang, code := splitTelegramMarkdownV2CodeBlock(body)
+	return renderTelegramMarkdownV2CodeBlockParts(lang, code)
+}
+
+func renderTelegramMarkdownV2CodeBlockParts(lang string, code string) string {
 	var out strings.Builder
 	out.WriteString("```")
 	if lang != "" {
@@ -1508,7 +1711,7 @@ func writeTelegramMarkdownV2Entity(out *strings.Builder, inner string, open stri
 	}
 	out.WriteString(escapeTelegramMarkdownV2Text(leading))
 	out.WriteString(open)
-	out.WriteString(escapeTelegramMarkdownV2Text(core))
+	out.WriteString(renderTelegramMarkdownV2Inline(core, false))
 	out.WriteString(close)
 	out.WriteString(escapeTelegramMarkdownV2Text(trailing))
 	return true

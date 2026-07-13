@@ -105,7 +105,8 @@ Skills 内容不打包进镜像，运行后通过页面上传文件夹/压缩包
 
 ### 核心环境变量
 
-- `TOKEN`：管理 API 与代理接口的管理员令牌；为空时将不校验管理员接口
+- `ORVION_ENV`：运行环境，支持 `development` / `production`；设置为 `production`（或 `prod`）时，若 `TOKEN` 为空，服务将拒绝启动
+- `TOKEN`：管理 API 与代理接口的管理员令牌；仅开发模式允许为空，生产模式必须配置
 - `DATABASE_DRIVER`：数据库驱动，支持 `sqlite` / `mysql`；为空时会按 `DATABASE_DSN` 自动识别，默认 `sqlite`
 - `DATABASE_DSN`：数据库连接串；默认 SQLite `./data/llmio.db`
   - SQLite 示例：`/orvion/data/llmio.db`、`sqlite://data/llmio.db`、`file:data/llmio.db?cache=shared`

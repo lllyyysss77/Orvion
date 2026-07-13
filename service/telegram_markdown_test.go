@@ -1,11 +1,99 @@
 package service
 
 import (
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestRenderTelegramAgentMarkdownV2KeepsEscapedDelimitersLiteral(t *testing.T) {
+	got := renderTelegramAgentMarkdownV2(`\*不是斜体\*，\_不是斜体\_，\[不是链接\]`)
+	if got != `\*不是斜体\*，\_不是斜体\_，\[不是链接\]` {
+		t.Fatalf("反斜杠转义的 Markdown 标记应保持字面量，实际为: %s", got)
+	}
+}
+
+func TestRenderTelegramAgentMarkdownV2DoesNotItalicizeUnicodeWordUnderscores(t *testing.T) {
+	got := renderTelegramAgentMarkdownV2("用户_名称_字段")
+	if got != `用户\_名称\_字段` {
+		t.Fatalf("中文词内下划线不应被识别为斜体，实际为: %s", got)
+	}
+}
+
+func TestRenderTelegramAgentMarkdownV2KeepsNestedEmphasis(t *testing.T) {
+	got := renderTelegramAgentMarkdownV2("**粗体中的 _斜体_ 和 ~~删除线~~**")
+	if got != "*粗体中的 _斜体_ 和 ~删除线~*" {
+		t.Fatalf("嵌套强调样式应被保留，实际为: %s", got)
+	}
+}
+
+func TestRenderTelegramAgentMarkdownV2SupportsVariableInlineCodeDelimiter(t *testing.T) {
+	got := renderTelegramAgentMarkdownV2("代码：``包含 ` 反引号``")
+	if got != "代码：`包含 \\` 反引号`" {
+		t.Fatalf("双反引号行内代码应保留内部反引号，实际为: %s", got)
+	}
+}
+
+func TestRenderTelegramAgentMarkdownV2TableKeepsEscapedAndCodePipes(t *testing.T) {
+	input := strings.Join([]string{
+		"| 项目 | 内容 |",
+		"| --- | --- |",
+		"| 正则 | `foo|bar` / A \\| B |",
+	}, "\n")
+	got := renderTelegramAgentMarkdownV2(input)
+	if !strings.Contains(got, "│ 正则 : foo|bar / A | B") {
+		t.Fatalf("表格代码与转义管道符不应被拆列，实际为: %s", got)
+	}
+}
+
+func TestRenderTelegramAgentMarkdownV2SupportsVariableFences(t *testing.T) {
+	input := strings.Join([]string{
+		"````text",
+		"代码中包含 ```",
+		"````",
+		"",
+		"~~~go",
+		"fmt.Println(\"ok\")",
+		"~~~",
+	}, "\n")
+	got := renderTelegramAgentMarkdownV2(input)
+	if !strings.Contains(got, "```text\n代码中包含 \\`\\`\\`\n```") {
+		t.Fatalf("四反引号围栏应允许代码内出现三反引号，实际为: %s", got)
+	}
+	if !strings.Contains(got, "```go\nfmt.Println(\"ok\")\n```") {
+		t.Fatalf("波浪线代码围栏应转换为 Telegram 代码块，实际为: %s", got)
+	}
+}
+
+func TestSendTelegramTextWithMarkdownFallbackUsesPlainTextLast(t *testing.T) {
+	parseModes := make([]string, 0, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req telegramSendMessageRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("解析 Telegram 请求失败: %v", err)
+		}
+		parseModes = append(parseModes, req.ParseMode)
+		w.Header().Set("Content-Type", "application/json")
+		if req.ParseMode != "" {
+			_, _ = w.Write([]byte(`{"ok":false,"description":"can't parse entities"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":1}}`))
+	}))
+	defer server.Close()
+
+	notifier := &telegramNotifier{endpoint: server.URL, client: server.Client()}
+	if err := sendTelegramTextWithMarkdownFallback(notifier, "123", `*broken`, "MarkdownV2", "纯文本"); err != nil {
+		t.Fatalf("Markdown 失败后纯文本回退应成功: %v", err)
+	}
+	if len(parseModes) != 2 || parseModes[0] != "MarkdownV2" || parseModes[1] != "" {
+		t.Fatalf("应先尝试 MarkdownV2，再回退纯文本，实际为: %+v", parseModes)
+	}
+}
 
 func TestRenderTelegramAgentMarkdownV2(t *testing.T) {
 	input := strings.Join([]string{

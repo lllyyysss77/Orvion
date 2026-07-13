@@ -84,6 +84,54 @@ func TestStartTelegramTypingLoopSendsTyping(t *testing.T) {
 	}
 }
 
+func TestSplitTelegramMessageKeepsParagraphsAndInlineEntitiesBalanced(t *testing.T) {
+	paragraph := "**" + strings.Repeat("长内容", 700) + "**\n\n"
+	raw := strings.Repeat(paragraph, 3)
+	parts := splitTelegramMessage(raw)
+	if len(parts) < 2 {
+		t.Fatalf("长消息应被拆分")
+	}
+	for index, part := range parts {
+		if telegramTextUTF16Length(part) > telegramAgentMessageSoftLimit {
+			t.Fatalf("分片 %d 超过 Telegram 安全长度: %d", index, telegramTextUTF16Length(part))
+		}
+		if strings.Count(part, "**")%2 != 0 {
+			t.Fatalf("分片 %d 的粗体实体未闭合: %q", index, part)
+		}
+	}
+}
+
+func TestSplitTelegramMessageUsesUTF16LengthForEmoji(t *testing.T) {
+	raw := strings.Repeat("😀", 2500)
+	parts := splitTelegramMessage(raw)
+	if len(parts) < 2 {
+		t.Fatalf("大量 emoji 应按 UTF-16 长度拆分")
+	}
+	for index, part := range parts {
+		if units := telegramTextUTF16Length(part); units > telegramAgentMessageSoftLimit {
+			t.Fatalf("emoji 分片 %d 超过 Telegram 长度限制: %d", index, units)
+		}
+	}
+}
+
+func TestSplitTelegramMessageClosesAndReopensLongCodeFence(t *testing.T) {
+	body := strings.Repeat("fmt.Println(\"hello\")\n", 300)
+	raw := "````go\n" + body + "````"
+	parts := splitTelegramMessage(raw)
+	if len(parts) < 2 {
+		t.Fatalf("长代码块应被拆分")
+	}
+	for index, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if !strings.HasPrefix(trimmed, "````go\n") {
+			t.Fatalf("代码分片 %d 应重新打开围栏: %q", index, trimmed[:min(len(trimmed), 40)])
+		}
+		if !strings.HasSuffix(trimmed, "````") {
+			t.Fatalf("代码分片 %d 应闭合围栏", index)
+		}
+	}
+}
+
 func TestHandleTelegramMessageImageCommandUsesImageGeneration(t *testing.T) {
 	previousDB := models.DB
 	models.DB = nil

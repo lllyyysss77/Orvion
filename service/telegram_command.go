@@ -723,7 +723,7 @@ func buildTelegramSystemStatusMessage(ctx context.Context) string {
 	processUsage := collectTelegramProcessUsage(now)
 	statusPairs := formatTelegramStatusMetricPairs([]telegramStatusMetricPair{
 		{LeftLabel: "CPU", LeftValue: fmt.Sprintf("%.2f%%", processUsage.CPUPercent), RightLabel: "内存", RightValue: formatBytesBinary(processUsage.MemoryBytes)},
-		{LeftLabel: "模型总数", LeftValue: fmt.Sprintf("%d", modelTotal), RightLabel: "启用提供方", RightValue: fmt.Sprintf("%d", modelProviderEnabled), RightOffset: 2},
+		{LeftLabel: "模型总数", LeftValue: fmt.Sprintf("%d", modelTotal), RightLabel: "启用提供方", RightValue: fmt.Sprintf("%d", modelProviderEnabled), RightOffset: 1},
 		{LeftLabel: "请求", LeftValue: fmt.Sprintf("%d", todayReqs), RightLabel: "成功率", RightValue: fmt.Sprintf("%.2f%%", successRate)},
 		{LeftLabel: "成功", LeftValue: fmt.Sprintf("%d", todaySuccess), RightLabel: "失败", RightValue: fmt.Sprintf("%d", todayFailure)},
 	})
@@ -975,7 +975,7 @@ func handleTelegramStatusCommand(ctx context.Context, notifier *telegramNotifier
 
 func sendTelegramSystemStatusMessage(ctx context.Context, notifier *telegramNotifier, chatID string, content string) error {
 	rendered := renderTelegramAgentMarkdownV2(content)
-	return sendTelegramCaptionWithStatusImageWithParseMode(ctx, notifier, chatID, rendered, "MarkdownV2")
+	return sendTelegramCaptionWithStatusImageWithFallback(ctx, notifier, chatID, rendered, "MarkdownV2", content)
 }
 
 func handleTelegramHelpCommand(ctx context.Context, notifier *telegramNotifier, message telegramMessage, allowedChatID string) (bool, error) {
@@ -1507,14 +1507,14 @@ func sendTelegramCaptionWithStatusImage(ctx context.Context, notifier *telegramN
 }
 
 func sendTelegramCaptionWithStatusImageWithoutWidening(ctx context.Context, notifier *telegramNotifier, chatID string, content string) error {
-	return sendTelegramCaptionWithStatusImageOptions(ctx, notifier, chatID, content, "", false)
+	return sendTelegramCaptionWithStatusImageWithParseMode(ctx, notifier, chatID, content, "")
 }
 
 func sendTelegramCaptionWithStatusImageWithParseMode(ctx context.Context, notifier *telegramNotifier, chatID string, content string, parseMode string) error {
-	return sendTelegramCaptionWithStatusImageOptions(ctx, notifier, chatID, content, parseMode, true)
+	return sendTelegramCaptionWithStatusImageWithFallback(ctx, notifier, chatID, content, parseMode, content)
 }
 
-func sendTelegramCaptionWithStatusImageOptions(ctx context.Context, notifier *telegramNotifier, chatID string, content string, parseMode string, widenCaption bool) error {
+func sendTelegramCaptionWithStatusImageWithFallback(ctx context.Context, notifier *telegramNotifier, chatID string, content string, parseMode string, plainFallback string) error {
 	if notifier == nil {
 		return errors.New("telegram notifier is nil")
 	}
@@ -1531,7 +1531,7 @@ func sendTelegramCaptionWithStatusImageOptions(ctx context.Context, notifier *te
 		if err != nil {
 			slog.Error("下载 TG 状态图片失败", "base_url", baseURL, "error", err)
 			// 下载图片失败时回退到纯文本，避免关键消息丢失。
-			if fallbackErr := notifier.sendTextWithMarkupToChatWithParseMode(chatID, content, nil, parseMode); fallbackErr != nil {
+			if fallbackErr := sendTelegramTextWithMarkdownFallback(notifier, chatID, content, parseMode, plainFallback); fallbackErr != nil {
 				return fmt.Errorf("下载状态图片失败: %v, 文本回退也失败: %w", err, fallbackErr)
 			}
 			return nil
@@ -1544,22 +1544,26 @@ func sendTelegramCaptionWithStatusImageOptions(ctx context.Context, notifier *te
 	}
 	defer clearTelegramStatusBinary(item.Binary)
 
-	var sendErr error
-	if widenCaption {
-		sendErr = notifier.sendPhotoBinaryToChatWithParseMode(ctx, chatID, item.FileName, item.Binary, content, parseMode)
-	} else {
-		sendErr = notifier.sendMultipartBinaryToChatWithoutCaptionWidening(ctx, "sendPhoto", "photo", chatID, item.FileName, item.Binary, content, parseMode, telegramPhotoHTTPTimeout)
-	}
+	sendErr := notifier.sendPhotoBinaryToChatWithParseMode(ctx, chatID, item.FileName, item.Binary, content, parseMode)
 	if sendErr != nil {
 		// 图片发送失败时回退到纯文本，避免关键消息丢失。
-		if fallbackErr := notifier.sendTextWithMarkupToChatWithParseMode(chatID, content, nil, parseMode); fallbackErr != nil {
-			return fmt.Errorf("发送状态图片失败: %v, 文本回退也失败: %w", sendErr, fallbackErr)
+		if fallbackErr := sendTelegramTextWithMarkdownFallback(notifier, chatID, content, parseMode, plainFallback); fallbackErr != nil {
+			return fmt.Errorf("发送状态图片失败: %v, 纯文本回退也失败: %w", sendErr, fallbackErr)
 		}
 		return nil
 	}
 
 	scheduleTelegramStatusImageRefill(ctx)
 	return nil
+}
+
+func sendTelegramTextWithMarkdownFallback(notifier *telegramNotifier, chatID string, content string, parseMode string, plainFallback string) error {
+	if strings.TrimSpace(parseMode) != "" {
+		if err := notifier.sendTextWithMarkupToChatWithParseMode(chatID, content, nil, parseMode); err == nil {
+			return nil
+		}
+	}
+	return notifier.sendTextWithMarkupToChatWithParseMode(chatID, plainFallback, nil, "")
 }
 
 func buildTelegramYesterdayUsageReportMessage(ctx context.Context, now time.Time) string {

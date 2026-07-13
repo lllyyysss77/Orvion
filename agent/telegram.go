@@ -15,6 +15,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf16"
+	"unicode/utf8"
 
 	agentintent "github.com/racio/orvion/agent/intent"
 	agenttools "github.com/racio/orvion/agent/tools"
@@ -1567,29 +1570,236 @@ func normalizeOpenAIRole(role string) string {
 }
 
 func splitTelegramMessage(raw string) []string {
-	runes := []rune(raw)
-	if len(runes) <= telegramAgentMessageSoftLimit {
+	if telegramTextUTF16Length(raw) <= telegramAgentMessageSoftLimit {
 		return []string{raw}
 	}
 
-	parts := make([]string, 0, len(runes)/telegramAgentMessageSoftLimit+1)
-	for len(runes) > 0 {
-		size := telegramAgentMessageSoftLimit
-		if len(runes) < size {
-			size = len(runes)
+	parts := make([]string, 0, telegramTextUTF16Length(raw)/telegramAgentMessageSoftLimit+1)
+	remaining := raw
+	for telegramTextUTF16Length(remaining) > telegramAgentMessageSoftLimit {
+		runeLimit := telegramRunePrefixWithinUTF16Limit(remaining, telegramAgentMessageSoftLimit-64)
+		part, rest := splitTelegramMarkdownMessagePart(remaining, runeLimit)
+		if part == "" || rest == remaining {
+			runes := []rune(remaining)
+			part = string(runes[:runeLimit])
+			rest = string(runes[runeLimit:])
 		}
-		parts = append(parts, string(runes[:size]))
-		runes = runes[size:]
+		parts = append(parts, part)
+		remaining = rest
+	}
+	if remaining != "" {
+		parts = append(parts, remaining)
 	}
 	return parts
 }
 
+func telegramTextUTF16Length(content string) int {
+	return len(utf16.Encode([]rune(content)))
+}
+
+func telegramRunePrefixWithinUTF16Limit(content string, limit int) int {
+	if limit < 1 {
+		return 1
+	}
+	units := 0
+	count := 0
+	for _, r := range content {
+		width := utf16.RuneLen(r)
+		if width < 1 {
+			width = 1
+		}
+		if units+width > limit {
+			break
+		}
+		units += width
+		count++
+	}
+	if count == 0 && content != "" {
+		return 1
+	}
+	return count
+}
+
 func trimTelegramMessage(raw string) string {
-	runes := []rune(raw)
-	if len(runes) <= telegramAgentMessageSoftLimit {
+	parts := splitTelegramMessage(raw)
+	if len(parts) <= 1 {
 		return raw
 	}
-	return string(runes[:telegramAgentMessageSoftLimit]) + "\n\n（后续内容将在生成完成后继续发送）"
+	return strings.TrimSpace(parts[0]) + "\n\n（后续内容将在生成完成后继续发送）"
+}
+
+func splitTelegramMarkdownMessagePart(raw string, limit int) (string, string) {
+	runes := []rune(raw)
+	if len(runes) <= limit {
+		return raw, ""
+	}
+	if limit < 1 {
+		limit = 1
+	}
+
+	lineStart := 0
+	inFence := false
+	openingFence := ""
+	closingFence := ""
+	lastLineBreak := 0
+	lastSafeBreak := 0
+	lastParagraphBreak := 0
+	for index, r := range runes[:limit] {
+		if r != '\n' {
+			continue
+		}
+		line := strings.TrimSpace(string(runes[lineStart:index]))
+		if marker, ok := telegramMarkdownFenceLine(line); ok {
+			if !inFence {
+				inFence = true
+				openingFence = line
+				closingFence = marker
+			} else if marker[0] == closingFence[0] && len(marker) >= len(closingFence) && strings.TrimSpace(line[len(marker):]) == "" {
+				inFence = false
+				openingFence = ""
+				closingFence = ""
+			}
+		}
+		lastLineBreak = index + 1
+		if !inFence {
+			lastSafeBreak = index + 1
+			if line == "" {
+				lastParagraphBreak = index + 1
+			}
+		}
+		lineStart = index + 1
+	}
+
+	if lastParagraphBreak > 0 {
+		return balanceTelegramMarkdownInlineSplit(string(runes[:lastParagraphBreak]), string(runes[lastParagraphBreak:]))
+	}
+	if lastSafeBreak > 0 {
+		return balanceTelegramMarkdownInlineSplit(string(runes[:lastSafeBreak]), string(runes[lastSafeBreak:]))
+	}
+	if inFence && openingFence != "" && closingFence != "" {
+		splitAt := lastLineBreak
+		if splitAt == 0 {
+			splitAt = limit
+		}
+		part := strings.TrimRight(string(runes[:splitAt]), "\n") + "\n" + closingFence
+		rest := openingFence + "\n" + strings.TrimLeft(string(runes[splitAt:]), "\n")
+		return part, rest
+	}
+
+	splitAt := limit
+	for splitAt > 0 && !unicode.IsSpace(runes[splitAt-1]) {
+		splitAt--
+	}
+	if splitAt == 0 {
+		splitAt = limit
+	}
+	return balanceTelegramMarkdownInlineSplit(string(runes[:splitAt]), string(runes[splitAt:]))
+}
+
+func telegramMarkdownFenceLine(line string) (string, bool) {
+	line = strings.TrimSpace(line)
+	if line == "" || (line[0] != '`' && line[0] != '~') {
+		return "", false
+	}
+	count := 1
+	for count < len(line) && line[count] == line[0] {
+		count++
+	}
+	if count < 3 {
+		return "", false
+	}
+	return strings.Repeat(string(line[0]), count), true
+}
+
+func balanceTelegramMarkdownInlineSplit(part string, rest string) (string, string) {
+	if part == "" || rest == "" {
+		return part, rest
+	}
+	stack := make([]string, 0, 4)
+	for index := 0; index < len(part); {
+		if part[index] == '\\' {
+			index++
+			if index < len(part) {
+				_, size := utf8.DecodeRuneInString(part[index:])
+				index += size
+			}
+			continue
+		}
+		if len(stack) > 0 && stack[len(stack)-1] == "`" {
+			if part[index] == '`' {
+				stack = stack[:len(stack)-1]
+			}
+			index++
+			continue
+		}
+		token := ""
+		for _, candidate := range []string{"**", "__", "~~", "||"} {
+			if strings.HasPrefix(part[index:], candidate) {
+				token = candidate
+				break
+			}
+		}
+		if token == "" && (part[index] == '`' || part[index] == '*' || part[index] == '_') {
+			token = string(part[index])
+		}
+		if token == "" {
+			_, size := utf8.DecodeRuneInString(part[index:])
+			index += size
+			continue
+		}
+		if (token == "*" || token == "_") && (len(stack) == 0 || stack[len(stack)-1] != token) && !telegramMarkdownInlineCanOpen(part, index) {
+			index += len(token)
+			continue
+		}
+		if len(stack) > 0 && stack[len(stack)-1] == token {
+			if (token == "*" || token == "_") && !telegramMarkdownInlineCanClose(part, index) {
+				index += len(token)
+				continue
+			}
+			stack = stack[:len(stack)-1]
+		} else {
+			stack = append(stack, token)
+		}
+		index += len(token)
+	}
+	if len(stack) == 0 {
+		return part, rest
+	}
+	var closeSuffix strings.Builder
+	for index := len(stack) - 1; index >= 0; index-- {
+		closeSuffix.WriteString(stack[index])
+	}
+	return part + closeSuffix.String(), strings.Join(stack, "") + rest
+}
+
+func telegramMarkdownInlineCanOpen(content string, index int) bool {
+	if index+1 >= len(content) {
+		return false
+	}
+	next, _ := utf8.DecodeRuneInString(content[index+1:])
+	if unicode.IsSpace(next) {
+		return false
+	}
+	if index == 0 {
+		return true
+	}
+	previous, _ := utf8.DecodeLastRuneInString(content[:index])
+	return !unicode.IsLetter(previous) && !unicode.IsDigit(previous)
+}
+
+func telegramMarkdownInlineCanClose(content string, index int) bool {
+	if index == 0 {
+		return false
+	}
+	previous, _ := utf8.DecodeLastRuneInString(content[:index])
+	if unicode.IsSpace(previous) {
+		return false
+	}
+	if index+1 >= len(content) {
+		return true
+	}
+	next, _ := utf8.DecodeRuneInString(content[index+1:])
+	return !unicode.IsLetter(next) && !unicode.IsDigit(next)
 }
 
 func compactStrings(values []string) []string {

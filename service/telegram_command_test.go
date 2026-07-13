@@ -41,7 +41,7 @@ func TestBuildTelegramSystemStatusMessageUsesMarkdownTemplate(t *testing.T) {
 		}
 	}
 	assertTelegramStatusRightColumnsAligned(t, message, []string{"内存", "成功率", "失败"})
-	assertTelegramStatusColumnOffset(t, message, "内存", "启用提供方", 2)
+	assertTelegramStatusColumnOffset(t, message, "内存", "启用提供方", 1)
 
 	rendered := renderTelegramAgentMarkdownV2(message)
 	for _, expected := range []string{
@@ -67,17 +67,9 @@ func TestBuildTelegramHelpMessageIncludesImageCommand(t *testing.T) {
 	}
 }
 
-func TestWidenTelegramMessagePadsShortText(t *testing.T) {
-	message := widenTelegramMessageForTelegram("正在思考...")
-	lines := strings.Split(message, "\n")
-	if len(lines) != 2 {
-		t.Fatalf("短消息应追加一行宽度填充，实际为 %q", message)
-	}
-	if lines[0] != "正在思考..." {
-		t.Fatalf("短消息正文不应改变，实际为 %q", lines[0])
-	}
-	if telegramTextDisplayWidth(lines[1]) < telegramWideMessageWidth {
-		t.Fatalf("填充行宽度不足，宽度=%d 内容=%q", telegramTextDisplayWidth(lines[1]), lines[1])
+func TestWidenTelegramMessageSkipsThinkingPlaceholder(t *testing.T) {
+	if got := widenTelegramMessageForTelegram("正在思考..."); got != "正在思考..." {
+		t.Fatalf("思考占位消息不应追加宽度填充，实际为 %q", got)
 	}
 }
 
@@ -100,6 +92,13 @@ func TestWidenTelegramCaptionSkipsLongCaption(t *testing.T) {
 	longCaption := strings.Repeat("短", telegramWideCaptionMaxRunes+1)
 	if got := widenTelegramCaptionForTelegram(longCaption); got != longCaption {
 		t.Fatalf("过长 caption 不应追加填充，实际长度=%d", len([]rune(got)))
+	}
+}
+
+func TestNormalizeTelegramPhotoCaptionNeverAddsWidthPadding(t *testing.T) {
+	caption := "  图片说明  "
+	if got := normalizeTelegramPhotoCaption(caption); got != "图片说明" {
+		t.Fatalf("图片 caption 只能清理首尾空白，不能追加宽度填充，实际为 %q", got)
 	}
 }
 
