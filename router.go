@@ -127,6 +127,8 @@ func registerPublicRoutes(router *gin.Engine) {
 
 	// API 健康检查接口（无需认证）
 	router.GET("/api/health/detail", handler.GetSystemHealthDetail)
+	// 当前版本用于登录页和外部探活，不包含敏感信息，无需认证。
+	router.GET("/api/version", handler.GetVersion)
 
 }
 
@@ -212,7 +214,6 @@ func registerModelProviderRoutes(api *gin.RouterGroup) {
 }
 
 func registerSystemRoutes(api *gin.RouterGroup) {
-	api.GET("/version", handler.GetVersion)
 	api.GET("/version/update-check", handler.GetVersionUpdateCheck)
 	api.GET("/logs", adminhandler.GetRequestLogs)
 	api.GET("/logs/:id/chat-io", adminhandler.GetChatIO)

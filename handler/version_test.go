@@ -1,6 +1,9 @@
 package handler
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestIsLatestVersionGreater(t *testing.T) {
 	cases := []struct {
@@ -123,41 +126,55 @@ func TestDisabledVersionUpdateCheckResp(t *testing.T) {
 	}
 }
 
-func TestShouldForceHTTP11ForGitHubEndpoint(t *testing.T) {
-	cases := []struct {
-		name     string
-		endpoint string
-		want     bool
-	}{
-		{
-			name:     "Orvion commit 接口强制 HTTP1.1",
-			endpoint: "https://api.github.com/repos/raciott/Orvion/commits/0258f8d1e1a57234528b7503fb0884df07e441d3",
-			want:     true,
-		},
-		{
-			name:     "llmio commit 接口强制 HTTP1.1",
-			endpoint: "https://api.github.com/repos/raciott/llmio/commits/93c279e0d6e3",
-			want:     true,
-		},
-		{
-			name:     "tags 接口不强制",
-			endpoint: "https://api.github.com/repos/raciott/llmio/tags?per_page=1",
-			want:     false,
-		},
-		{
-			name:     "非 github host 不强制",
-			endpoint: "https://example.com/repos/raciott/Orvion/commits/0258f8d1e1a57234528b7503fb0884df07e441d3",
-			want:     false,
-		},
+func TestLatestTagInfoFromVersionServiceResponse(t *testing.T) {
+	raw := `{
+		"success": true,
+		"repository": "raciott/Orvion",
+		"latest": {
+			"tag": "v1.2.7",
+			"title": "feat(core): 强化核心能力",
+			"description": "- 更新说明",
+			"message": "feat(core): 强化核心能力\n\n- 更新说明",
+			"published_at": "2026-07-13T15:00:48Z",
+			"commit_sha": "70d877379cc91a90831b4ace979f8c6f395c26f8",
+			"commit_url": "https://github.com/raciott/Orvion/commit/70d877379cc91a90831b4ace979f8c6f395c26f8",
+			"source_url": "https://github.com/raciott/Orvion/tree/v1.2.7"
+		}
+	}`
+
+	var payload githubVersionServiceResp
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	latest, err := latestTagInfoFromServiceResp(payload)
+	if err != nil {
+		t.Fatalf("map response: %v", err)
+	}
+	if latest == nil {
+		t.Fatal("expected latest version")
+	}
+	if latest.TagName != "v1.2.7" || latest.Title != "feat(core): 强化核心能力" {
+		t.Fatalf("unexpected version info: %+v", latest)
+	}
+	if latest.Description != "- 更新说明" || latest.PublishedAt != "2026-07-13T15:00:48Z" {
+		t.Fatalf("unexpected release info: %+v", latest)
+	}
+	if latest.HTMLURL != "https://github.com/raciott/Orvion/tree/v1.2.7" {
+		t.Fatalf("unexpected release url: %q", latest.HTMLURL)
 	}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := shouldForceHTTP11ForGitHubEndpoint(tc.endpoint)
-			if got != tc.want {
-				t.Fatalf("endpoint=%q got=%v want=%v", tc.endpoint, got, tc.want)
-			}
-		})
+	resp := buildVersionUpdateCheckResp("v1.2.6", latest, nil)
+	if !resp.HasUpdate || resp.Release == nil {
+		t.Fatalf("expected update response: %+v", resp)
+	}
+	if resp.Release.Name != latest.Title || resp.Release.Body != latest.Description || resp.Release.PublishedAt != latest.PublishedAt {
+		t.Fatalf("unexpected release mapping: %+v", resp.Release)
+	}
+}
+
+func TestLatestTagInfoFromVersionServiceRejectsFailure(t *testing.T) {
+	if _, err := latestTagInfoFromServiceResp(githubVersionServiceResp{}); err == nil {
+		t.Fatal("expected success=false to return an error")
 	}
 }
 

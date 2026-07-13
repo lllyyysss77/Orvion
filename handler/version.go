@@ -2,7 +2,6 @@ package handler
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,9 +27,8 @@ func GetVersion(c *gin.Context) {
 }
 
 const (
-	githubLatestTagURL        = "https://api.github.com/repos/raciott/llmio/tags?per_page=1"
-	githubCommitAPIURLPattern = "https://api.github.com/repos/raciott/llmio/commits/%s"
-	githubTagsPageURL         = "https://github.com/raciott/llmio/tags"
+	githubVersionServiceURL   = "https://young-poetry-afb0.hwt821096.workers.dev/api/github/version"
+	githubTagsPageURL         = "https://github.com/raciott/Orvion/tags"
 	githubReleaseTimeout      = 6 * time.Second
 	githubReleaseRefreshEvery = 1 * time.Minute
 	githubRequestRetryMax     = 3
@@ -62,25 +60,29 @@ type versionReleaseOverview struct {
 	Body        string `json:"body"`
 }
 
-type githubTagItemResp struct {
-	Name   string `json:"name"`
-	Commit struct {
-		SHA string `json:"sha"`
-	} `json:"commit"`
-}
-
 type githubLatestTagInfo struct {
 	TagName       string
+	Title         string
+	Description   string
+	PublishedAt   string
 	CommitSHA     string
 	CommitMessage string
 	HTMLURL       string
 }
 
-type githubCommitResp struct {
-	HTMLURL string `json:"html_url"`
-	Commit  struct {
-		Message string `json:"message"`
-	} `json:"commit"`
+type githubVersionServiceResp struct {
+	Success    bool   `json:"success"`
+	Repository string `json:"repository"`
+	Latest     *struct {
+		Tag         string `json:"tag"`
+		Title       string `json:"title"`
+		Description string `json:"description"`
+		Message     string `json:"message"`
+		PublishedAt string `json:"published_at"`
+		CommitSHA   string `json:"commit_sha"`
+		CommitURL   string `json:"commit_url"`
+		SourceURL   string `json:"source_url"`
+	} `json:"latest"`
 }
 
 type normalizedVersion struct {
@@ -137,7 +139,7 @@ func refreshGitHubVersionCache() {
 		return
 	}
 
-	latestTag, err := fetchLatestTagFromGitHub()
+	latestTag, err := fetchLatestVersionFromService()
 	next := buildVersionUpdateCheckResp(currentVersion, latestTag, err)
 
 	setVersionUpdateCache(next)
@@ -221,7 +223,7 @@ func buildVersionUpdateCheckResp(currentVersion string, latestTag *githubLatestT
 	if fetchErr != nil {
 		resp.SuggestBrowserFetch = true
 		// 本地开发场景常见网络不可达；当前为 dev 时保留更新提示，
-		// 避免因为 GitHub API 短暂失败导致黄点完全消失。
+		// 避免因为版本服务短暂失败导致黄点完全消失。
 		if strings.EqualFold(strings.TrimSpace(currentVersion), "dev") {
 			resp.HasUpdate = true
 			resp.LatestVersion = "latest"
@@ -230,7 +232,7 @@ func buildVersionUpdateCheckResp(currentVersion string, latestTag *githubLatestT
 				Name:        "更新信息暂不可用",
 				PublishedAt: "",
 				HTMLURL:     githubTagsPageURL,
-				Body:        "当前为 dev 版本，本次未能连接 GitHub API。你可以先点击“查看标签页”确认是否有新版本。",
+				Body:        "当前为 dev 版本，本次未能连接版本检查服务。你可以先点击“查看标签页”确认是否有新版本。",
 			}
 		}
 		return resp
@@ -243,65 +245,65 @@ func buildVersionUpdateCheckResp(currentVersion string, latestTag *githubLatestT
 
 	tagName := strings.TrimSpace(latestTag.TagName)
 	resp.LatestVersion = tagName
+	name := strings.TrimSpace(latestTag.Title)
+	if name == "" {
+		name = "最新标签 " + tagName
+	}
+	body := strings.TrimSpace(latestTag.Description)
+	if body == "" {
+		body = buildTagUpdateBody(tagName, latestTag.CommitSHA, latestTag.CommitMessage)
+	}
 	resp.Release = &versionReleaseOverview{
 		TagName:     tagName,
-		Name:        "最新标签 " + tagName,
-		PublishedAt: "",
+		Name:        name,
+		PublishedAt: strings.TrimSpace(latestTag.PublishedAt),
 		HTMLURL:     strings.TrimSpace(latestTag.HTMLURL),
-		Body:        buildTagUpdateBody(tagName, latestTag.CommitSHA, latestTag.CommitMessage),
+		Body:        body,
 	}
 	resp.HasUpdate = isLatestVersionGreater(tagName, currentVersion)
 	return resp
 }
 
-func fetchLatestTagFromGitHub() (*githubLatestTagInfo, error) {
-	var payload []githubTagItemResp
-	if err := getGitHubJSONWithRetry(githubLatestTagURL, &payload); err != nil {
+func fetchLatestVersionFromService() (*githubLatestTagInfo, error) {
+	var payload githubVersionServiceResp
+	if err := getVersionServiceJSONWithRetry(githubVersionServiceURL, &payload); err != nil {
 		return nil, err
 	}
-	if len(payload) == 0 {
+	return latestTagInfoFromServiceResp(payload)
+}
+
+func latestTagInfoFromServiceResp(payload githubVersionServiceResp) (*githubLatestTagInfo, error) {
+	if !payload.Success {
+		return nil, errors.New("version service returned success=false")
+	}
+	if payload.Latest == nil {
 		return nil, nil
 	}
 
-	tagName := strings.TrimSpace(payload[0].Name)
+	tagName := strings.TrimSpace(payload.Latest.Tag)
 	if tagName == "" {
 		return nil, nil
 	}
-	commitSHA := strings.TrimSpace(payload[0].Commit.SHA)
-	commitMessage, commitHTMLURL, err := fetchCommitMessageFromGitHub(commitSHA)
-	if err != nil {
-		slog.Warn("读取 GitHub commit message 失败", "tag", tagName, "sha", commitSHA, "error", err)
+	htmlURL := strings.TrimSpace(payload.Latest.SourceURL)
+	if htmlURL == "" {
+		htmlURL = strings.TrimSpace(payload.Latest.CommitURL)
 	}
-
-	htmlURL := buildTagDetailURL(tagName)
-	if strings.TrimSpace(commitHTMLURL) != "" {
-		htmlURL = strings.TrimSpace(commitHTMLURL)
+	if htmlURL == "" {
+		htmlURL = buildTagDetailURL(tagName)
 	}
 
 	return &githubLatestTagInfo{
 		TagName:       tagName,
-		CommitSHA:     commitSHA,
-		CommitMessage: strings.TrimSpace(commitMessage),
+		Title:         strings.TrimSpace(payload.Latest.Title),
+		Description:   strings.TrimSpace(payload.Latest.Description),
+		PublishedAt:   strings.TrimSpace(payload.Latest.PublishedAt),
+		CommitSHA:     strings.TrimSpace(payload.Latest.CommitSHA),
+		CommitMessage: strings.TrimSpace(payload.Latest.Message),
 		HTMLURL:       htmlURL,
 	}, nil
 }
 
-func fetchCommitMessageFromGitHub(commitSHA string) (string, string, error) {
-	commitSHA = strings.TrimSpace(commitSHA)
-	if commitSHA == "" {
-		return "", "", nil
-	}
-
-	endpoint := fmt.Sprintf(githubCommitAPIURLPattern, neturl.PathEscape(commitSHA))
-
-	var payload githubCommitResp
-	if err := getGitHubJSONWithRetry(endpoint, &payload); err != nil {
-		return "", "", err
-	}
-	return strings.TrimSpace(payload.Commit.Message), strings.TrimSpace(payload.HTMLURL), nil
-}
-
-func buildGitHubHTTPClient(timeout time.Duration, forceHTTP11 bool) *http.Client {
+func buildVersionCheckHTTPClient(timeout time.Duration) *http.Client {
 	if timeout <= 0 {
 		timeout = githubReleaseTimeout
 	}
@@ -312,12 +314,6 @@ func buildGitHubHTTPClient(timeout time.Duration, forceHTTP11 bool) *http.Client
 		return client
 	}
 	transport := defaultTransport.Clone()
-	if forceHTTP11 {
-		// 显式禁用 HTTP/2，确保该请求使用 HTTP/1.1。
-		transport.ForceAttemptHTTP2 = false
-		transport.TLSNextProto = make(map[string]func(string, *tls.Conn) http.RoundTripper)
-	}
-
 	proxyURL := strings.TrimSpace(os.Getenv("GITHUB_HTTP_PROXY"))
 	if proxyURL != "" {
 		proxyParsed, err := neturl.Parse(proxyURL)
@@ -332,15 +328,15 @@ func buildGitHubHTTPClient(timeout time.Duration, forceHTTP11 bool) *http.Client
 	return client
 }
 
-func getGitHubJSONWithRetry(endpoint string, target any) error {
+func getVersionServiceJSONWithRetry(endpoint string, target any) error {
 	var lastErr error
-	client := buildGitHubHTTPClient(githubReleaseTimeout, shouldForceHTTP11ForGitHubEndpoint(endpoint))
+	client := buildVersionCheckHTTPClient(githubReleaseTimeout)
 	for attempt := 1; attempt <= githubRequestRetryMax; attempt++ {
 		req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 		if err != nil {
 			return err
 		}
-		req.Header.Set("Accept", "application/vnd.github+json")
+		req.Header.Set("Accept", "application/json")
 		req.Header.Set("User-Agent", "orvion-version-check")
 
 		res, err := client.Do(req)
@@ -381,18 +377,6 @@ func getGitHubJSONWithRetry(endpoint string, target any) error {
 	return lastErr
 }
 
-func shouldForceHTTP11ForGitHubEndpoint(endpoint string) bool {
-	parsed, err := neturl.Parse(strings.TrimSpace(endpoint))
-	if err != nil {
-		return false
-	}
-	if !strings.EqualFold(strings.TrimSpace(parsed.Host), "api.github.com") {
-		return false
-	}
-	// 仅对 commits 详情接口强制 HTTP/1.1。
-	return strings.Contains(strings.ToLower(strings.TrimSpace(parsed.Path)), "/commits/")
-}
-
 func shouldRetryGitHubStatus(statusCode int) bool {
 	if statusCode == http.StatusRequestTimeout || statusCode == http.StatusTooManyRequests {
 		return true
@@ -424,7 +408,7 @@ func buildTagDetailURL(tagName string) string {
 	if tagName == "" {
 		return githubTagsPageURL
 	}
-	return "https://github.com/raciott/llmio/tree/" + neturl.PathEscape(tagName)
+	return "https://github.com/raciott/Orvion/tree/" + neturl.PathEscape(tagName)
 }
 
 func buildTagUpdateBody(tagName string, commitSHA string, commitMessage string) string {

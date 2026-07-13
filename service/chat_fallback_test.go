@@ -113,7 +113,7 @@ func TestBalanceChatInternalReturnsRetryErrorWhenNoProviderCandidates(t *testing
 	}
 }
 
-func TestBalanceChatInternalDoesNotRetryFallbackable4xx(t *testing.T) {
+func TestBalanceChatInternalSwitchesProviderAfterFallbackable4xx(t *testing.T) {
 	db := setupBalanceChatRetryTestDB(t, "fallbackable_4xx")
 	requestCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -133,20 +133,50 @@ func TestBalanceChatInternalDoesNotRetryFallbackable4xx(t *testing.T) {
 		raw:    []byte(`{"model":"primary-model","messages":[{"role":"user","content":"hi"}]}`),
 	}
 
-	_, _, err := balanceChatInternal(nil, time.Now(), consts.StyleOpenAI, "/v1/chat/completions", before, meta, models.ReqMeta{}, false)
-	if err == nil {
-		t.Fatalf("期望 400 返回可触发回退的错误")
+	res, _, err := balanceChatInternal(nil, time.Now(), consts.StyleOpenAI, "/v1/chat/completions", before, meta, models.ReqMeta{}, false)
+	if err != nil {
+		t.Fatalf("首个提供商返回 400 后应切换到下一提供商并成功，实际 err=%v", err)
 	}
-	if statusCode, ok := UpstreamStatusCode(err); !ok || statusCode != http.StatusBadRequest {
-		t.Fatalf("期望透传 400 上游状态，实际 status=%d ok=%v err=%v", statusCode, ok, err)
+	if res == nil || res.Body == nil {
+		t.Fatal("期望返回第二个提供商的成功响应")
 	}
-	if !errors.Is(err, errMaximumRetryAttemptsReached) {
-		t.Fatalf("400 应触发模型回退哨兵错误，实际 err=%v", err)
-	}
-	if requestCount != 1 {
-		t.Fatalf("4xx 不应继续重试或切换提供商，实际请求次数=%d", requestCount)
+	_ = res.Body.Close()
+	if requestCount != 2 {
+		t.Fatalf("400 不应重试当前提供商，但应切换下一提供商，实际请求次数=%d", requestCount)
 	}
 	waitForBalanceChatRetryLogRows(t, db, 1)
+}
+
+func TestBalanceChatInternalReturnsFallbackable4xxAfterAllProvidersFail(t *testing.T) {
+	db := setupBalanceChatRetryTestDB(t, "fallbackable_4xx_all_failed")
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)
+	}))
+	t.Cleanup(server.Close)
+
+	meta := buildBalanceChatRetryTestMeta(t, server.URL, 2, 4)
+	before := Before{
+		Model:  "primary-model",
+		Stream: false,
+		raw:    []byte(`{"model":"primary-model","messages":[{"role":"user","content":"hi"}]}`),
+	}
+
+	_, _, err := balanceChatInternal(nil, time.Now(), consts.StyleOpenAI, "/v1/chat/completions", before, meta, models.ReqMeta{}, false)
+	if err == nil {
+		t.Fatal("所有提供商返回 400 后应返回错误")
+	}
+	if statusCode, ok := UpstreamStatusCode(err); !ok || statusCode != http.StatusBadRequest {
+		t.Fatalf("期望保留最后的 400 状态，实际 status=%d ok=%v err=%v", statusCode, ok, err)
+	}
+	if !errors.Is(err, errMaximumRetryAttemptsReached) {
+		t.Fatalf("400 应保留模型回退哨兵错误，实际 err=%v", err)
+	}
+	if requestCount != 2 {
+		t.Fatalf("应各请求两个候选提供商一次，实际请求次数=%d", requestCount)
+	}
+	waitForBalanceChatRetryLogRows(t, db, 2)
 }
 
 func TestBalanceChatWithFallbackUsesFallbackModelForConfigured4xx(t *testing.T) {

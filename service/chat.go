@@ -230,6 +230,10 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, requestP
 	const perProviderMaxAttempts = 2
 
 	attempt := 0
+	var lastFallbackStatusErr *FallbackUpstreamStatusError
+	var lastNonRetryableStatusErr *NonRetryableUpstreamStatusError
+
+retryLoop:
 	for attempt < providersWithMeta.MaxRetry {
 		select {
 		case <-ctx.Done():
@@ -240,7 +244,8 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, requestP
 			// 加权负载均衡
 			id, err := balancer.Pop()
 			if err != nil {
-				return nil, nil, err
+				// 候选提供商已耗尽；在循环结束后返回最后一个有意义的上游错误。
+				break retryLoop
 			}
 
 			modelWithProvider, ok := providersWithMeta.ModelWithProviderMap[id]
@@ -396,14 +401,17 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, requestP
 						"global_attempt", attempt,
 					)
 
-					// 指定 4xx 不重试当前模型，直接进入模型回退；若未配置回退模型，则保留原状态返回。
+					// 指定 4xx 不重试当前提供商，立即切换同一模型下的其它候选。
+					// 只有候选耗尽后，才进入模型回退或向调用方返回原始状态。
 					if runtimesvc.IsFallbackStatus(res.StatusCode) {
-						return nil, nil, newFallbackUpstreamStatusError(res.StatusCode, errorMessage)
+						lastFallbackStatusErr = newFallbackUpstreamStatusError(res.StatusCode, errorMessage)
+						break
 					}
-					// 其他不可重试 4xx 属于客户端请求或权限问题，直接返回给调用方。
+					// 其他不可重试 4xx 同样跳过当前提供商，但不触发模型回退。
 					// 429 常见于限流或配额耗尽，需要进入提供商降权、切换和模型回退流程。
 					if !runtimesvc.IsRetryableStatus(res.StatusCode) {
-						return nil, nil, newNonRetryableUpstreamStatusError(res.StatusCode, errorMessage)
+						lastNonRetryableStatusErr = newNonRetryableUpstreamStatusError(res.StatusCode, errorMessage)
+						break
 					}
 					// 5xx：继续重试同一 provider
 					continue
@@ -463,6 +471,12 @@ func balanceChatInternal(c *gin.Context, start time.Time, style string, requestP
 		}
 	}
 
+	if lastFallbackStatusErr != nil {
+		return nil, nil, lastFallbackStatusErr
+	}
+	if lastNonRetryableStatusErr != nil {
+		return nil, nil, lastNonRetryableStatusErr
+	}
 	return nil, nil, errMaximumRetryAttemptsReached
 }
 
