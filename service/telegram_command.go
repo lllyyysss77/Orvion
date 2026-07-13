@@ -405,7 +405,7 @@ func shouldRunTelegramDailyUsageReport(now time.Time, lastSentScheduleDate strin
 
 func dispatchTelegramDailyUsageReportWithNotifier(ctx context.Context, notifier *telegramNotifier, now time.Time) error {
 	content := buildTelegramYesterdayUsageReportMessage(ctx, now)
-	if err := sendTelegramCaptionWithStatusImage(ctx, notifier, notifier.chatID, content); err != nil {
+	if err := sendTelegramCaptionWithStatusImageWithoutWidening(ctx, notifier, notifier.chatID, content); err != nil {
 		return err
 	}
 
@@ -723,7 +723,7 @@ func buildTelegramSystemStatusMessage(ctx context.Context) string {
 	processUsage := collectTelegramProcessUsage(now)
 	statusPairs := formatTelegramStatusMetricPairs([]telegramStatusMetricPair{
 		{LeftLabel: "CPU", LeftValue: fmt.Sprintf("%.2f%%", processUsage.CPUPercent), RightLabel: "内存", RightValue: formatBytesBinary(processUsage.MemoryBytes)},
-		{LeftLabel: "模型总数", LeftValue: fmt.Sprintf("%d", modelTotal), RightLabel: "启用提供方", RightValue: fmt.Sprintf("%d", modelProviderEnabled)},
+		{LeftLabel: "模型总数", LeftValue: fmt.Sprintf("%d", modelTotal), RightLabel: "启用提供方", RightValue: fmt.Sprintf("%d", modelProviderEnabled), RightOffset: 2},
 		{LeftLabel: "请求", LeftValue: fmt.Sprintf("%d", todayReqs), RightLabel: "成功率", RightValue: fmt.Sprintf("%.2f%%", successRate)},
 		{LeftLabel: "成功", LeftValue: fmt.Sprintf("%d", todaySuccess), RightLabel: "失败", RightValue: fmt.Sprintf("%d", todayFailure)},
 	})
@@ -758,10 +758,11 @@ func buildTelegramSystemStatusMessage(ctx context.Context) string {
 }
 
 type telegramStatusMetricPair struct {
-	LeftLabel  string
-	LeftValue  string
-	RightLabel string
-	RightValue string
+	LeftLabel   string
+	LeftValue   string
+	RightLabel  string
+	RightValue  string
+	RightOffset int
 }
 
 func formatTelegramStatusMetricPairs(pairs []telegramStatusMetricPair) []string {
@@ -778,7 +779,7 @@ func formatTelegramStatusMetricPairs(pairs []telegramStatusMetricPair) []string 
 	lines := make([]string, 0, len(pairs))
 	for index, pair := range pairs {
 		left := leftParts[index]
-		padding := strings.Repeat(" ", maxLeftWidth-telegramTextDisplayWidth(left)+2)
+		padding := strings.Repeat(" ", maxLeftWidth-telegramTextDisplayWidth(left)+2+pair.RightOffset)
 		lines = append(lines, fmt.Sprintf("`%s%s- %s：%s`", left, padding, pair.RightLabel, pair.RightValue))
 	}
 	return lines
@@ -1098,6 +1099,16 @@ func (c telegramAgentClient) EditMessage(ctx context.Context, chatID int64, mess
 		return errors.New("telegram notifier is nil")
 	}
 	return c.notifier.editMarkdownMessageText(chatID, messageID, text)
+}
+
+func (c telegramAgentClient) DeleteMessage(ctx context.Context, chatID int64, messageID int64) error {
+	if c.notifier == nil {
+		return errors.New("telegram notifier is nil")
+	}
+	return c.notifier.postTelegramMethod(ctx, "deleteMessage", telegramDeleteMessageRequest{
+		ChatID:    strconv.FormatInt(chatID, 10),
+		MessageID: messageID,
+	})
 }
 
 func (c telegramAgentClient) SendTyping(ctx context.Context, chatID int64) error {
@@ -1495,7 +1506,15 @@ func sendTelegramCaptionWithStatusImage(ctx context.Context, notifier *telegramN
 	return sendTelegramCaptionWithStatusImageWithParseMode(ctx, notifier, chatID, content, "")
 }
 
+func sendTelegramCaptionWithStatusImageWithoutWidening(ctx context.Context, notifier *telegramNotifier, chatID string, content string) error {
+	return sendTelegramCaptionWithStatusImageOptions(ctx, notifier, chatID, content, "", false)
+}
+
 func sendTelegramCaptionWithStatusImageWithParseMode(ctx context.Context, notifier *telegramNotifier, chatID string, content string, parseMode string) error {
+	return sendTelegramCaptionWithStatusImageOptions(ctx, notifier, chatID, content, parseMode, true)
+}
+
+func sendTelegramCaptionWithStatusImageOptions(ctx context.Context, notifier *telegramNotifier, chatID string, content string, parseMode string, widenCaption bool) error {
 	if notifier == nil {
 		return errors.New("telegram notifier is nil")
 	}
@@ -1525,10 +1544,16 @@ func sendTelegramCaptionWithStatusImageWithParseMode(ctx context.Context, notifi
 	}
 	defer clearTelegramStatusBinary(item.Binary)
 
-	if err := notifier.sendPhotoBinaryToChatWithParseMode(ctx, chatID, item.FileName, item.Binary, content, parseMode); err != nil {
+	var sendErr error
+	if widenCaption {
+		sendErr = notifier.sendPhotoBinaryToChatWithParseMode(ctx, chatID, item.FileName, item.Binary, content, parseMode)
+	} else {
+		sendErr = notifier.sendMultipartBinaryToChatWithoutCaptionWidening(ctx, "sendPhoto", "photo", chatID, item.FileName, item.Binary, content, parseMode, telegramPhotoHTTPTimeout)
+	}
+	if sendErr != nil {
 		// 图片发送失败时回退到纯文本，避免关键消息丢失。
 		if fallbackErr := notifier.sendTextWithMarkupToChatWithParseMode(chatID, content, nil, parseMode); fallbackErr != nil {
-			return fmt.Errorf("发送状态图片失败: %v, 文本回退也失败: %w", err, fallbackErr)
+			return fmt.Errorf("发送状态图片失败: %v, 文本回退也失败: %w", sendErr, fallbackErr)
 		}
 		return nil
 	}

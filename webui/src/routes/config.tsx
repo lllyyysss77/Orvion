@@ -1557,8 +1557,11 @@ export default function ConfigPage() {
                           </FormControl>
                           <SelectContent>
                             {telegramAgentModelsLoading ? <SelectItem value="__loading" disabled>正在获取模型...</SelectItem> : null}
+                            {field.value && !telegramAgentModelOptions.some((model) => model.id === field.value) ? (
+                              <SelectItem value={field.value}>{field.value}</SelectItem>
+                            ) : null}
                             {telegramAgentModelOptions.map((model) => <SelectItem key={model.id} value={model.id}>{model.id}</SelectItem>)}
-                            {!telegramAgentModelsLoading && telegramAgentModelOptions.length === 0 ? <SelectItem value="__empty" disabled>暂无可用模型</SelectItem> : null}
+                            {!field.value && !telegramAgentModelsLoading && telegramAgentModelOptions.length === 0 ? <SelectItem value="__empty" disabled>暂无可用模型</SelectItem> : null}
                           </SelectContent>
                       </Select>
                       <FormMessage />
@@ -1589,8 +1592,11 @@ export default function ConfigPage() {
                         </FormControl>
                         <SelectContent>
                           {telegramAgentImageModelsLoading ? <SelectItem value="__loading" disabled>正在获取模型...</SelectItem> : null}
+                          {field.value && !telegramAgentImageModelOptions.some((model) => model.Name === field.value) ? (
+                            <SelectItem value={field.value}>{field.value}</SelectItem>
+                          ) : null}
                           {telegramAgentImageModelOptions.map((model) => <SelectItem key={model.ID} value={model.Name}>{model.Name}</SelectItem>)}
-                          {!telegramAgentImageModelsLoading && telegramAgentImageModelOptions.length === 0 ? <SelectItem value="__empty" disabled>暂无可用模型</SelectItem> : null}
+                          {!field.value && !telegramAgentImageModelsLoading && telegramAgentImageModelOptions.length === 0 ? <SelectItem value="__empty" disabled>暂无可用模型</SelectItem> : null}
                         </SelectContent>
                     </Select>
                     <FormMessage />

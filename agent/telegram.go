@@ -35,6 +35,7 @@ const (
 	telegramAgentTypingInterval            = 4 * time.Second
 	telegramAgentMessageSoftLimit          = 3600
 	telegramAgentSSEMaxLineBytes           = 1024 * 1024
+	telegramAgentAPIErrorMessage           = "ai接口调用出错，请到https://mork.de5.net中查看问题"
 )
 
 // TelegramClient 是 TG Agent 需要的最小 Telegram 能力。
@@ -48,6 +49,10 @@ type TelegramClient interface {
 type TelegramAttachmentClient interface {
 	SendPhoto(ctx context.Context, chatID int64, source string, caption string) error
 	SendDocument(ctx context.Context, chatID int64, source string, caption string) error
+}
+
+type TelegramMessageDeleter interface {
+	DeleteMessage(ctx context.Context, chatID int64, messageID int64) error
 }
 
 type TelegramMessage struct {
@@ -278,8 +283,8 @@ func runTelegramAgentConversationWithHistoryMode(ctx context.Context, client Tel
 			}
 			return nil
 		}
-		errorText := "对话失败：" + err.Error()
-		if editErr := client.EditMessage(ctx, chatID, placeholderID, trimTelegramMessage(errorText)); editErr != nil {
+		slog.Error("TG Agent 对话的所有 API 调用均失败", "chat_id", chatID, "error", err)
+		if editErr := client.EditMessage(ctx, chatID, placeholderID, telegramAgentAPIErrorMessage); editErr != nil {
 			return fmt.Errorf("%v; 编辑失败消息也失败: %w", err, editErr)
 		}
 		return err

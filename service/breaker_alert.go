@@ -87,6 +87,11 @@ type telegramEditMessageTextRequest struct {
 	ReplyMarkup any    `json:"reply_markup,omitempty"`
 }
 
+type telegramDeleteMessageRequest struct {
+	ChatID    string `json:"chat_id"`
+	MessageID int64  `json:"message_id"`
+}
+
 type telegramSendChatActionRequest struct {
 	ChatID string `json:"chat_id"`
 	Action string `json:"action"`

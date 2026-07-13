@@ -40,7 +40,8 @@ func TestBuildTelegramSystemStatusMessageUsesMarkdownTemplate(t *testing.T) {
 			t.Fatalf("系统状态 Markdown 缺少 %q，实际为: %s", expected, message)
 		}
 	}
-	assertTelegramStatusRightColumnsAligned(t, message, []string{"内存", "启用提供方", "成功率", "失败"})
+	assertTelegramStatusRightColumnsAligned(t, message, []string{"内存", "成功率", "失败"})
+	assertTelegramStatusColumnOffset(t, message, "内存", "启用提供方", 2)
 
 	rendered := renderTelegramAgentMarkdownV2(message)
 	for _, expected := range []string{
@@ -120,6 +121,21 @@ func assertTelegramStatusRightColumnsAligned(t *testing.T, message string, label
 		if width != expectedWidth {
 			t.Fatalf("系统状态右侧字段未对齐，字段=%s 期望宽度=%d 实际宽度=%d 行=%q", label, expectedWidth, width, line)
 		}
+	}
+}
+
+func assertTelegramStatusColumnOffset(t *testing.T, message string, baseLabel string, offsetLabel string, wantOffset int) {
+	t.Helper()
+	baseLine := findTelegramStatusLineContaining(message, "- "+baseLabel+"：")
+	offsetLine := findTelegramStatusLineContaining(message, "- "+offsetLabel+"：")
+	baseIndex := strings.Index(baseLine, "- "+baseLabel+"：")
+	offsetIndex := strings.Index(offsetLine, "- "+offsetLabel+"：")
+	if baseIndex < 0 || offsetIndex < 0 {
+		t.Fatalf("未找到状态列，base=%q offset=%q", baseLabel, offsetLabel)
+	}
+	gotOffset := telegramTextDisplayWidth(offsetLine[:offsetIndex]) - telegramTextDisplayWidth(baseLine[:baseIndex])
+	if gotOffset != wantOffset {
+		t.Fatalf("状态列 %q 应比 %q 右移 %d 格，实际右移 %d 格", offsetLabel, baseLabel, wantOffset, gotOffset)
 	}
 }
 

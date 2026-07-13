@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,8 +49,8 @@ func runTelegramAgentImageGeneration(ctx context.Context, client TelegramClient,
 
 	images, err := generateTelegramAgentImages(ctx, cfg, prompt)
 	if err != nil {
-		errorText := "生图失败：" + err.Error()
-		if editErr := client.EditMessage(ctx, chatID, placeholderID, trimTelegramMessage(errorText)); editErr != nil {
+		slog.Error("TG Agent 生图的所有 API 调用均失败", "chat_id", chatID, "error", err)
+		if editErr := client.EditMessage(ctx, chatID, placeholderID, telegramAgentAPIErrorMessage); editErr != nil {
 			return fmt.Errorf("%v; 编辑失败消息也失败: %w", err, editErr)
 		}
 		return err
@@ -57,10 +58,14 @@ func runTelegramAgentImageGeneration(ctx context.Context, client TelegramClient,
 	defer cleanupTelegramAgentGeneratedImages(images)
 
 	finalAnswer := "图片已生成。"
-	if err := client.EditMessage(ctx, chatID, placeholderID, finalAnswer); err != nil {
+	if err := sendTelegramAgentGeneratedImages(ctx, client, chatID, images, prompt); err != nil {
 		return err
 	}
-	if err := sendTelegramAgentGeneratedImages(ctx, client, chatID, images, prompt); err != nil {
+	if deleter, ok := client.(TelegramMessageDeleter); ok {
+		if err := deleter.DeleteMessage(ctx, chatID, placeholderID); err != nil {
+			return err
+		}
+	} else if err := client.EditMessage(ctx, chatID, placeholderID, finalAnswer); err != nil {
 		return err
 	}
 
