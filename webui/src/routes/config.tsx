@@ -312,6 +312,7 @@ export default function ConfigPage() {
   const [telegramAgentPromptDialogOpen, setTelegramAgentPromptDialogOpen] = useState(false);
   const [telegramAgentModelDialogOpen, setTelegramAgentModelDialogOpen] = useState(false);
   const [telegramAgentIntentDialogOpen, setTelegramAgentIntentDialogOpen] = useState(false);
+  const [telegramBotTokenVisible, setTelegramBotTokenVisible] = useState(false);
   const [telegramAgentAPIKeyVisible, setTelegramAgentAPIKeyVisible] = useState(false);
   const [telegramAgentModelsLoading, setTelegramAgentModelsLoading] = useState(false);
   const [telegramAgentModelOptions, setTelegramAgentModelOptions] = useState<ProviderModel[]>([]);
@@ -1091,7 +1092,29 @@ export default function ConfigPage() {
                         <div className="flex items-center gap-1.5">
                           <FormLabel className="w-[3.75rem] shrink-0 text-xs text-muted-foreground">Bot Token</FormLabel>
                           <FormControl>
-                            <Input type="password" placeholder="123456789:AA..." {...field} />
+                            <div className="relative min-w-0 flex-1">
+                              <Input
+                                className="pr-10"
+                                type={telegramBotTokenVisible ? 'text' : 'password'}
+                                placeholder="123456789:AA..."
+                                autoComplete="off"
+                                {...field}
+                              />
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                className="absolute right-1 top-1/2 h-7 w-7 -translate-y-1/2 p-0 text-muted-foreground hover:text-foreground"
+                                onClick={() => setTelegramBotTokenVisible((visible) => !visible)}
+                                aria-label={telegramBotTokenVisible ? '隐藏 Bot Token' : '显示 Bot Token'}
+                                title={telegramBotTokenVisible ? '隐藏 Bot Token' : '显示 Bot Token'}
+                              >
+                                {telegramBotTokenVisible ? (
+                                  <EyeOff className="size-4" />
+                                ) : (
+                                  <Eye className="size-4" />
+                                )}
+                              </Button>
+                            </div>
                           </FormControl>
                         </div>
                         <FormMessage />

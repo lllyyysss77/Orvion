@@ -7,12 +7,19 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 type versionCheckRoundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (fn versionCheckRoundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return fn(req)
+}
+
+func TestGitHubVersionRefreshInterval(t *testing.T) {
+	if githubReleaseRefreshEvery != 5*time.Minute {
+		t.Fatalf("refresh interval=%s want=%s", githubReleaseRefreshEvery, 5*time.Minute)
+	}
 }
 
 func TestIsLatestVersionGreater(t *testing.T) {

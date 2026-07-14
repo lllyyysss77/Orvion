@@ -31,7 +31,7 @@ const (
 	githubVersionServiceURL   = "https://young-poetry-afb0.hwt821096.workers.dev/api/github/version"
 	githubTagsPageURL         = "https://github.com/raciott/Orvion/tags"
 	githubReleaseTimeout      = 6 * time.Second
-	githubReleaseRefreshEvery = 1 * time.Minute
+	githubReleaseRefreshEvery = 5 * time.Minute
 	githubRequestRetryMax     = 3
 	githubRequestRetryBase    = 350 * time.Millisecond
 )
@@ -110,7 +110,7 @@ func GetVersionUpdateCheck(c *gin.Context) {
 }
 
 // StartGitHubVersionUpdateRefresher 启动 GitHub 版本检查后台刷新任务。
-// 行为：启动时先拉取一次，随后每分钟刷新一次；接口只返回内存缓存。
+// 行为：启动时先拉取一次，随后每 5 分钟刷新一次；接口只返回内存缓存。
 func StartGitHubVersionUpdateRefresher(ctx context.Context) {
 	githubVersionRefreshOnce.Do(func() {
 		go func() {
