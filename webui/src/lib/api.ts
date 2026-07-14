@@ -999,7 +999,8 @@ export interface AnthropicCountTokens {
 }
 
 export interface NetworkForwardingConfig {
-  telegram_proxy_url: string;
+  global_proxy_url: string;
+  telegram_proxy_url?: string;
   proxy_ip_enabled: boolean;
   proxy_ip: string;
 }

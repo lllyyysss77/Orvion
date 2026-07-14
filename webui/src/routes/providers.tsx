@@ -183,7 +183,8 @@ export default function ProvidersPage() {
         return;
       }
       const networkCfg = JSON.parse(response.value) as Partial<NetworkForwardingConfig>;
-      setNetworkProxyURL(typeof networkCfg.telegram_proxy_url === "string" ? networkCfg.telegram_proxy_url.trim() : "");
+      const proxyURL = networkCfg.global_proxy_url ?? networkCfg.telegram_proxy_url;
+      setNetworkProxyURL(typeof proxyURL === "string" ? proxyURL.trim() : "");
     } catch (err) {
       setNetworkProxyURL("");
       console.error("获取网络转发配置失败", err);
@@ -836,7 +837,7 @@ export default function ProvidersPage() {
                                   <Network className="size-4" />
                                 </span>
                                 <span className="min-w-0 flex-1">
-                                  <span className="block text-sm font-medium text-foreground">网络转发配置代理</span>
+                                  <span className="block text-sm font-medium text-foreground">全局代理</span>
                                   <span className="block truncate font-mono text-xs text-muted-foreground" title={networkProxyURL}>
                                     {networkProxyURL}
                                   </span>
@@ -844,7 +845,7 @@ export default function ProvidersPage() {
                               </button>
                             ) : (
                               <div className="rounded-lg px-3 py-2 text-xs text-muted-foreground">
-                                网络转发配置暂无代理地址
+                                暂未配置全局代理地址
                               </div>
                             )}
                             {field.value && (

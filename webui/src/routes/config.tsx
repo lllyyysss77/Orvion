@@ -52,12 +52,12 @@ import {
 } from '@/lib/loading-ui';
 
 const networkForwardingSchema = z.object({
-  telegram_proxy_url: z.string().trim(),
+  global_proxy_url: z.string().trim(),
   proxy_ip_enabled: z.boolean(),
   proxy_ip: z.string().trim(),
-}).refine((data) => data.telegram_proxy_url.length === 0 || isValidURL(data.telegram_proxy_url), {
-  message: 'TG 代理 URL 格式不正确',
-  path: ['telegram_proxy_url'],
+}).refine((data) => data.global_proxy_url.length === 0 || isValidURL(data.global_proxy_url), {
+  message: '全局代理 URL 格式不正确',
+  path: ['global_proxy_url'],
 }).refine((data) => !data.proxy_ip_enabled || data.proxy_ip.length > 0, {
   message: '启用代理 IP 时必须填写代理 IP',
   path: ['proxy_ip'],
@@ -329,7 +329,7 @@ export default function ConfigPage() {
   const networkForwardingForm = useForm<NetworkForwardingForm>({
     resolver: zodResolver(networkForwardingSchema),
     defaultValues: {
-      telegram_proxy_url: '',
+      global_proxy_url: '',
       proxy_ip_enabled: false,
       proxy_ip: '',
     },
@@ -396,7 +396,7 @@ export default function ConfigPage() {
       if (networkForwardingResponse.value) {
         const networkCfg = JSON.parse(networkForwardingResponse.value) as NetworkForwardingConfig;
         const nextNetworkForwardingConfig = {
-          telegram_proxy_url: networkCfg.telegram_proxy_url || '',
+          global_proxy_url: networkCfg.global_proxy_url || networkCfg.telegram_proxy_url || '',
           proxy_ip_enabled: Boolean(networkCfg.proxy_ip_enabled),
           proxy_ip: networkCfg.proxy_ip || '',
         };
@@ -561,17 +561,17 @@ export default function ConfigPage() {
   };
 
   const handleNetworkProxyTest = async () => {
-    const proxyURL = networkForwardingForm.getValues('telegram_proxy_url').trim();
+    const proxyURL = networkForwardingForm.getValues('global_proxy_url').trim();
     if (!proxyURL) {
-      networkForwardingForm.setError('telegram_proxy_url', { message: '请先填写 TG 代理 URL' });
+      networkForwardingForm.setError('global_proxy_url', { message: '请先填写全局代理 URL' });
       return;
     }
     if (!isValidURL(proxyURL)) {
-      networkForwardingForm.setError('telegram_proxy_url', { message: 'TG 代理 URL 格式不正确' });
+      networkForwardingForm.setError('global_proxy_url', { message: '全局代理 URL 格式不正确' });
       return;
     }
 
-    networkForwardingForm.clearErrors('telegram_proxy_url');
+    networkForwardingForm.clearErrors('global_proxy_url');
     setProxyTestProxyURL(proxyURL);
     setProxyTestResult(null);
     setProxyTestError(null);
@@ -987,11 +987,11 @@ export default function ConfigPage() {
                 >
                   <FormField
                     control={networkForwardingForm.control}
-                    name="telegram_proxy_url"
+                    name="global_proxy_url"
                     render={({ field }) => (
                       <FormItem className="space-y-1">
                         <div className="flex items-center gap-1.5">
-                          <FormLabel className="w-[4.5rem] shrink-0 text-xs text-muted-foreground">TG 代理</FormLabel>
+                          <FormLabel className="w-[4.5rem] shrink-0 text-xs text-muted-foreground">全局代理</FormLabel>
                           <FormControl>
                             <div className="flex min-w-0 flex-1 gap-2">
                               <Input className="min-w-0 flex-1" placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080" {...field} />
@@ -1413,7 +1413,7 @@ export default function ConfigPage() {
               网络连通性
             </DialogTitle>
             <DialogDescription>
-              使用网络转发配置中的 TG 代理测试出口信息与常用站点延迟
+              使用网络转发配置中的全局代理测试出口信息与常用站点延迟
             </DialogDescription>
           </DialogHeader>
 

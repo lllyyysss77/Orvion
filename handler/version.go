@@ -9,13 +9,14 @@ import (
 	"github.com/racio/orvion/common"
 	"github.com/racio/orvion/consts"
 	"github.com/racio/orvion/models"
+	"github.com/racio/orvion/providers"
+	"github.com/racio/orvion/service"
 	"gorm.io/gorm"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	neturl "net/url"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -303,34 +304,72 @@ func latestTagInfoFromServiceResp(payload githubVersionServiceResp) (*githubLate
 	}, nil
 }
 
-func buildVersionCheckHTTPClient(timeout time.Duration) *http.Client {
+func buildVersionCheckHTTPClient(timeout time.Duration, proxyURL string) (*http.Client, error) {
 	if timeout <= 0 {
 		timeout = githubReleaseTimeout
 	}
-	client := &http.Client{Timeout: timeout}
-
-	defaultTransport, ok := http.DefaultTransport.(*http.Transport)
-	if !ok {
-		return client
+	baseClient, err := providers.GetClientWithProxy(timeout, strings.TrimSpace(proxyURL))
+	if err != nil {
+		return nil, err
 	}
-	transport := defaultTransport.Clone()
-	proxyURL := strings.TrimSpace(os.Getenv("GITHUB_HTTP_PROXY"))
-	if proxyURL != "" {
-		proxyParsed, err := neturl.Parse(proxyURL)
-		if err != nil {
-			slog.Warn("解析 GitHub 代理地址失败", "error", err)
-		} else {
-			transport.Proxy = http.ProxyURL(proxyParsed)
-		}
-	}
-
-	client.Transport = transport
-	return client
+	client := *baseClient
+	client.Timeout = timeout
+	return &client, nil
 }
 
 func getVersionServiceJSONWithRetry(endpoint string, target any) error {
+	directClient, err := buildVersionCheckHTTPClient(githubReleaseTimeout, "")
+	if err != nil {
+		return err
+	}
+
+	proxyURL := resolveVersionCheckProxyURL(context.Background())
+	var proxyClient *http.Client
+	if proxyURL != "" {
+		proxyClient, err = buildVersionCheckHTTPClient(githubReleaseTimeout, proxyURL)
+		if err != nil {
+			slog.Warn("GitHub 版本检查全局代理配置无效，跳过代理重试", "proxy_url", proxyURL, "error", err)
+		}
+	}
+
+	return getVersionServiceJSONWithFallback(endpoint, target, directClient, proxyClient)
+}
+
+func resolveVersionCheckProxyURL(ctx context.Context) string {
+	cfg, found, err := service.LoadNetworkForwardingConfig(ctx)
+	if err != nil {
+		slog.Warn("读取版本检查全局代理配置失败", "error", err)
+		return ""
+	}
+	if !found {
+		return ""
+	}
+	return strings.TrimSpace(cfg.GlobalProxyURL)
+}
+
+func getVersionServiceJSONWithFallback(endpoint string, target any, directClient *http.Client, proxyClient *http.Client) error {
+	directErr := getVersionServiceJSONWithClientRetry(endpoint, target, directClient)
+	if directErr == nil {
+		return nil
+	}
+	if proxyClient == nil {
+		return directErr
+	}
+
+	slog.Warn("GitHub 版本检查直连失败，尝试代理获取", "url", endpoint, "error", directErr)
+	proxyErr := getVersionServiceJSONWithClientRetry(endpoint, target, proxyClient)
+	if proxyErr == nil {
+		slog.Info("GitHub 版本检查已通过代理获取", "url", endpoint)
+		return nil
+	}
+	return fmt.Errorf("版本检查直连失败: %w; 代理失败: %v", directErr, proxyErr)
+}
+
+func getVersionServiceJSONWithClientRetry(endpoint string, target any, client *http.Client) error {
+	if client == nil {
+		return errors.New("version check HTTP client is nil")
+	}
 	var lastErr error
-	client := buildVersionCheckHTTPClient(githubReleaseTimeout)
 	for attempt := 1; attempt <= githubRequestRetryMax; attempt++ {
 		req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 		if err != nil {
@@ -350,7 +389,7 @@ func getVersionServiceJSONWithRetry(endpoint string, target any) error {
 		}
 
 		if res.StatusCode != http.StatusOK {
-			lastErr = fmt.Errorf("github status=%d", res.StatusCode)
+			lastErr = fmt.Errorf("version service status=%d", res.StatusCode)
 			_ = res.Body.Close()
 			if !shouldRetryGitHubStatus(res.StatusCode) || attempt >= githubRequestRetryMax {
 				return lastErr
@@ -372,7 +411,7 @@ func getVersionServiceJSONWithRetry(endpoint string, target any) error {
 		return nil
 	}
 	if lastErr == nil {
-		lastErr = errors.New("unknown github request error")
+		lastErr = errors.New("unknown version service request error")
 	}
 	return lastErr
 }

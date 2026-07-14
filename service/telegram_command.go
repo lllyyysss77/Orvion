@@ -494,10 +494,10 @@ func resolveTelegramRuntimeConfig(ctx context.Context) (botToken, chatID, apiBas
 		botToken = strings.TrimSpace(cfg.BotToken)
 		chatID = strings.TrimSpace(cfg.ChatID)
 		apiBase = strings.TrimSpace(cfg.APIBase)
-		if networkCfg, _, networkErr := loadNetworkForwardingConfig(ctx); networkErr != nil {
+		if networkCfg, _, networkErr := LoadNetworkForwardingConfig(ctx); networkErr != nil {
 			return "", "", "", "", false, networkErr
 		} else {
-			proxyURL = strings.TrimSpace(networkCfg.TelegramProxyURL)
+			proxyURL = strings.TrimSpace(networkCfg.GlobalProxyURL)
 		}
 		enabled = cfg.Enabled && botToken != "" && chatID != ""
 		if apiBase == "" {
@@ -1724,16 +1724,16 @@ func resolveTelegramStatusCoverImageBaseURL(ctx context.Context) string {
 }
 
 func resolveTelegramStatusImageProxyURL(ctx context.Context) string {
-	cfg, found, err := loadNetworkForwardingConfig(ctx)
+	cfg, found, err := LoadNetworkForwardingConfig(ctx)
 	if err != nil {
-		slog.Warn("读取 TG 状态图片代理配置失败", "error", err)
+		slog.Warn("读取全局代理配置失败", "error", err)
 		return ""
 	}
 	if !found {
 		return ""
 	}
 
-	configProxyURL := strings.TrimSpace(cfg.TelegramProxyURL)
+	configProxyURL := strings.TrimSpace(cfg.GlobalProxyURL)
 	if configProxyURL != "" {
 		return configProxyURL
 	}

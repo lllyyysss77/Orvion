@@ -1,6 +1,9 @@
 package models
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 type Config struct {
 	ID        uint `gorm:"primaryKey"`
@@ -12,7 +15,7 @@ type Config struct {
 
 const (
 	KeyAnthropicCountTokens = "anthropic_count_tokens"
-	// KeyNetworkForwarding 网络转发配置（TG 代理与全局真实 IP 覆盖）
+	// KeyNetworkForwarding 网络转发配置（全局代理与真实 IP 覆盖）
 	KeyNetworkForwarding = "network_forwarding"
 	// KeyTelegramBreakerAlert 熔断 Telegram 告警配置
 	KeyTelegramBreakerAlert = "breaker_alert_tg"
@@ -46,9 +49,17 @@ type ForwardedIPOverrideConfig struct {
 }
 
 type NetworkForwardingConfig struct {
-	TelegramProxyURL string `json:"telegram_proxy_url"`
+	GlobalProxyURL   string `json:"global_proxy_url"`
+	TelegramProxyURL string `json:"telegram_proxy_url,omitempty"` // 兼容旧配置，后续保存统一使用 global_proxy_url。
 	ProxyIPEnabled   bool   `json:"proxy_ip_enabled"`
 	ProxyIP          string `json:"proxy_ip"`
+}
+
+func (c NetworkForwardingConfig) EffectiveProxyURL() string {
+	if value := strings.TrimSpace(c.GlobalProxyURL); value != "" {
+		return value
+	}
+	return strings.TrimSpace(c.TelegramProxyURL)
 }
 
 type TelegramBreakerAlertConfig struct {

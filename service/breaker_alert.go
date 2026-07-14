@@ -160,16 +160,19 @@ func resolveTelegramNotifier(ctx context.Context) (*telegramNotifier, bool, erro
 		return nil, false, err
 	}
 	if found {
-		networkCfg, _, networkErr := loadNetworkForwardingConfig(ctx)
+		networkCfg, _, networkErr := LoadNetworkForwardingConfig(ctx)
 		if networkErr != nil {
 			return nil, false, networkErr
 		}
-		return buildTelegramNotifier(cfg.BotToken, cfg.ChatID, cfg.APIBase, networkCfg.TelegramProxyURL, cfg.Enabled)
+		return buildTelegramNotifier(cfg.BotToken, cfg.ChatID, cfg.APIBase, networkCfg.GlobalProxyURL, cfg.Enabled)
 	}
 	return nil, false, nil
 }
 
-func loadNetworkForwardingConfig(ctx context.Context) (models.NetworkForwardingConfig, bool, error) {
+func LoadNetworkForwardingConfig(ctx context.Context) (models.NetworkForwardingConfig, bool, error) {
+	if models.DB == nil {
+		return models.NetworkForwardingConfig{}, false, nil
+	}
 	config, err := gorm.G[models.Config](models.DB).Where(models.ColumnEquals("key"), models.KeyNetworkForwarding).First(ctx)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -187,7 +190,8 @@ func loadNetworkForwardingConfig(ctx context.Context) (models.NetworkForwardingC
 	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
 		return models.NetworkForwardingConfig{}, true, fmt.Errorf("解析网络转发配置失败: %w", err)
 	}
-	cfg.TelegramProxyURL = strings.TrimSpace(cfg.TelegramProxyURL)
+	cfg.GlobalProxyURL = cfg.EffectiveProxyURL()
+	cfg.TelegramProxyURL = ""
 	cfg.ProxyIP = strings.TrimSpace(cfg.ProxyIP)
 	return cfg, true, nil
 }

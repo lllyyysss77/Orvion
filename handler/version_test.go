@@ -2,8 +2,18 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 )
+
+type versionCheckRoundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (fn versionCheckRoundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
+}
 
 func TestIsLatestVersionGreater(t *testing.T) {
 	cases := []struct {
@@ -175,6 +185,68 @@ func TestLatestTagInfoFromVersionServiceResponse(t *testing.T) {
 func TestLatestTagInfoFromVersionServiceRejectsFailure(t *testing.T) {
 	if _, err := latestTagInfoFromServiceResp(githubVersionServiceResp{}); err == nil {
 		t.Fatal("expected success=false to return an error")
+	}
+}
+
+func TestGetVersionServiceJSONFallsBackToProxy(t *testing.T) {
+	directCalls := 0
+	proxyCalls := 0
+	directClient := &http.Client{Transport: versionCheckRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		directCalls++
+		return &http.Response{
+			StatusCode: http.StatusBadGateway,
+			Body:       io.NopCloser(strings.NewReader(`{"error":"bad gateway"}`)),
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	})}
+	proxyClient := &http.Client{Transport: versionCheckRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		proxyCalls++
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"success":true,"repository":"raciott/Orvion","latest":{"tag":"v1.2.7"}}`)),
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	})}
+
+	var payload githubVersionServiceResp
+	err := getVersionServiceJSONWithFallback("https://version.example.test", &payload, directClient, proxyClient)
+	if err != nil {
+		t.Fatalf("expected proxy fallback success, got %v", err)
+	}
+	if directCalls != githubRequestRetryMax {
+		t.Fatalf("direct calls=%d want=%d", directCalls, githubRequestRetryMax)
+	}
+	if proxyCalls != 1 {
+		t.Fatalf("proxy calls=%d want=1", proxyCalls)
+	}
+	if !payload.Success || payload.Latest == nil || payload.Latest.Tag != "v1.2.7" {
+		t.Fatalf("unexpected proxy payload: %+v", payload)
+	}
+}
+
+func TestGetVersionServiceJSONDoesNotUseProxyAfterDirectSuccess(t *testing.T) {
+	proxyCalls := 0
+	directClient := &http.Client{Transport: versionCheckRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"success":true,"latest":{"tag":"v1.2.7"}}`)),
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	})}
+	proxyClient := &http.Client{Transport: versionCheckRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		proxyCalls++
+		return nil, errors.New("proxy should not be called")
+	})}
+
+	var payload githubVersionServiceResp
+	if err := getVersionServiceJSONWithFallback("https://version.example.test", &payload, directClient, proxyClient); err != nil {
+		t.Fatalf("expected direct success, got %v", err)
+	}
+	if proxyCalls != 0 {
+		t.Fatalf("proxy calls=%d want=0", proxyCalls)
 	}
 }
 

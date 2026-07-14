@@ -120,7 +120,6 @@ Skills 内容不打包进镜像，运行后通过页面上传文件夹/压缩包
 - `ORVION_SHUTDOWN_TIMEOUT_SECONDS`：优雅停机超时秒数，默认 `10`
 - `TRUSTED_PROXIES`：可信代理列表，逗号分隔
 - `GEMINI_COMPAT_ENABLED`：Gemini 兼容降级开关，默认开启
-- `GITHUB_HTTP_PROXY`：GitHub 版本检查代理（可选）
 
 ### SQLite 迁移到 MySQL
 
