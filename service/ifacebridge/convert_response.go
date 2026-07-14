@@ -13,14 +13,20 @@ import (
 )
 
 type aggregatedChat struct {
-	ID               string
-	Model            string
-	Created          int64
-	Content          string
-	ToolCalls        []aggregatedToolCall
-	PromptTokens     int64
-	CompletionTokens int64
-	TotalTokens      int64
+	ID                string
+	Model             string
+	Created           int64
+	Content           string
+	ToolCalls         []aggregatedToolCall
+	PromptTokens      int64
+	CompletionTokens  int64
+	TotalTokens       int64
+	CachedTokens      int64
+	ReasoningTokens   int64
+	CacheCreateTokens int64
+	CacheReadTokens   int64
+	StopReason        string
+	StopSequence      string
 }
 
 type aggregatedToolCall struct {
@@ -83,11 +89,12 @@ func ConvertResponseBody(plan Plan, upstreamRes *http.Response, stream bool) (*h
 }
 
 func streamConvert(upstream io.Reader, out io.Writer, fromEndpoint string, toEndpoint string) error {
-	agg, err := aggregateFromStream(upstream, fromEndpoint)
+	emitter := newIncrementalStreamEmitter(out, toEndpoint)
+	agg, err := aggregateFromStream(upstream, fromEndpoint, emitter.EmitText)
 	if err != nil {
 		return err
 	}
-	return buildStreamFromAggregated(out, agg, toEndpoint)
+	return emitter.Finish(agg)
 }
 
 func aggregateFromNonStream(raw []byte, endpoint string) (aggregatedChat, error) {
@@ -103,14 +110,14 @@ func aggregateFromNonStream(raw []byte, endpoint string) (aggregatedChat, error)
 	}
 }
 
-func aggregateFromStream(upstream io.Reader, endpoint string) (aggregatedChat, error) {
+func aggregateFromStream(upstream io.Reader, endpoint string, textSink func(aggregatedChat, string) error) (aggregatedChat, error) {
 	switch endpoint {
 	case EndpointChat:
-		return aggregateChatFromStream(upstream)
+		return aggregateChatFromStream(upstream, textSink)
 	case EndpointResponses:
-		return aggregateResponsesFromStream(upstream)
+		return aggregateResponsesFromStream(upstream, textSink)
 	case EndpointMessages:
-		return aggregateMessagesFromStream(upstream)
+		return aggregateMessagesFromStream(upstream, textSink)
 	default:
 		return aggregatedChat{}, fmt.Errorf("unsupported stream source endpoint: %s", endpoint)
 	}
@@ -162,6 +169,8 @@ func aggregateChatFromNonStream(raw []byte) (aggregatedChat, error) {
 		agg.PromptTokens = toInt64(usage["prompt_tokens"])
 		agg.CompletionTokens = toInt64(usage["completion_tokens"])
 		agg.TotalTokens = toInt64(usage["total_tokens"])
+		agg.CachedTokens = toInt64Path(usage, "prompt_tokens_details", "cached_tokens")
+		agg.ReasoningTokens = toInt64Path(usage, "completion_tokens_details", "reasoning_tokens")
 	}
 	if choices, ok := payload["choices"].([]any); ok && len(choices) > 0 {
 		if first, ok := choices[0].(map[string]any); ok {
@@ -169,6 +178,7 @@ func aggregateChatFromNonStream(raw []byte) (aggregatedChat, error) {
 				agg.Content = extractMessageText(message["content"])
 				agg.ToolCalls = extractChatToolCalls(message["tool_calls"])
 			}
+			agg.StopReason = strings.TrimSpace(toString(first["finish_reason"]))
 		}
 	}
 	if agg.TotalTokens == 0 {
@@ -193,6 +203,13 @@ func aggregateResponsesFromNonStream(raw []byte) (aggregatedChat, error) {
 		agg.PromptTokens = toInt64(usage["input_tokens"])
 		agg.CompletionTokens = toInt64(usage["output_tokens"])
 		agg.TotalTokens = toInt64(usage["total_tokens"])
+		agg.CachedTokens = toInt64Path(usage, "input_tokens_details", "cached_tokens")
+		agg.ReasoningTokens = toInt64Path(usage, "output_tokens_details", "reasoning_tokens")
+	}
+	if strings.EqualFold(strings.TrimSpace(toString(payload["status"])), "incomplete") {
+		if details, ok := payload["incomplete_details"].(map[string]any); ok {
+			agg.StopReason = strings.TrimSpace(toString(details["reason"]))
+		}
 	}
 	if output, ok := payload["output"].([]any); ok {
 		for _, rawItem := range output {
@@ -241,7 +258,11 @@ func aggregateMessagesFromNonStream(raw []byte) (aggregatedChat, error) {
 	if usage, ok := payload["usage"].(map[string]any); ok {
 		agg.PromptTokens = toInt64(usage["input_tokens"])
 		agg.CompletionTokens = toInt64(usage["output_tokens"])
+		agg.CacheCreateTokens = toInt64(usage["cache_creation_input_tokens"])
+		agg.CacheReadTokens = toInt64(usage["cache_read_input_tokens"])
 	}
+	agg.StopReason = strings.TrimSpace(toString(payload["stop_reason"]))
+	agg.StopSequence = strings.TrimSpace(toString(payload["stop_sequence"]))
 	if content, ok := payload["content"].([]any); ok {
 		for _, rawPart := range content {
 			part, ok := rawPart.(map[string]any)
@@ -264,7 +285,7 @@ func aggregateMessagesFromNonStream(raw []byte) (aggregatedChat, error) {
 	return agg, nil
 }
 
-func aggregateChatFromStream(upstream io.Reader) (aggregatedChat, error) {
+func aggregateChatFromStream(upstream io.Reader, textSink func(aggregatedChat, string) error) (aggregatedChat, error) {
 	scanner := bufio.NewScanner(upstream)
 	scanner.Buffer(make([]byte, 0, 8192), 64*1024*1024)
 
@@ -290,7 +311,7 @@ func aggregateChatFromStream(upstream io.Reader) (aggregatedChat, error) {
 
 		var chunk map[string]any
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			continue
+			return aggregatedChat{}, fmt.Errorf("invalid chat stream event: %w", err)
 		}
 		if agg.ID == "" {
 			agg.ID = strings.TrimSpace(toString(chunk["id"]))
@@ -322,6 +343,9 @@ func aggregateChatFromStream(upstream io.Reader) (aggregatedChat, error) {
 		if !ok {
 			continue
 		}
+		if finishReason := strings.TrimSpace(toString(first["finish_reason"])); finishReason != "" {
+			agg.StopReason = finishReason
+		}
 		delta, ok := first["delta"].(map[string]any)
 		if !ok {
 			continue
@@ -329,6 +353,11 @@ func aggregateChatFromStream(upstream io.Reader) (aggregatedChat, error) {
 		text := extractMessageText(delta["content"])
 		if text != "" {
 			contentBuilder.WriteString(text)
+			if textSink != nil {
+				if err := textSink(agg, text); err != nil {
+					return aggregatedChat{}, err
+				}
+			}
 		}
 		mergeChatToolCallDeltas(toolPartials, delta["tool_calls"])
 	}
@@ -343,7 +372,7 @@ func aggregateChatFromStream(upstream io.Reader) (aggregatedChat, error) {
 	return agg, nil
 }
 
-func aggregateResponsesFromStream(upstream io.Reader) (aggregatedChat, error) {
+func aggregateResponsesFromStream(upstream io.Reader, textSink func(aggregatedChat, string) error) (aggregatedChat, error) {
 	scanner := bufio.NewScanner(upstream)
 	scanner.Buffer(make([]byte, 0, 8192), 64*1024*1024)
 	agg := aggregatedChat{Created: time.Now().Unix()}
@@ -365,7 +394,7 @@ func aggregateResponsesFromStream(upstream io.Reader) (aggregatedChat, error) {
 		}
 		var chunk map[string]any
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			continue
+			return aggregatedChat{}, fmt.Errorf("invalid responses stream event: %w", err)
 		}
 		typeName := strings.ToLower(strings.TrimSpace(toString(chunk["type"])))
 		switch typeName {
@@ -413,7 +442,13 @@ func aggregateResponsesFromStream(upstream io.Reader) (aggregatedChat, error) {
 				call.Arguments = arguments
 			}
 		case "response.output_text.delta":
-			contentBuilder.WriteString(toString(chunk["delta"]))
+			text := toString(chunk["delta"])
+			contentBuilder.WriteString(text)
+			if text != "" && textSink != nil {
+				if err := textSink(agg, text); err != nil {
+					return aggregatedChat{}, err
+				}
+			}
 		case "response.completed":
 			if response, ok := chunk["response"].(map[string]any); ok {
 				if agg.ID == "" {
@@ -429,6 +464,8 @@ func aggregateResponsesFromStream(upstream io.Reader) (aggregatedChat, error) {
 					agg.PromptTokens = maxInt64(agg.PromptTokens, toInt64(usage["input_tokens"]))
 					agg.CompletionTokens = maxInt64(agg.CompletionTokens, toInt64(usage["output_tokens"]))
 					agg.TotalTokens = maxInt64(agg.TotalTokens, toInt64(usage["total_tokens"]))
+					agg.CachedTokens = maxInt64(agg.CachedTokens, toInt64Path(usage, "input_tokens_details", "cached_tokens"))
+					agg.ReasoningTokens = maxInt64(agg.ReasoningTokens, toInt64Path(usage, "output_tokens_details", "reasoning_tokens"))
 				}
 				if output, ok := response["output"].([]any); ok {
 					for itemIndex, rawItem := range output {
@@ -458,6 +495,12 @@ func aggregateResponsesFromStream(upstream io.Reader) (aggregatedChat, error) {
 					}
 				}
 			}
+		case "response.incomplete":
+			if response, ok := chunk["response"].(map[string]any); ok {
+				if details, ok := response["incomplete_details"].(map[string]any); ok {
+					agg.StopReason = strings.TrimSpace(toString(details["reason"]))
+				}
+			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -471,7 +514,7 @@ func aggregateResponsesFromStream(upstream io.Reader) (aggregatedChat, error) {
 	return agg, nil
 }
 
-func aggregateMessagesFromStream(upstream io.Reader) (aggregatedChat, error) {
+func aggregateMessagesFromStream(upstream io.Reader, textSink func(aggregatedChat, string) error) (aggregatedChat, error) {
 	scanner := bufio.NewScanner(upstream)
 	scanner.Buffer(make([]byte, 0, 8192), 64*1024*1024)
 	agg := aggregatedChat{Created: time.Now().Unix()}
@@ -492,7 +535,7 @@ func aggregateMessagesFromStream(upstream io.Reader) (aggregatedChat, error) {
 		}
 		var chunk map[string]any
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			continue
+			return aggregatedChat{}, fmt.Errorf("invalid messages stream event: %w", err)
 		}
 		typeName := strings.ToLower(strings.TrimSpace(toString(chunk["type"])))
 		switch typeName {
@@ -506,6 +549,8 @@ func aggregateMessagesFromStream(upstream io.Reader) (aggregatedChat, error) {
 				}
 				if usage, ok := message["usage"].(map[string]any); ok {
 					agg.PromptTokens = maxInt64(agg.PromptTokens, toInt64(usage["input_tokens"]))
+					agg.CacheCreateTokens = maxInt64(agg.CacheCreateTokens, toInt64(usage["cache_creation_input_tokens"]))
+					agg.CacheReadTokens = maxInt64(agg.CacheReadTokens, toInt64(usage["cache_read_input_tokens"]))
 				}
 			}
 		case "content_block_start":
@@ -519,7 +564,13 @@ func aggregateMessagesFromStream(upstream io.Reader) (aggregatedChat, error) {
 			if delta, ok := chunk["delta"].(map[string]any); ok {
 				deltaType := strings.ToLower(strings.TrimSpace(toString(delta["type"])))
 				if deltaType == "text_delta" {
-					contentBuilder.WriteString(toString(delta["text"]))
+					text := toString(delta["text"])
+					contentBuilder.WriteString(text)
+					if text != "" && textSink != nil {
+						if err := textSink(agg, text); err != nil {
+							return aggregatedChat{}, err
+						}
+					}
 				}
 				if deltaType == "input_json_delta" {
 					index := int(toInt64(chunk["index"]))
@@ -528,6 +579,14 @@ func aggregateMessagesFromStream(upstream io.Reader) (aggregatedChat, error) {
 				}
 			}
 		case "message_delta":
+			if delta, ok := chunk["delta"].(map[string]any); ok {
+				if reason := strings.TrimSpace(toString(delta["stop_reason"])); reason != "" {
+					agg.StopReason = reason
+				}
+				if sequence := strings.TrimSpace(toString(delta["stop_sequence"])); sequence != "" {
+					agg.StopSequence = sequence
+				}
+			}
 			if usage, ok := chunk["usage"].(map[string]any); ok {
 				agg.CompletionTokens = maxInt64(agg.CompletionTokens, toInt64(usage["output_tokens"]))
 			}
@@ -551,13 +610,12 @@ func buildChatNonStreamPayload(agg aggregatedChat) ([]byte, error) {
 		"role":    "assistant",
 		"content": agg.Content,
 	}
-	finishReason := "stop"
+	finishReason := chatFinishReason(agg)
 	if len(agg.ToolCalls) > 0 {
 		message["tool_calls"] = buildChatToolCallPayloads(agg.ToolCalls)
 		if agg.Content == "" {
 			message["content"] = nil
 		}
-		finishReason = "tool_calls"
 	}
 	payload := map[string]any{
 		"id":      id,
@@ -569,11 +627,7 @@ func buildChatNonStreamPayload(agg aggregatedChat) ([]byte, error) {
 			"finish_reason": finishReason,
 			"message":       message,
 		}},
-		"usage": map[string]any{
-			"prompt_tokens":     agg.PromptTokens,
-			"completion_tokens": agg.CompletionTokens,
-			"total_tokens":      agg.TotalTokens,
-		},
+		"usage": buildChatUsage(agg),
 	}
 	return json.Marshal(payload)
 }
@@ -614,14 +668,13 @@ func buildResponsesNonStreamPayload(agg aggregatedChat) ([]byte, error) {
 		"id":         responseID,
 		"object":     "response",
 		"created_at": agg.Created,
-		"status":     "completed",
+		"status":     responsesStatus(agg),
 		"model":      agg.Model,
 		"output":     output,
-		"usage": map[string]any{
-			"input_tokens":  agg.PromptTokens,
-			"output_tokens": agg.CompletionTokens,
-			"total_tokens":  agg.TotalTokens,
-		},
+		"usage":      buildResponsesUsage(agg),
+	}
+	if payload["status"] == "incomplete" {
+		payload["incomplete_details"] = map[string]any{"reason": responsesIncompleteReason(agg.StopReason)}
 	}
 	return json.Marshal(payload)
 }
@@ -651,13 +704,10 @@ func buildMessagesNonStreamPayload(agg aggregatedChat) ([]byte, error) {
 		"type":          "message",
 		"role":          "assistant",
 		"model":         agg.Model,
-		"stop_reason":   "end_turn",
-		"stop_sequence": nil,
+		"stop_reason":   messagesStopReason(agg),
+		"stop_sequence": nilIfEmpty(agg.StopSequence),
 		"content":       content,
-		"usage": map[string]any{
-			"input_tokens":  agg.PromptTokens,
-			"output_tokens": agg.CompletionTokens,
-		},
+		"usage":         buildMessagesUsage(agg),
 	}
 	return json.Marshal(payload)
 }
@@ -712,10 +762,7 @@ func writeChatStream(out io.Writer, agg aggregatedChat) error {
 			return err
 		}
 	}
-	finishReason := "stop"
-	if len(agg.ToolCalls) > 0 {
-		finishReason = "tool_calls"
-	}
+	finishReason := chatFinishReason(agg)
 	chunk2 := map[string]any{
 		"id":      id,
 		"object":  "chat.completion.chunk",
@@ -726,11 +773,7 @@ func writeChatStream(out io.Writer, agg aggregatedChat) error {
 			"delta":         map[string]any{},
 			"finish_reason": finishReason,
 		}},
-		"usage": map[string]any{
-			"prompt_tokens":     agg.PromptTokens,
-			"completion_tokens": agg.CompletionTokens,
-			"total_tokens":      agg.TotalTokens,
-		},
+		"usage": buildChatUsage(agg),
 	}
 	if err := writeSSEData(out, chunk2); err != nil {
 		return err
@@ -765,7 +808,7 @@ func writeResponsesStream(out io.Writer, agg aggregatedChat) error {
 			"id":         responseID,
 			"object":     "response",
 			"created_at": agg.Created,
-			"status":     "completed",
+			"status":     responsesStatus(agg),
 			"model":      agg.Model,
 			"output": []any{
 				map[string]any{
@@ -778,11 +821,7 @@ func writeResponsesStream(out io.Writer, agg aggregatedChat) error {
 					},
 				},
 			},
-			"usage": map[string]any{
-				"input_tokens":  agg.PromptTokens,
-				"output_tokens": agg.CompletionTokens,
-				"total_tokens":  agg.TotalTokens,
-			},
+			"usage": buildResponsesUsage(agg),
 		},
 	}
 	if err := writeSSEData(out, created); err != nil {
@@ -794,11 +833,15 @@ func writeResponsesStream(out io.Writer, agg aggregatedChat) error {
 		}
 	}
 	for index, toolCall := range agg.ToolCalls {
+		outputIndex := index
+		if strings.TrimSpace(agg.Content) != "" {
+			outputIndex++
+		}
 		itemID := fmt.Sprintf("fc_%s_%d", responseID, index)
 		callID := nonEmptyString(toolCall.ID, fmt.Sprintf("call_%d", index))
 		added := map[string]any{
 			"type":         "response.output_item.added",
-			"output_index": index,
+			"output_index": outputIndex,
 			"item": map[string]any{
 				"id":        itemID,
 				"type":      "function_call",
@@ -811,18 +854,18 @@ func writeResponsesStream(out io.Writer, agg aggregatedChat) error {
 		argsDelta := map[string]any{
 			"type":         "response.function_call_arguments.delta",
 			"item_id":      itemID,
-			"output_index": index,
+			"output_index": outputIndex,
 			"delta":        toolCall.Arguments,
 		}
 		argsDone := map[string]any{
 			"type":         "response.function_call_arguments.done",
 			"item_id":      itemID,
-			"output_index": index,
+			"output_index": outputIndex,
 			"arguments":    toolCall.Arguments,
 		}
 		done := map[string]any{
 			"type":         "response.output_item.done",
-			"output_index": index,
+			"output_index": outputIndex,
 			"item": map[string]any{
 				"id":        itemID,
 				"type":      "function_call",
@@ -871,6 +914,10 @@ func writeResponsesStream(out io.Writer, agg aggregatedChat) error {
 	}
 	completedResponse, _ := completed["response"].(map[string]any)
 	completedResponse["output"] = output
+	if responsesStatus(agg) == "incomplete" {
+		completed["type"] = "response.incomplete"
+		completedResponse["incomplete_details"] = map[string]any{"reason": responsesIncompleteReason(agg.StopReason)}
+	}
 	if err := writeSSEData(out, completed); err != nil {
 		return err
 	}
@@ -894,25 +941,21 @@ func writeMessagesStream(out io.Writer, agg aggregatedChat) error {
 			"content":       []any{},
 			"stop_reason":   nil,
 			"stop_sequence": nil,
-			"usage": map[string]any{
-				"input_tokens":  agg.PromptTokens,
-				"output_tokens": 0,
-			},
+			"usage": func() map[string]any {
+				usage := buildMessagesUsage(agg)
+				usage["output_tokens"] = int64(0)
+				return usage
+			}(),
 		},
 	}
-	stopReason := "end_turn"
-	if len(agg.ToolCalls) > 0 {
-		stopReason = "tool_use"
-	}
+	stopReason := messagesStopReason(agg)
 	messageDelta := map[string]any{
 		"type": "message_delta",
 		"delta": map[string]any{
 			"stop_reason":   stopReason,
-			"stop_sequence": nil,
+			"stop_sequence": nilIfEmpty(agg.StopSequence),
 		},
-		"usage": map[string]any{
-			"output_tokens": agg.CompletionTokens,
-		},
+		"usage": map[string]any{"output_tokens": agg.CompletionTokens},
 	}
 	messageStop := map[string]any{"type": "message_stop"}
 
@@ -1239,6 +1282,117 @@ func toInt64(v any) int64 {
 	default:
 		return 0
 	}
+}
+
+func toInt64Path(root map[string]any, objectKey string, valueKey string) int64 {
+	object, ok := root[objectKey].(map[string]any)
+	if !ok {
+		return 0
+	}
+	return toInt64(object[valueKey])
+}
+
+func chatFinishReason(agg aggregatedChat) string {
+	if len(agg.ToolCalls) > 0 {
+		return "tool_calls"
+	}
+	switch strings.ToLower(strings.TrimSpace(agg.StopReason)) {
+	case "max_tokens", "max_output_tokens", "length":
+		return "length"
+	case "content_filter", "refusal":
+		return "content_filter"
+	case "tool_use", "tool_calls":
+		return "tool_calls"
+	default:
+		return "stop"
+	}
+}
+
+func messagesStopReason(agg aggregatedChat) string {
+	if len(agg.ToolCalls) > 0 {
+		return "tool_use"
+	}
+	switch strings.ToLower(strings.TrimSpace(agg.StopReason)) {
+	case "max_tokens", "max_output_tokens", "length":
+		return "max_tokens"
+	case "stop_sequence":
+		return "stop_sequence"
+	case "tool_use", "tool_calls":
+		return "tool_use"
+	case "refusal", "content_filter":
+		return "refusal"
+	default:
+		return "end_turn"
+	}
+}
+
+func responsesStatus(agg aggregatedChat) string {
+	switch strings.ToLower(strings.TrimSpace(agg.StopReason)) {
+	case "max_tokens", "max_output_tokens", "length", "content_filter":
+		return "incomplete"
+	default:
+		return "completed"
+	}
+}
+
+func responsesIncompleteReason(reason string) string {
+	switch strings.ToLower(strings.TrimSpace(reason)) {
+	case "content_filter":
+		return "content_filter"
+	default:
+		return "max_output_tokens"
+	}
+}
+
+func buildChatUsage(agg aggregatedChat) map[string]any {
+	usage := map[string]any{
+		"prompt_tokens":     agg.PromptTokens,
+		"completion_tokens": agg.CompletionTokens,
+		"total_tokens":      agg.TotalTokens,
+	}
+	if agg.CachedTokens > 0 || agg.CacheReadTokens > 0 {
+		usage["prompt_tokens_details"] = map[string]any{"cached_tokens": maxInt64(agg.CachedTokens, agg.CacheReadTokens)}
+	}
+	if agg.ReasoningTokens > 0 {
+		usage["completion_tokens_details"] = map[string]any{"reasoning_tokens": agg.ReasoningTokens}
+	}
+	return usage
+}
+
+func buildResponsesUsage(agg aggregatedChat) map[string]any {
+	usage := map[string]any{
+		"input_tokens":  agg.PromptTokens,
+		"output_tokens": agg.CompletionTokens,
+		"total_tokens":  agg.TotalTokens,
+	}
+	if agg.CachedTokens > 0 || agg.CacheReadTokens > 0 {
+		usage["input_tokens_details"] = map[string]any{"cached_tokens": maxInt64(agg.CachedTokens, agg.CacheReadTokens)}
+	}
+	if agg.ReasoningTokens > 0 {
+		usage["output_tokens_details"] = map[string]any{"reasoning_tokens": agg.ReasoningTokens}
+	}
+	return usage
+}
+
+func buildMessagesUsage(agg aggregatedChat) map[string]any {
+	usage := map[string]any{
+		"input_tokens":  agg.PromptTokens,
+		"output_tokens": agg.CompletionTokens,
+	}
+	if agg.CacheCreateTokens > 0 {
+		usage["cache_creation_input_tokens"] = agg.CacheCreateTokens
+	}
+	if agg.CacheReadTokens > 0 || agg.CachedTokens > 0 {
+		usage["cache_read_input_tokens"] = maxInt64(agg.CacheReadTokens, agg.CachedTokens)
+	}
+	return usage
+}
+
+func nilIfEmpty(value string) any {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return value
 }
 
 func maxInt64(a, b int64) int64 {

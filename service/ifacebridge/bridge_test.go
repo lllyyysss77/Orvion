@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/racio/orvion/models"
 )
@@ -85,6 +86,43 @@ func TestConvertRequestChatToResponses(t *testing.T) {
 	}
 }
 
+func TestConvertRequestMapsStopTokenFormatAndToolChoice(t *testing.T) {
+	messagesRaw := []byte(`{"model":"claude","max_tokens":100,"stop_sequences":["END"],"messages":[{"role":"user","content":"hi"}]}`)
+	messagesPlan := Plan{Enabled: true, ClientEndpoint: EndpointMessages, UpstreamEndpoint: EndpointChat}
+	converted, err := ConvertRequestBody(messagesPlan, messagesRaw)
+	if err != nil {
+		t.Fatalf("messages to chat: %v", err)
+	}
+	if !strings.Contains(string(converted), `"stop":["END"]`) || strings.Contains(string(converted), `"stop_sequences"`) {
+		t.Fatalf("stop sequence mapping failed: %s", converted)
+	}
+
+	chatRaw := []byte(`{"model":"gpt","max_completion_tokens":200,"stop":["DONE"],"response_format":{"type":"json_schema","json_schema":{"name":"answer","schema":{"type":"object"},"strict":true}},"tool_choice":{"type":"function","function":{"name":"lookup"}},"messages":[{"role":"user","content":"hi"}]}`)
+	responsesPlan := Plan{Enabled: true, ClientEndpoint: EndpointChat, UpstreamEndpoint: EndpointResponses}
+	converted, err = ConvertRequestBody(responsesPlan, chatRaw)
+	if err != nil {
+		t.Fatalf("chat to responses: %v", err)
+	}
+	content := string(converted)
+	for _, expected := range []string{`"max_output_tokens":200`, `"name":"lookup"`, `"format":{"name":"answer"`, `"strict":true`} {
+		if !strings.Contains(content, expected) {
+			t.Fatalf("converted request missing %s: %s", expected, content)
+		}
+	}
+}
+
+func TestConvertRequestDoesNotExposeAnthropicThinking(t *testing.T) {
+	raw := []byte(`{"model":"claude","max_tokens":100,"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"secret reasoning"},{"type":"text","text":"visible"}]}]}`)
+	plan := Plan{Enabled: true, ClientEndpoint: EndpointMessages, UpstreamEndpoint: EndpointChat}
+	converted, err := ConvertRequestBody(plan, raw)
+	if err != nil {
+		t.Fatalf("convert error: %v", err)
+	}
+	if strings.Contains(string(converted), "secret reasoning") || !strings.Contains(string(converted), "visible") {
+		t.Fatalf("thinking handling is unsafe: %s", converted)
+	}
+}
+
 func TestConvertResponseChatToResponsesNonStream(t *testing.T) {
 	payload := `{"id":"chatcmpl_1","created":1700000000,"model":"gpt-4o-mini","choices":[{"message":{"role":"assistant","content":"hello world"}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`
 	res := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(payload)), Header: make(http.Header)}
@@ -121,7 +159,7 @@ func TestConvertResponseChatToMessagesStream(t *testing.T) {
 	}
 	body, _ := io.ReadAll(converted.Body)
 	content := string(body)
-	for _, expected := range []string{"event: message_start", "event: content_block_delta", "hello world", "event: message_stop"} {
+	for _, expected := range []string{"event: message_start", "event: content_block_delta", `"text":"hello"`, `"text":" world"`, "event: message_stop"} {
 		if !strings.Contains(content, expected) {
 			t.Fatalf("converted stream missing %s: %s", expected, content)
 		}
@@ -209,4 +247,50 @@ func TestConvertResponseMessagesToolUseStreamToChat(t *testing.T) {
 			t.Fatalf("converted messages tool stream missing %s: %s", expected, content)
 		}
 	}
+}
+
+func TestConvertResponseMessagesToolUseNonStreamPreservesStopAndCacheUsage(t *testing.T) {
+	payload := `{"id":"msg_1","model":"claude","stop_reason":"tool_use","content":[{"type":"tool_use","id":"tool_1","name":"lookup","input":{"q":"x"}}],"usage":{"input_tokens":10,"output_tokens":4,"cache_creation_input_tokens":3,"cache_read_input_tokens":7}}`
+	res := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(payload)), Header: make(http.Header)}
+	plan := Plan{Enabled: true, ClientEndpoint: EndpointChat, UpstreamEndpoint: EndpointMessages}
+	converted, err := ConvertResponseBody(plan, res, false)
+	if err != nil {
+		t.Fatalf("convert error: %v", err)
+	}
+	body, _ := io.ReadAll(converted.Body)
+	content := string(body)
+	for _, expected := range []string{`"finish_reason":"tool_calls"`, `"cached_tokens":7`} {
+		if !strings.Contains(content, expected) {
+			t.Fatalf("converted response missing %s: %s", expected, content)
+		}
+	}
+}
+
+func TestConvertResponseStreamEmitsBeforeUpstreamCompletes(t *testing.T) {
+	upstreamReader, upstreamWriter := io.Pipe()
+	res := &http.Response{StatusCode: http.StatusOK, Body: upstreamReader, Header: make(http.Header)}
+	plan := Plan{Enabled: true, ClientEndpoint: EndpointMessages, UpstreamEndpoint: EndpointChat}
+	converted, err := ConvertResponseBody(plan, res, true)
+	if err != nil {
+		t.Fatalf("convert error: %v", err)
+	}
+
+	readResult := make(chan string, 1)
+	go func() {
+		buffer := make([]byte, 512)
+		n, _ := converted.Body.Read(buffer)
+		readResult <- string(buffer[:n])
+	}()
+
+	_, _ = io.WriteString(upstreamWriter, "data: {\"id\":\"chatcmpl_live\",\"model\":\"gpt\",\"choices\":[{\"delta\":{\"content\":\"first\"}}]}\n\n")
+	select {
+	case firstOutput := <-readResult:
+		if !strings.Contains(firstOutput, "message_start") {
+			t.Fatalf("unexpected first output: %s", firstOutput)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("converted stream did not emit before upstream completion")
+	}
+	_ = upstreamWriter.Close()
+	_ = converted.Body.Close()
 }

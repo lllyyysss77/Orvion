@@ -57,10 +57,17 @@ func convertResponsesToChat(raw []byte) ([]byte, error) {
 	copyIfExists(in, out, "presence_penalty")
 	copyIfExists(in, out, "frequency_penalty")
 	copyIfExists(in, out, "parallel_tool_calls")
-	copyIfExists(in, out, "tool_choice")
 	copyIfExists(in, out, "metadata")
 	if maxOutputTokens, ok := in["max_output_tokens"]; ok {
-		out["max_tokens"] = maxOutputTokens
+		out["max_completion_tokens"] = maxOutputTokens
+	}
+	if toolChoice, ok := convertResponsesToolChoiceToChat(in["tool_choice"]); ok {
+		out["tool_choice"] = toolChoice
+	}
+	if text, ok := in["text"].(map[string]any); ok {
+		if format, ok := convertResponsesFormatToChat(text["format"]); ok {
+			out["response_format"] = format
+		}
 	}
 	if reasoning, ok := in["reasoning"].(map[string]any); ok {
 		if effort, ok := reasoning["effort"]; ok {
@@ -109,7 +116,7 @@ func convertResponsesToChat(raw []byte) ([]byte, error) {
 			}
 			toolType := strings.TrimSpace(toString(tool["type"]))
 			if toolType != "" && toolType != "function" {
-				continue
+				return nil, fmt.Errorf("responses tool type %q cannot be converted to chat function tool", toolType)
 			}
 			function := map[string]any{}
 			copyIfExists(tool, function, "name")
@@ -117,6 +124,7 @@ func convertResponsesToChat(raw []byte) ([]byte, error) {
 			if params, ok := tool["parameters"]; ok {
 				function["parameters"] = params
 			}
+			copyIfExists(tool, function, "strict")
 			if len(function) == 0 {
 				continue
 			}
@@ -139,6 +147,9 @@ func convertChatToResponses(raw []byte) ([]byte, error) {
 		return nil, err
 	}
 	out := map[string]any{}
+	if n := toInt64(in["n"]); n > 1 {
+		return nil, errors.New("multiple chat choices cannot be represented by responses conversion")
+	}
 	copyIfExists(in, out, "model")
 	copyIfExists(in, out, "stream")
 	copyIfExists(in, out, "temperature")
@@ -146,10 +157,17 @@ func convertChatToResponses(raw []byte) ([]byte, error) {
 	copyIfExists(in, out, "presence_penalty")
 	copyIfExists(in, out, "frequency_penalty")
 	copyIfExists(in, out, "parallel_tool_calls")
-	copyIfExists(in, out, "tool_choice")
 	copyIfExists(in, out, "metadata")
-	if maxTokens, ok := in["max_tokens"]; ok {
+	if maxTokens, ok := in["max_completion_tokens"]; ok {
 		out["max_output_tokens"] = maxTokens
+	} else if maxTokens, ok := in["max_tokens"]; ok {
+		out["max_output_tokens"] = maxTokens
+	}
+	if toolChoice, ok := convertChatToolChoiceToResponses(in["tool_choice"]); ok {
+		out["tool_choice"] = toolChoice
+	}
+	if format, ok := convertChatFormatToResponses(in["response_format"]); ok {
+		out["text"] = map[string]any{"format": format}
 	}
 	if effort := strings.TrimSpace(toString(in["reasoning_effort"])); effort != "" {
 		out["reasoning"] = map[string]any{"effort": effort}
@@ -210,6 +228,7 @@ func convertChatToResponses(raw []byte) ([]byte, error) {
 			if params, ok := function["parameters"]; ok {
 				next["parameters"] = params
 			}
+			copyIfExists(function, next, "strict")
 			convertedTools = append(convertedTools, next)
 		}
 		if len(convertedTools) > 0 {
@@ -385,7 +404,7 @@ func convertResponsesInputItem(item any) ([]any, error) {
 		}
 		return []any{toolMessage}, nil
 	default:
-		return nil, nil
+		return nil, fmt.Errorf("responses input item type %q is not supported by chat conversion", itemType)
 	}
 }
 
@@ -401,8 +420,12 @@ func convertMessagesToChat(raw []byte) ([]byte, error) {
 	copyIfExists(in, out, "temperature")
 	copyIfExists(in, out, "top_p")
 	copyIfExists(in, out, "metadata")
-	copyIfExists(in, out, "stop_sequences")
-	if maxTokens, ok := in["max_tokens"]; ok {
+	if stopSequences, ok := in["stop_sequences"]; ok {
+		out["stop"] = stopSequences
+	}
+	if maxTokens, ok := in["max_completion_tokens"]; ok {
+		out["max_tokens"] = maxTokens
+	} else if maxTokens, ok := in["max_tokens"]; ok {
 		out["max_tokens"] = maxTokens
 	}
 
@@ -487,13 +510,21 @@ func convertChatToMessages(raw []byte) ([]byte, error) {
 	}
 
 	out := map[string]any{}
+	if n := toInt64(in["n"]); n > 1 {
+		return nil, errors.New("multiple chat choices cannot be represented by messages conversion")
+	}
 	copyIfExists(in, out, "model")
 	copyIfExists(in, out, "stream")
 	copyIfExists(in, out, "temperature")
 	copyIfExists(in, out, "top_p")
 	copyIfExists(in, out, "metadata")
-	if maxTokens, ok := in["max_tokens"]; ok {
+	if maxTokens, ok := in["max_completion_tokens"]; ok {
 		out["max_tokens"] = maxTokens
+	} else if maxTokens, ok := in["max_tokens"]; ok {
+		out["max_tokens"] = maxTokens
+	}
+	if stop, ok := in["stop"]; ok {
+		out["stop_sequences"] = stop
 	}
 
 	rawMessages, ok := in["messages"].([]any)
@@ -513,7 +544,7 @@ func convertChatToMessages(raw []byte) ([]byte, error) {
 			continue
 		}
 
-		if role == "system" {
+		if role == "system" || role == "developer" {
 			text := extractMessageText(msg["content"])
 			if strings.TrimSpace(text) != "" {
 				systemBlocks = append(systemBlocks, map[string]any{"type": "text", "text": text})
@@ -609,7 +640,9 @@ func convertChatToMessages(raw []byte) ([]byte, error) {
 			case "required":
 				out["tool_choice"] = map[string]any{"type": "any"}
 			case "none":
-				out["tool_choice"] = map[string]any{"type": "auto"}
+				// Claude 没有与 Chat `none` 完全等价的工具选择时，移除工具列表，
+				// 避免错误地改成 auto 后仍然触发工具调用。
+				delete(out, "tools")
 			}
 		case map[string]any:
 			if fn, ok := v["function"].(map[string]any); ok {
@@ -763,11 +796,11 @@ func convertAnthropicMessage(role string, content any) ([]any, error) {
 					toolMessage["tool_call_id"] = toolID
 				}
 				messages = append(messages, toolMessage)
-			case "thinking":
-				thinking := strings.TrimSpace(toString(block["thinking"]))
-				if thinking != "" {
-					textParts = append(textParts, map[string]any{"type": "text", "text": "[thinking] " + thinking})
-				}
+			case "thinking", "redacted_thinking":
+				// thinking 不是普通对话正文，不能以可见文本注入下游上下文。
+				continue
+			default:
+				return nil, fmt.Errorf("anthropic content block type %q is not supported by chat conversion", typeName)
 			}
 		}
 
@@ -848,6 +881,85 @@ func copyIfExists(src map[string]any, dst map[string]any, key string) {
 	if value, ok := src[key]; ok {
 		dst[key] = value
 	}
+}
+
+func convertResponsesToolChoiceToChat(raw any) (any, bool) {
+	switch choice := raw.(type) {
+	case string:
+		choice = strings.TrimSpace(choice)
+		return choice, choice != ""
+	case map[string]any:
+		if strings.EqualFold(strings.TrimSpace(toString(choice["type"])), "function") {
+			name := strings.TrimSpace(toString(choice["name"]))
+			if name == "" {
+				return nil, false
+			}
+			return map[string]any{"type": "function", "function": map[string]any{"name": name}}, true
+		}
+	}
+	return nil, false
+}
+
+func convertChatToolChoiceToResponses(raw any) (any, bool) {
+	switch choice := raw.(type) {
+	case string:
+		choice = strings.TrimSpace(choice)
+		return choice, choice != ""
+	case map[string]any:
+		if strings.EqualFold(strings.TrimSpace(toString(choice["type"])), "function") {
+			function, _ := choice["function"].(map[string]any)
+			name := strings.TrimSpace(toString(function["name"]))
+			if name == "" {
+				return nil, false
+			}
+			return map[string]any{"type": "function", "name": name}, true
+		}
+	}
+	return nil, false
+}
+
+func convertResponsesFormatToChat(raw any) (any, bool) {
+	format, ok := raw.(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	typeName := strings.TrimSpace(toString(format["type"]))
+	if typeName == "" {
+		return nil, false
+	}
+	if typeName != "json_schema" {
+		return map[string]any{"type": typeName}, true
+	}
+	jsonSchema := map[string]any{}
+	copyIfExists(format, jsonSchema, "name")
+	copyIfExists(format, jsonSchema, "description")
+	copyIfExists(format, jsonSchema, "schema")
+	copyIfExists(format, jsonSchema, "strict")
+	return map[string]any{"type": "json_schema", "json_schema": jsonSchema}, true
+}
+
+func convertChatFormatToResponses(raw any) (any, bool) {
+	format, ok := raw.(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	typeName := strings.TrimSpace(toString(format["type"]))
+	if typeName == "" {
+		return nil, false
+	}
+	if typeName != "json_schema" {
+		return map[string]any{"type": typeName}, true
+	}
+	jsonSchema, ok := format["json_schema"].(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	next := map[string]any{"type": "json_schema"}
+	copyIfExists(jsonSchema, next, "name")
+	copyIfExists(jsonSchema, next, "description")
+	copyIfExists(jsonSchema, next, "schema")
+	copyIfExists(jsonSchema, next, "strict")
+	return next, true
 }
 
 func toString(v any) string {
