@@ -7,6 +7,7 @@ import { cn, openExternalUrl } from "@/lib/utils";
 import Loading from "@/components/loading";
 import iconSvg from "@/assets/icon.svg";
 import providerPageAnimeBg from "@/assets/ainme.png";
+import pikachuPatrolSprites from "@/assets/Pikachu/patrol.webp";
 import {
   Activity,
   Bot,
@@ -578,6 +579,19 @@ export default function Layout() {
               </div>
               <span className="text-sm leading-none font-semibold text-foreground">Orvion</span>
             </Link>
+          </div>
+
+          <div
+            className="pointer-events-none absolute inset-y-0 left-[calc(var(--sidebar-offset)+1.5rem)] right-[12rem] hidden overflow-hidden transition-[left] duration-200 ease-linear lg:block"
+            style={sidebarOffsetStyle}
+            aria-hidden="true"
+          >
+            <div className="orvion-pikachu-patrol">
+              <div
+                className="orvion-pikachu-sprite"
+                style={{ backgroundImage: `url(${pikachuPatrolSprites})` }}
+              />
+            </div>
           </div>
 
           <div className="flex items-center gap-2 pr-0 md:pr-2">
