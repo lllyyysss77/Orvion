@@ -6,7 +6,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { cn, openExternalUrl } from "@/lib/utils";
 import Loading from "@/components/loading";
 import iconSvg from "@/assets/icon.svg";
-import providerPageAnimeBg from "@/assets/ainme.png";
+import providerPageAnimeBg from "@/assets/ainme.webp";
 import pikachuPatrolSprites from "@/assets/Pikachu/patrol.webp";
 import {
   Activity,

@@ -20,6 +20,12 @@ func TestGitHubVersionRefreshInterval(t *testing.T) {
 	if githubReleaseRefreshEvery != 5*time.Minute {
 		t.Fatalf("refresh interval=%s want=%s", githubReleaseRefreshEvery, 5*time.Minute)
 	}
+	if githubDirectFailureThreshold != 3 {
+		t.Fatalf("direct failure threshold=%d want=3", githubDirectFailureThreshold)
+	}
+	if githubProxyForceDuration != 2*time.Hour {
+		t.Fatalf("proxy force duration=%s want=2h", githubProxyForceDuration)
+	}
 }
 
 func TestIsLatestVersionGreater(t *testing.T) {
@@ -196,6 +202,7 @@ func TestLatestTagInfoFromVersionServiceRejectsFailure(t *testing.T) {
 }
 
 func TestGetVersionServiceJSONFallsBackToProxy(t *testing.T) {
+	resetGitHubProxyPolicyForTest(t)
 	directCalls := 0
 	proxyCalls := 0
 	directClient := &http.Client{Transport: versionCheckRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
@@ -234,6 +241,7 @@ func TestGetVersionServiceJSONFallsBackToProxy(t *testing.T) {
 }
 
 func TestGetVersionServiceJSONDoesNotUseProxyAfterDirectSuccess(t *testing.T) {
+	resetGitHubProxyPolicyForTest(t)
 	proxyCalls := 0
 	directClient := &http.Client{Transport: versionCheckRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		return &http.Response{
@@ -255,6 +263,80 @@ func TestGetVersionServiceJSONDoesNotUseProxyAfterDirectSuccess(t *testing.T) {
 	if proxyCalls != 0 {
 		t.Fatalf("proxy calls=%d want=0", proxyCalls)
 	}
+}
+
+func TestGetVersionServiceJSONForcesProxyAfterRepeatedDirectFailures(t *testing.T) {
+	resetGitHubProxyPolicyForTest(t)
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	oldNow := githubVersionNow
+	githubVersionNow = func() time.Time { return now }
+	t.Cleanup(func() {
+		githubVersionNow = oldNow
+		resetGitHubProxyPolicy()
+	})
+
+	directCalls := 0
+	proxyCalls := 0
+	directClient := &http.Client{Transport: versionCheckRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		directCalls++
+		return &http.Response{
+			StatusCode: http.StatusBadGateway,
+			Body:       io.NopCloser(strings.NewReader(`{"error":"direct unavailable"}`)),
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	})}
+	proxyClient := &http.Client{Transport: versionCheckRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		proxyCalls++
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"success":true,"latest":{"tag":"v1.2.7"}}`)),
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	})}
+
+	for i := 0; i < githubDirectFailureThreshold; i++ {
+		var payload githubVersionServiceResp
+		if err := getVersionServiceJSONWithFallback("https://version.example.test", &payload, directClient, proxyClient); err != nil {
+			t.Fatalf("attempt %d: expected proxy fallback success, got %v", i+1, err)
+		}
+	}
+	if directCalls != githubDirectFailureThreshold*githubRequestRetryMax {
+		t.Fatalf("direct calls=%d want=%d", directCalls, githubDirectFailureThreshold*githubRequestRetryMax)
+	}
+	if !shouldForceGitHubProxy() {
+		t.Fatal("expected proxy force period after repeated direct failures")
+	}
+
+	var payload githubVersionServiceResp
+	if err := getVersionServiceJSONWithFallback("https://version.example.test", &payload, directClient, proxyClient); err != nil {
+		t.Fatalf("forced proxy request failed: %v", err)
+	}
+	if directCalls != githubDirectFailureThreshold*githubRequestRetryMax {
+		t.Fatalf("forced proxy made direct calls=%d", directCalls)
+	}
+	if proxyCalls != githubDirectFailureThreshold+1 {
+		t.Fatalf("proxy calls=%d want=%d", proxyCalls, githubDirectFailureThreshold+1)
+	}
+
+	now = now.Add(githubProxyForceDuration)
+	if shouldForceGitHubProxy() {
+		t.Fatal("expected proxy force period to expire")
+	}
+}
+
+func resetGitHubProxyPolicyForTest(t *testing.T) {
+	t.Helper()
+	resetGitHubProxyPolicy()
+	t.Cleanup(resetGitHubProxyPolicy)
+}
+
+func resetGitHubProxyPolicy() {
+	githubProxyPolicyMu.Lock()
+	githubDirectFailureCount = 0
+	githubProxyForceUntil = time.Time{}
+	githubProxyPolicyMu.Unlock()
 }
 
 var errTestDummy = testDummyError("dummy")

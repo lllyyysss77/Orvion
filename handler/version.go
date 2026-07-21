@@ -28,18 +28,24 @@ func GetVersion(c *gin.Context) {
 }
 
 const (
-	githubVersionServiceURL   = "https://young-poetry-afb0.hwt821096.workers.dev/api/github/version"
-	githubTagsPageURL         = "https://github.com/raciott/Orvion/tags"
-	githubReleaseTimeout      = 6 * time.Second
-	githubReleaseRefreshEvery = 5 * time.Minute
-	githubRequestRetryMax     = 3
-	githubRequestRetryBase    = 350 * time.Millisecond
+	githubVersionServiceURL      = "https://young-poetry-afb0.hwt821096.workers.dev/api/github/version"
+	githubTagsPageURL            = "https://github.com/raciott/Orvion/tags"
+	githubReleaseTimeout         = 6 * time.Second
+	githubReleaseRefreshEvery    = 5 * time.Minute
+	githubRequestRetryMax        = 3
+	githubRequestRetryBase       = 350 * time.Millisecond
+	githubDirectFailureThreshold = 3
+	githubProxyForceDuration     = 2 * time.Hour
 )
 
 var (
 	githubVersionCacheMu     sync.RWMutex
 	githubVersionCacheResp   = defaultVersionUpdateCheckResp()
 	githubVersionRefreshOnce sync.Once
+	githubProxyPolicyMu      sync.Mutex
+	githubDirectFailureCount int
+	githubProxyForceUntil    time.Time
+	githubVersionNow         = time.Now
 )
 
 type versionUpdateCheckResp struct {
@@ -348,10 +354,17 @@ func resolveVersionCheckProxyURL(ctx context.Context) string {
 }
 
 func getVersionServiceJSONWithFallback(endpoint string, target any, directClient *http.Client, proxyClient *http.Client) error {
+	if shouldForceGitHubProxy() && proxyClient != nil {
+		slog.Info("GitHub 版本检查处于代理强制期，跳过直连", "url", endpoint, "until", githubProxyForceExpiry())
+		return getVersionServiceJSONWithClientRetry(endpoint, target, proxyClient)
+	}
+
 	directErr := getVersionServiceJSONWithClientRetry(endpoint, target, directClient)
 	if directErr == nil {
+		recordGitHubDirectSuccess()
 		return nil
 	}
+	recordGitHubDirectFailure(proxyClient != nil)
 	if proxyClient == nil {
 		return directErr
 	}
@@ -363,6 +376,38 @@ func getVersionServiceJSONWithFallback(endpoint string, target any, directClient
 		return nil
 	}
 	return fmt.Errorf("版本检查直连失败: %w; 代理失败: %v", directErr, proxyErr)
+}
+
+func shouldForceGitHubProxy() bool {
+	githubProxyPolicyMu.Lock()
+	defer githubProxyPolicyMu.Unlock()
+	return githubVersionNow().Before(githubProxyForceUntil)
+}
+
+func githubProxyForceExpiry() time.Time {
+	githubProxyPolicyMu.Lock()
+	defer githubProxyPolicyMu.Unlock()
+	return githubProxyForceUntil
+}
+
+func recordGitHubDirectSuccess() {
+	githubProxyPolicyMu.Lock()
+	githubDirectFailureCount = 0
+	githubProxyForceUntil = time.Time{}
+	githubProxyPolicyMu.Unlock()
+}
+
+func recordGitHubDirectFailure(proxyAvailable bool) {
+	githubProxyPolicyMu.Lock()
+	defer githubProxyPolicyMu.Unlock()
+	githubDirectFailureCount++
+	if proxyAvailable && githubDirectFailureCount >= githubDirectFailureThreshold {
+		githubProxyForceUntil = githubVersionNow().Add(githubProxyForceDuration)
+		slog.Warn("GitHub 版本检查连续直连失败，未来一段时间强制使用代理",
+			"failures", githubDirectFailureCount,
+			"duration", githubProxyForceDuration,
+			"until", githubProxyForceUntil)
+	}
 }
 
 func getVersionServiceJSONWithClientRetry(endpoint string, target any, client *http.Client) error {

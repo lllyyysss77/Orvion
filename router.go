@@ -291,7 +291,9 @@ func setWebUIRoutes(router *gin.Engine) {
 	if err != nil {
 		panic(err)
 	}
-	router.StaticFS("/assets", http.FS(subFS))
+	assets := router.Group("/assets")
+	assets.Use(cacheWebUIAssets)
+	assets.StaticFS("", http.FS(subFS))
 
 	router.NoRoute(func(c *gin.Context) {
 		if c.Request.Method == http.MethodGet && shouldServeSPA(c.Request.URL.Path) {
@@ -300,6 +302,11 @@ func setWebUIRoutes(router *gin.Engine) {
 		}
 		c.Data(http.StatusNotFound, "text/html; charset=utf-8", []byte("404 Not Found"))
 	})
+}
+
+func cacheWebUIAssets(c *gin.Context) {
+	c.Header("Cache-Control", "public, max-age=31536000, immutable")
+	c.Next()
 }
 
 func shouldServeSPA(path string) bool {
