@@ -71,6 +71,10 @@ func TestWidenTelegramMessageSkipsThinkingPlaceholder(t *testing.T) {
 	if got := widenTelegramMessageForTelegram("正在思考..."); got != "正在思考..." {
 		t.Fatalf("思考占位消息不应追加宽度填充，实际为 %q", got)
 	}
+	rendered := renderTelegramAgentMarkdownV2("正在思考...")
+	if got := widenTelegramMessageForTelegram(rendered); got != rendered {
+		t.Fatalf("MarkdownV2 思考占位消息不应追加宽度填充，实际为 %q", got)
+	}
 }
 
 func TestWidenTelegramMessageIsIdempotent(t *testing.T) {

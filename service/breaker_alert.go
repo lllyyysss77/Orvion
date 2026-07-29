@@ -499,8 +499,9 @@ func widenTelegramTextForTelegram(content string, maxRunes int) string {
 	if strings.TrimSpace(content) == "" {
 		return content
 	}
-	if strings.TrimSpace(content) == "正在思考..." {
-		return "正在思考..."
+	trimmedSpace := strings.TrimSpace(content)
+	if trimmedSpace == "正在思考..." || trimmedSpace == renderTelegramAgentMarkdownV2("正在思考...") {
+		return content
 	}
 	trimmed := strings.TrimRight(content, "\r\n")
 	if strings.HasSuffix(trimmed, telegramWideMessagePad) {
