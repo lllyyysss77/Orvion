@@ -27,7 +27,8 @@ func TestDropEmptyChatLogMonthlyTablesExcept(t *testing.T) {
 	}
 	DB = db
 
-	now := time.Now()
+	current := time.Now()
+	now := time.Date(current.Year(), current.Month(), 1, 12, 0, 0, 0, current.Location())
 	currentTable, err := EnsureChatLogMonthlyTable(now)
 	if err != nil {
 		t.Fatalf("ensure current table: %v", err)
@@ -250,10 +251,7 @@ func assertChatLogMonthlyIndexes(t *testing.T, tableName string) {
 }
 
 func clearChatLogMonthlyTableCacheForTest() {
-	chatLogMonthlyTableCache.Range(func(key, _ any) bool {
-		chatLogMonthlyTableCache.Delete(key)
-		return true
-	})
+	ClearChatLogMonthlyTableCacheForTest()
 }
 
 func sameStringSet(got []string, want []string) bool {

@@ -1,38 +1,6 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
-@font-face {
-  font-family: "KunmingSeagull";
-  src: url("./assets/fonts/昆明海鸥体.ttf") format("truetype");
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: "HanyiDieYu";
-  src: url("./assets/fonts/HanYiDieYuTiJian-1.ttf") format("truetype");
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: "JustFontFenyuan";
-  src: url("./assets/fonts/JustFontFenYuanZiTi-2.ttf") format("truetype");
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: "LXGWWenKai";
-  src: url("./assets/fonts/LXGWWenKaiMonoGBScreen.ttf") format("truetype");
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-}
-
 @custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
 
 @theme {
@@ -376,10 +344,6 @@
 
 .main-content-font-kunming {
   font-family: "KunmingSeagull", "PingFang SC", "Microsoft YaHei", sans-serif;
-}
-
-.main-content-font-hanyi {
-  font-family: "HanyiDieYu", "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 
 .main-content-font-fenyuan {

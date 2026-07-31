@@ -50,6 +50,7 @@ import {
   resolveLoadingUIStyle,
   type LoadingUIStyle,
 } from '@/lib/loading-ui';
+import { notifyUIFontChanged } from '@/lib/ui-font';
 
 const networkForwardingSchema = z.object({
   global_proxy_url: z.string().trim(),
@@ -149,7 +150,6 @@ type UIFontForm = z.infer<typeof uiFontSchema>;
 type GitHubVersionCheckForm = z.infer<typeof githubVersionCheckSchema>;
 type LoadingUIForm = z.infer<typeof loadingUISchema>;
 
-const UI_FONT_STORAGE_KEY = "orvion_ui_font";
 const TELEGRAM_AGENT_CONFIG_CHANGED_EVENT = "telegram-agent-config-changed";
 
 const telegramAgentDefaultValues: TelegramAgentForm = {
@@ -295,13 +295,7 @@ const isValidURL = (raw: string): boolean => {
 };
 
 const applyUIFontSetting = (font: UIFontForm["font"]) => {
-  if (typeof window !== "undefined") {
-    window.localStorage.setItem(UI_FONT_STORAGE_KEY, font);
-    window.dispatchEvent(new CustomEvent("ui-font-changed", { detail: { font } }));
-  }
-  if (typeof document !== "undefined") {
-    document.documentElement.dataset.uiFont = font;
-  }
+  notifyUIFontChanged(font);
 };
 
 export default function ConfigPage() {

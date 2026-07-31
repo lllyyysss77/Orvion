@@ -27,11 +27,16 @@ import {
 } from "lucide-react";
 import { checkVersionUpdate, configAPI, getVersion, type TelegramAgentConfig, type VersionUpdateCheck } from "@/lib/api";
 import { clearStoredAuthToken, getStoredAuthTokenMode } from "@/lib/auth";
+import {
+  applyUIFont,
+  isUIFontOption,
+  UI_FONT_CHANGED_EVENT,
+  UI_FONT_STORAGE_KEY,
+  type UIFontOption,
+} from "@/lib/ui-font";
 
 const SIDEBAR_STORAGE_KEY = "orvion_sidebar_collapsed";
-const UI_FONT_STORAGE_KEY = "orvion_ui_font";
 const TELEGRAM_AGENT_CONFIG_CHANGED_EVENT = "telegram-agent-config-changed";
-type UIFontOption = "default" | "kunming_seagull" | "fenyuan" | "lxgw_wenkai";
 const UI_FONT_CLASS_MAP: Record<UIFontOption, string> = {
   default: "main-content-font-default",
   kunming_seagull: "main-content-font-kunming",
@@ -98,10 +103,6 @@ function getInitialSidebarCollapsed() {
     return false;
   }
   return window.localStorage.getItem(SIDEBAR_STORAGE_KEY) === "1";
-}
-
-function isUIFontOption(value: string | null | undefined): value is UIFontOption {
-  return value === "default" || value === "kunming_seagull" || value === "fenyuan" || value === "lxgw_wenkai";
 }
 
 function getInitialUIFont(): UIFontOption {
@@ -225,10 +226,13 @@ export default function Layout() {
   }, [uiFont]);
 
   useEffect(() => {
-    if (typeof document === "undefined") {
-      return;
-    }
-    document.documentElement.dataset.uiFont = effectiveUIFont;
+    let active = true;
+    void applyUIFont(effectiveUIFont).catch((error) => {
+      if (active) console.error("加载界面字体失败:", error);
+    });
+    return () => {
+      active = false;
+    };
   }, [effectiveUIFont]);
 
   useEffect(() => {
@@ -242,8 +246,8 @@ export default function Layout() {
         setUIFont(next);
       }
     };
-    window.addEventListener("ui-font-changed", handleFontChanged as EventListener);
-    return () => window.removeEventListener("ui-font-changed", handleFontChanged as EventListener);
+    window.addEventListener(UI_FONT_CHANGED_EVENT, handleFontChanged as EventListener);
+    return () => window.removeEventListener(UI_FONT_CHANGED_EVENT, handleFontChanged as EventListener);
   }, []);
 
   useEffect(() => {
