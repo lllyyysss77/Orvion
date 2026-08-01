@@ -38,7 +38,6 @@ import {
   getProxies,
   updateProxy,
   type Proxy,
-  type ProxyRegionCheckResult,
 } from "@/lib/api";
 
 const isValidProxyURL = (value: string) => {
@@ -65,7 +64,6 @@ export default function ProxiesPage() {
   const [pendingDelete, setPendingDelete] = useState<Proxy | null>(null);
   const [name, setName] = useState("");
   const [proxyURL, setProxyURL] = useState("");
-  const [regionResults, setRegionResults] = useState<Record<number, ProxyRegionCheckResult>>({});
   const [regionCheckingID, setRegionCheckingID] = useState<number | null>(null);
 
   const fetchProxies = useCallback(async () => {
@@ -112,11 +110,6 @@ export default function ProxiesPage() {
     try {
       if (editing) {
         await updateProxy(editing.ID, { name: trimmedName, proxy_url: trimmedURL });
-        setRegionResults((current) => {
-          const next = { ...current };
-          delete next[editing.ID];
-          return next;
-        });
         toast.success(`代理 ${trimmedName} 更新成功`);
       } else {
         await createProxy({ name: trimmedName, proxy_url: trimmedURL });
@@ -147,8 +140,21 @@ export default function ProxiesPage() {
     setRegionCheckingID(proxy.ID);
     try {
       const result = await checkProxyRegion(proxy.ID);
-      setRegionResults((current) => ({ ...current, [proxy.ID]: result }));
-      toast.success(`${proxy.Name} 地区检查完成`);
+      setProxies((current) => current.map((item) => item.ID === proxy.ID ? {
+        ...item,
+        ExitIP: result.ip,
+        ExitCountry: result.country,
+        ExitCountryCode: result.country_code,
+        ExitRegion: result.region,
+        ExitCity: result.city,
+        RegionCheckedAt: result.checked_at,
+        RegionCheckError: result.error || "",
+      } : item));
+      if (result.error) {
+        toast.error(`${proxy.Name} 地区检查失败: ${result.error}`);
+      } else {
+        toast.success(`${proxy.Name} 地区检查完成`);
+      }
     } catch (error) {
       toast.error(`地区检查失败: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
@@ -156,7 +162,7 @@ export default function ProxiesPage() {
     }
   };
 
-  if (loading) return <Loading message="加载代理列表..." />;
+  if (loading) return <Loading message="加载代理列表..." className="h-full min-h-0" />;
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-5">
@@ -191,18 +197,20 @@ export default function ProxiesPage() {
                 </TableCell>
               </TableRow>
             ) : proxies.map((proxy) => {
-              const region = regionResults[proxy.ID];
-              const location = region
-                ? [region.country, region.region, region.city].filter((value, index, values) => value && values.indexOf(value) === index).join(" · ")
-                : "未检查";
+              const checked = Boolean(proxy.RegionCheckedAt);
+              const location = proxy.RegionCheckError
+                ? "检查失败"
+                : checked
+                  ? [proxy.ExitCountry, proxy.ExitRegion, proxy.ExitCity].filter((value, index, values) => value && values.indexOf(value) === index).join(" · ") || "未知地区"
+                  : "未检查";
               return (
                 <TableRow key={proxy.ID}>
                   <TableCell className="font-medium">{proxy.Name}</TableCell>
                   <TableCell className="max-w-[520px] break-all font-mono text-xs">{proxy.ProxyURL}</TableCell>
                   <TableCell>
-                    <div className="flex min-w-32 items-center gap-1.5" title={region?.ip || undefined}>
-                      {region && <span>{countryFlag(region.country_code)}</span>}
-                      <span className="max-w-56 truncate text-sm">{location}</span>
+                    <div className="flex min-w-32 items-center gap-1.5" title={proxy.RegionCheckError || proxy.ExitIP || undefined}>
+                      {checked && !proxy.RegionCheckError && <span>{countryFlag(proxy.ExitCountryCode || "")}</span>}
+                      <span className={`max-w-56 truncate text-sm ${proxy.RegionCheckError ? "text-destructive" : ""}`}>{location}</span>
                     </div>
                   </TableCell>
                   <TableCell>

@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -15,10 +15,6 @@ export type ConfigItem = {
 type Props = {
 	value: string;
 	onChange: (nextJson: string) => void;
-};
-
-export type ProviderConfigEditorRef = {
-	addItem: () => void;
 };
 
 const BASE_DEFAULT_ITEMS: Omit<ConfigItem, "id">[] = [
@@ -144,10 +140,7 @@ function serializeItems(items: ConfigItem[], providerType?: string): { json: str
 	return { json: JSON.stringify(obj, null, 2), error: null };
 }
 
-const ProviderConfigEditor = forwardRef<ProviderConfigEditorRef, Props>(function ProviderConfigEditor(
-	{ value, onChange },
-	ref,
-) {
+const ProviderConfigEditor = ({ value, onChange }: Props) => {
 	const providerType = useMemo(() => inferProviderTypeFromConfig(value), [value]);
 	const defaults = useMemo(() => defaultItemsByType(providerType), [providerType]);
 
@@ -183,10 +176,6 @@ const ProviderConfigEditor = forwardRef<ProviderConfigEditorRef, Props>(function
 		setItems(prev => prev.map(item => (item.id === id ? { ...item, ...patch } : item)));
 	};
 
-	const addItem = useCallback(() => {
-		setItems(prev => prev.concat([{ id: newId(), key: "", value: "" }]));
-	}, []);
-
 	const removeItem = (id: string) => {
 		setItems(prev => prev.filter(item => item.id !== id));
 	};
@@ -207,8 +196,6 @@ const ProviderConfigEditor = forwardRef<ProviderConfigEditorRef, Props>(function
 		updateItem(id, { value: nextValue });
 		setApiKeyPopoverOpen(prev => ({ ...prev, [id]: false }));
 	};
-
-	useImperativeHandle(ref, () => ({ addItem }), [addItem]);
 
 	return (
 		<div className="space-y-3">
@@ -318,6 +305,6 @@ const ProviderConfigEditor = forwardRef<ProviderConfigEditorRef, Props>(function
 			</div>
 		</div>
 	);
-});
+};
 
 export default ProviderConfigEditor;

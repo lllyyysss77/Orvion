@@ -27,6 +27,13 @@ export interface Proxy {
   UpdatedAt: string;
   Name: string;
   ProxyURL: string;
+  ExitIP?: string;
+  ExitCountry?: string;
+  ExitCountryCode?: string;
+  ExitRegion?: string;
+  ExitCity?: string;
+  RegionCheckedAt?: string | null;
+  RegionCheckError?: string;
   UsageCount?: number;
 }
 
@@ -36,6 +43,8 @@ export interface ProxyRegionCheckResult {
   country_code: string;
   region: string;
   city: string;
+  checked_at: string;
+  error?: string;
 }
 
 export interface Model {
@@ -1537,8 +1546,10 @@ export async function getRequestAmountTrend(): Promise<RequestAmountSummary> {
   return apiRequest<RequestAmountSummary>('/metrics/request-amount');
 }
 
-export async function getModelUsageSummary(): Promise<ModelUsageSummaryItem[]> {
-  return apiRequest<ModelUsageSummaryItem[]>('/metrics/model-usage');
+export type ModelUsageRange = 'today' | 'week' | 'month';
+
+export async function getModelUsageSummary(range: ModelUsageRange = 'today'): Promise<ModelUsageSummaryItem[]> {
+  return apiRequest<ModelUsageSummaryItem[]>(`/metrics/model-usage?range=${range}`);
 }
 
 export async function getDailyModelCostTrend(days: number = 7, top: number = 5): Promise<DailyModelCostSummary> {

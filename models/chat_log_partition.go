@@ -1081,8 +1081,9 @@ func QueryChatLogHourAmount(ctx context.Context, scope ChatLogQueryScope, startA
 	return rows, nil
 }
 
-func QueryChatLogModelUsage(ctx context.Context) ([]ChatLogModelUsageRow, error) {
-	union, err := BuildChatLogUnionQuery(ChatLogQueryScope{}, "name, total_tokens, total_cost")
+func QueryChatLogModelUsage(ctx context.Context, startAt time.Time, endAt time.Time) ([]ChatLogModelUsageRow, error) {
+	scope := ChatLogQueryScope{StartAt: &startAt, EndAt: &endAt}
+	union, err := BuildChatLogUnionQuery(scope, "created_at, name, total_tokens, total_cost")
 	if err != nil || union.SQL == "" {
 		return []ChatLogModelUsageRow{}, err
 	}
@@ -1092,11 +1093,14 @@ func QueryChatLogModelUsage(ctx context.Context) ([]ChatLogModelUsageRow, error)
 		`SELECT COALESCE(NULLIF(TRIM(name), ''), 'unknown') AS model,
 		        COALESCE(SUM(total_tokens), 0) AS total_tokens,
 		        COALESCE(SUM(total_cost), 0) AS total_cost
-		   FROM (` + union.SQL + `) AS logs
+		   FROM (`+union.SQL+`) AS logs
+		  WHERE created_at >= ? AND created_at < ?
 		  GROUP BY model
 		 HAVING COALESCE(SUM(total_tokens), 0) > 0
 		     OR COALESCE(SUM(total_cost), 0) > 0
 		  ORDER BY total_cost DESC, total_tokens DESC, model ASC`,
+		startAt,
+		endAt,
 	).Scan(&rows).Error; err != nil {
 		return nil, err
 	}

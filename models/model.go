@@ -23,11 +23,18 @@ type Provider struct {
 }
 
 type Proxy struct {
-	ID        uint      `gorm:"primaryKey"`
-	CreatedAt time.Time `gorm:"index"`
-	UpdatedAt time.Time
-	Name      string `gorm:"size:160;uniqueIndex"`
-	ProxyURL  string `gorm:"column:proxy_url;size:2048"`
+	ID               uint      `gorm:"primaryKey"`
+	CreatedAt        time.Time `gorm:"index"`
+	UpdatedAt        time.Time
+	Name             string     `gorm:"size:160;uniqueIndex"`
+	ProxyURL         string     `gorm:"column:proxy_url;size:2048"`
+	ExitIP           string     `gorm:"column:exit_ip;size:128"`
+	ExitCountry      string     `gorm:"column:exit_country;size:160"`
+	ExitCountryCode  string     `gorm:"column:exit_country_code;size:16"`
+	ExitRegion       string     `gorm:"column:exit_region;size:160"`
+	ExitCity         string     `gorm:"column:exit_city;size:160"`
+	RegionCheckedAt  *time.Time `gorm:"column:region_checked_at;index"`
+	RegionCheckError string     `gorm:"column:region_check_error;size:2048"`
 }
 
 type AnthropicConfig struct {

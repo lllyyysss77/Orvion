@@ -18,11 +18,13 @@ import (
 const proxyRegionCheckTimeout = 20 * time.Second
 
 type ProxyRegionCheckResult struct {
-	IP          string `json:"ip"`
-	Country     string `json:"country"`
-	CountryCode string `json:"country_code"`
-	Region      string `json:"region"`
-	City        string `json:"city"`
+	IP          string    `json:"ip"`
+	Country     string    `json:"country"`
+	CountryCode string    `json:"country_code"`
+	Region      string    `json:"region"`
+	City        string    `json:"city"`
+	CheckedAt   time.Time `json:"checked_at"`
+	Error       string    `json:"error,omitempty"`
 }
 
 func sanitizeManagedProxyURL(raw string) (string, error) {
@@ -149,7 +151,8 @@ func UpdateProxy(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	if _, err := gorm.G[models.Proxy](models.DB).Where("id = ?", id).First(ctx); err != nil {
+	existingProxy, err := gorm.G[models.Proxy](models.DB).Where("id = ?", id).First(ctx)
+	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			common.NotFound(c, "Proxy not found")
 			return
@@ -163,9 +166,20 @@ func UpdateProxy(c *gin.Context) {
 	}
 
 	err = models.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&models.Proxy{}).Where("id = ?", id).Updates(map[string]any{
-			"name": name, "proxy_url": proxyURL,
-		}).Error; err != nil {
+		updates := map[string]any{
+			"name":      name,
+			"proxy_url": proxyURL,
+		}
+		if proxyURL != existingProxy.ProxyURL {
+			updates["exit_ip"] = ""
+			updates["exit_country"] = ""
+			updates["exit_country_code"] = ""
+			updates["exit_region"] = ""
+			updates["exit_city"] = ""
+			updates["region_checked_at"] = nil
+			updates["region_check_error"] = ""
+		}
+		if err := tx.Model(&models.Proxy{}).Where("id = ?", id).Updates(updates).Error; err != nil {
 			return err
 		}
 		return tx.Model(&models.Provider{}).Where("proxy_id = ?", id).Update("proxy_url", proxyURL).Error
@@ -229,19 +243,49 @@ func CheckProxyRegion(c *gin.Context) {
 	}
 	client, err := providers.GetClientWithProxy(providerProxyExitLookupTimeout, proxy.ProxyURL)
 	if err != nil {
-		common.BadRequest(c, "Invalid proxy_url: "+err.Error())
+		result, saveErr := saveProxyRegionCheck(ctx, proxy.ID, providerProxyExitInfo{}, err)
+		if saveErr != nil {
+			common.InternalServerError(c, saveErr.Error())
+			return
+		}
+		common.Success(c, result)
 		return
 	}
 	info, err := lookupProviderProxyExit(ctx, client)
-	if err != nil {
-		common.BadRequest(c, "地区检查失败: "+err.Error())
+	result, saveErr := saveProxyRegionCheck(ctx, proxy.ID, info, err)
+	if saveErr != nil {
+		common.InternalServerError(c, saveErr.Error())
 		return
 	}
-	common.Success(c, ProxyRegionCheckResult{
+	common.Success(c, result)
+}
+
+func saveProxyRegionCheck(ctx context.Context, proxyID uint, info providerProxyExitInfo, checkErr error) (ProxyRegionCheckResult, error) {
+	checkedAt := time.Now()
+	result := ProxyRegionCheckResult{
 		IP:          info.IP,
 		Country:     info.Country,
 		CountryCode: info.CountryCode,
 		Region:      info.Region,
 		City:        info.City,
-	})
+		CheckedAt:   checkedAt,
+	}
+	if checkErr != nil {
+		result.IP = ""
+		result.Country = ""
+		result.CountryCode = ""
+		result.Region = ""
+		result.City = ""
+		result.Error = checkErr.Error()
+	}
+	err := models.DB.WithContext(ctx).Model(&models.Proxy{}).Where("id = ?", proxyID).Updates(map[string]any{
+		"exit_ip":            result.IP,
+		"exit_country":       result.Country,
+		"exit_country_code":  result.CountryCode,
+		"exit_region":        result.Region,
+		"exit_city":          result.City,
+		"region_checked_at":  checkedAt,
+		"region_check_error": result.Error,
+	}).Error
+	return result, err
 }

@@ -196,11 +196,19 @@ func RequestAmountTrend(c *gin.Context) {
 	})
 }
 
-// ModelUsageSummary 返回系统概览用的按模型累计 token 与费用统计
+// ModelUsageSummary 返回系统概览用的按模型 token 与费用统计。
 func ModelUsageSummary(c *gin.Context) {
 	ctx := c.Request.Context()
+	now := time.Now()
+	endAt := now
+	rangeName := strings.ToLower(strings.TrimSpace(c.DefaultQuery("range", "today")))
+	startAt, ok := modelUsageRangeStart(now, rangeName)
+	if !ok {
+		common.BadRequest(c, "Invalid range parameter; expected today, week, or month")
+		return
+	}
 
-	rows, err := models.QueryChatLogModelUsage(ctx)
+	rows, err := models.QueryChatLogModelUsage(ctx, startAt, endAt)
 	if err != nil {
 		common.InternalServerError(c, "Failed to query model usage summary: "+err.Error())
 		return
@@ -216,6 +224,22 @@ func ModelUsageSummary(c *gin.Context) {
 	}
 
 	common.Success(c, items)
+}
+
+func modelUsageRangeStart(now time.Time, rangeName string) (time.Time, bool) {
+	year, month, day := now.Date()
+	switch rangeName {
+	case "today":
+		return time.Date(year, month, day, 0, 0, 0, 0, now.Location()), true
+	case "week":
+		startOfDay := time.Date(year, month, day, 0, 0, 0, 0, now.Location())
+		daysSinceMonday := (int(now.Weekday()) + 6) % 7
+		return startOfDay.AddDate(0, 0, -daysSinceMonday), true
+	case "month":
+		return time.Date(year, month, 1, 0, 0, 0, 0, now.Location()), true
+	default:
+		return time.Time{}, false
+	}
 }
 
 // DailyModelCostTrend 返回最近 N 天的模型成本分布（按模型堆叠）

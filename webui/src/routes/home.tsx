@@ -12,7 +12,7 @@ import {
   getModelUsageSummary,
   getDailyModelCostTrend
 } from "@/lib/api";
-import type { AuthKeySummary, DailyModelCostSummary, MetricsSummary, ModelUsageSummaryItem, RequestAmountSummary } from "@/lib/api";
+import type { AuthKeySummary, DailyModelCostSummary, MetricsSummary, ModelUsageRange, ModelUsageSummaryItem, RequestAmountSummary } from "@/lib/api";
 import { getStoredAuthTokenMode, setStoredAuthTokenMode } from "@/lib/auth";
 import { toast } from "sonner";
 import { resolveModelIcon } from "@/lib/model-icon";
@@ -751,9 +751,18 @@ const DailyModelCostCard = memo(({ trend }: DailyModelCostCardProps) => {
 
 type ModelUsageCardProps = {
   items: ModelUsageSummaryItem[];
+  range: ModelUsageRange;
+  loading: boolean;
+  onRangeChange: (range: ModelUsageRange) => void;
 };
 
-const ModelUsageCard = memo(({ items }: ModelUsageCardProps) => {
+const modelUsageRanges: Array<{ value: ModelUsageRange; label: string }> = [
+  { value: "today", label: "当天" },
+  { value: "week", label: "当周" },
+  { value: "month", label: "当月" },
+];
+
+const ModelUsageCard = memo(({ items, range, loading, onRangeChange }: ModelUsageCardProps) => {
   const totalTokens = items.reduce((sum, item) => sum + item.total_tokens, 0);
   const totalCost = items.reduce((sum, item) => sum + item.total_cost, 0);
 
@@ -769,11 +778,29 @@ const ModelUsageCard = memo(({ items }: ModelUsageCardProps) => {
               <span>总费用 <span className="text-foreground">{formatMoney(totalCost)}</span></span>
             </div>
           </div>
-          <span className="text-[11px] text-muted-foreground">按模型自动识别图标与颜色</span>
+          <div className="inline-flex h-8 items-center rounded-md border border-border/70 bg-muted/40 p-0.5">
+            {modelUsageRanges.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                disabled={loading}
+                onClick={() => onRangeChange(option.value)}
+                className={`h-7 min-w-12 rounded px-2.5 text-xs font-medium transition-colors disabled:cursor-wait ${
+                  range === option.value
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
         </div>
       </CardHeader>
       <CardContent className="pt-0">
-        {items.length === 0 ? (
+        {loading ? (
+          <Loading message="加载模型用量" className="h-40" />
+        ) : items.length === 0 ? (
           <div className="flex items-center justify-center rounded-2xl border border-dashed border-border/50 px-4 py-10 text-center text-xs text-muted-foreground">
             暂无模型用量数据
           </div>
@@ -1163,11 +1190,15 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [requestAmount, setRequestAmount] = useState<RequestAmountSummary>(defaultRequestAmount);
   const [modelUsage, setModelUsage] = useState<ModelUsageSummaryItem[]>([]);
+  const [modelUsageRange, setModelUsageRange] = useState<ModelUsageRange>("today");
+  const [modelUsageLoading, setModelUsageLoading] = useState(false);
   const [dailyModelCost, setDailyModelCost] = useState<DailyModelCostSummary>(defaultDailyModelCost);
   const [authKeySummary, setAuthKeySummary] = useState<AuthKeySummary | null>(null);
   const [authKeyError, setAuthKeyError] = useState<string | null>(null);
   const [authKeyMode, setAuthKeyMode] = useState(false);
   const autoRefreshBusyRef = useRef(false);
+  const modelUsageRangeRef = useRef<ModelUsageRange>("today");
+  const modelUsageRequestIDRef = useRef(0);
 
   // Real data from APIs
   const [summary, setSummary] = useState<MetricsSummary>({
@@ -1234,22 +1265,36 @@ export default function Home() {
     }
   }, []);
 
-  const fetchModelUsage = useCallback(async (options?: { silent?: boolean }) => {
+  const fetchModelUsage = useCallback(async (options?: { silent?: boolean; range?: ModelUsageRange }) => {
     const silent = options?.silent === true;
+    const requestID = ++modelUsageRequestIDRef.current;
     try {
-      const data = await getModelUsageSummary();
-      setModelUsage(data);
+      const data = await getModelUsageSummary(options?.range ?? modelUsageRangeRef.current);
+      if (requestID === modelUsageRequestIDRef.current) {
+        setModelUsage(data);
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      if (!silent) {
+      if (!silent && requestID === modelUsageRequestIDRef.current) {
         toast.error(`获取模型用量失败: ${message}`);
       }
       console.error(err);
-      if (!silent) {
+      if (!silent && requestID === modelUsageRequestIDRef.current) {
         setModelUsage([]);
       }
     }
   }, []);
+
+  const handleModelUsageRangeChange = useCallback((nextRange: ModelUsageRange) => {
+    if (nextRange === modelUsageRangeRef.current || modelUsageLoading) {
+      return;
+    }
+    modelUsageRangeRef.current = nextRange;
+    setModelUsageRange(nextRange);
+    setModelUsage([]);
+    setModelUsageLoading(true);
+    void fetchModelUsage({ range: nextRange }).finally(() => setModelUsageLoading(false));
+  }, [fetchModelUsage, modelUsageLoading]);
 
   const fetchDailyModelCost = useCallback(async (options?: { silent?: boolean }) => {
     const silent = options?.silent === true;
@@ -1469,7 +1514,12 @@ export default function Home() {
               />
             </div>
 
-            <ModelUsageCard items={modelUsage} />
+            <ModelUsageCard
+              items={modelUsage}
+              range={modelUsageRange}
+              loading={modelUsageLoading}
+              onRangeChange={handleModelUsageRangeChange}
+            />
 
           </div>
         )}

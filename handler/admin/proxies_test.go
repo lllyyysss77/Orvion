@@ -3,10 +3,12 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/racio/orvion/models"
@@ -54,7 +56,11 @@ func TestProxyNameIsUniqueIgnoringCaseUntilDeleted(t *testing.T) {
 
 func TestProxyUpdateSyncsProviderAndDeleteRejectsUsage(t *testing.T) {
 	db := setupProviderAdminTestDB(t, "admin_proxy_update_sync")
-	proxy := models.Proxy{Name: "旧节点", ProxyURL: "http://127.0.0.1:7890"}
+	now := time.Now()
+	proxy := models.Proxy{
+		Name: "旧节点", ProxyURL: "http://127.0.0.1:7890",
+		ExitIP: "203.0.113.1", ExitCountry: "Japan", RegionCheckedAt: &now,
+	}
 	if err := db.Create(&proxy).Error; err != nil {
 		t.Fatalf("创建代理失败: %v", err)
 	}
@@ -82,11 +88,57 @@ func TestProxyUpdateSyncsProviderAndDeleteRejectsUsage(t *testing.T) {
 	if provider.ProxyURL != "socks5://127.0.0.1:1080" {
 		t.Fatalf("提供商代理缓存未同步: %q", provider.ProxyURL)
 	}
+	proxyID := proxy.ID
+	proxy = models.Proxy{}
+	if err := db.First(&proxy, proxyID).Error; err != nil {
+		t.Fatalf("读取更新后代理失败: %v", err)
+	}
+	if proxy.ExitIP != "" || proxy.ExitCountry != "" || proxy.RegionCheckedAt != nil {
+		t.Fatalf("编辑代理后应清空旧地区结果: %+v", proxy)
+	}
 
 	rec = httptest.NewRecorder()
 	router.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/proxies/1", nil))
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"code":400`) {
 		t.Fatalf("被使用代理应拒绝删除: got=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSaveProxyRegionCheckOverwritesStoredResult(t *testing.T) {
+	db := setupProviderAdminTestDB(t, "admin_proxy_region_persistence")
+	proxy := models.Proxy{Name: "节点", ProxyURL: "http://127.0.0.1:7890"}
+	if err := db.Create(&proxy).Error; err != nil {
+		t.Fatalf("创建代理失败: %v", err)
+	}
+
+	result, err := saveProxyRegionCheck(context.Background(), proxy.ID, providerProxyExitInfo{
+		IP: "203.0.113.8", Country: "Japan", CountryCode: "JP", Region: "Tokyo", City: "Shinjuku",
+	}, nil)
+	if err != nil {
+		t.Fatalf("保存成功结果失败: %v", err)
+	}
+	if result.Error != "" || result.CheckedAt.IsZero() {
+		t.Fatalf("成功结果异常: %+v", result)
+	}
+	proxyID := proxy.ID
+	proxy = models.Proxy{}
+	if err := db.First(&proxy, proxyID).Error; err != nil {
+		t.Fatalf("读取代理失败: %v", err)
+	}
+	if proxy.ExitIP != "203.0.113.8" || proxy.ExitRegion != "Tokyo" || proxy.RegionCheckedAt == nil {
+		t.Fatalf("地区结果未持久化: %+v", proxy)
+	}
+
+	result, err = saveProxyRegionCheck(context.Background(), proxy.ID, providerProxyExitInfo{}, errors.New("代理连接失败"))
+	if err != nil {
+		t.Fatalf("保存失败结果失败: %v", err)
+	}
+	proxy = models.Proxy{}
+	if err := db.First(&proxy, proxyID).Error; err != nil {
+		t.Fatalf("读取失败后的代理失败: %v", err)
+	}
+	if result.Error == "" || proxy.ExitIP != "" || proxy.ExitRegion != "" || proxy.RegionCheckError != "代理连接失败" {
+		t.Fatalf("失败结果未覆盖旧地区: result=%+v proxy=%+v", result, proxy)
 	}
 }
 

@@ -776,7 +776,7 @@ export default function LogsPage() {
       {/* 详情弹窗 */}
       {selectedLog && (
         <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
-          <DialogContent className="w-[92vw] overflow-hidden border-border/70 bg-card/95 p-0 shadow-[0_24px_80px_rgba(52,42,31,0.26)] backdrop-blur-xl sm:w-auto sm:max-w-2xl max-h-[95vh] flex flex-col">
+          <DialogContent className="flex h-[min(680px,92vh)] w-[92vw] flex-col overflow-hidden border-border/70 bg-card/95 p-0 shadow-[0_24px_80px_rgba(52,42,31,0.26)] backdrop-blur-xl sm:w-auto sm:max-w-2xl">
               <div className="relative overflow-hidden border-b px-5 py-4">
                 <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-primary/45 to-transparent" />
                 <div className="pointer-events-none absolute -right-10 -top-16 h-36 w-36 rounded-full bg-primary/10 blur-2xl" />
@@ -800,7 +800,7 @@ export default function LogsPage() {
                 {selectedLog.Error && (
                   <div className="rounded-xl border border-destructive/40 bg-destructive/10 p-3">
                     <p className="text-xs text-destructive uppercase tracking-wide mb-1">错误信息</p>
-                    <div className="text-destructive whitespace-pre-wrap break-words text-sm">
+                    <div className="max-h-28 overflow-y-auto whitespace-pre-wrap break-words pr-1 text-sm text-destructive">
                       {selectedLog.Error}
                     </div>
                   </div>

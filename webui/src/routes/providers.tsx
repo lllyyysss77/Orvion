@@ -40,7 +40,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Label } from "@/components/ui/label";
 import Loading from "@/components/loading";
-import ProviderConfigEditor, { type ProviderConfigEditorRef } from "@/components/provider-config-editor";
+import ProviderConfigEditor from "@/components/provider-config-editor";
 import {
   getProviders,
   createProvider,
@@ -54,7 +54,7 @@ import {
 import type { Provider, ProviderTemplate, ProviderModel, Proxy as ProxyRecord } from "@/lib/api";
 import { openExternalUrl } from "@/lib/utils";
 import { toast } from "sonner";
-import { Shield, ExternalLink, Pencil, Trash2, Boxes, Plus, Copy } from "lucide-react";
+import { Shield, ExternalLink, Pencil, Trash2, Boxes, Copy } from "lucide-react";
 
 type ProviderCapability = "chat" | "openai" | "claude";
 
@@ -127,7 +127,6 @@ export default function ProvidersPage() {
   const [structuredConfigEnabled, setStructuredConfigEnabled] = useState(false);
   const [proxyOptions, setProxyOptions] = useState<ProxyRecord[]>([]);
   const configCacheRef = useRef<Record<string, string>>({});
-  const providerConfigEditorRef = useRef<ProviderConfigEditorRef | null>(null);
 
   // 筛选条件
   const [nameFilter, setNameFilter] = useState<string>("");
@@ -689,23 +688,9 @@ export default function ProvidersPage() {
                 name="config"
                 render={({ field }) => (
                   <FormItem>
-                    <div className="flex items-center justify-between gap-2">
-                      <FormLabel>配置</FormLabel>
-                      {structuredConfigEnabled && (
-                        <Button
-                          type="button"
-                          variant="secondary"
-                          size="sm"
-                          onClick={() => providerConfigEditorRef.current?.addItem()}
-                        >
-                          <Plus className="size-4" />
-                          添加字段
-                        </Button>
-                      )}
-                    </div>
+                    <FormLabel>配置</FormLabel>
                     {structuredConfigEnabled ? (
                       <ProviderConfigEditor
-                        ref={providerConfigEditorRef}
                         value={field.value}
                         onChange={handleStructuredConfigChange}
                       />
