@@ -183,11 +183,11 @@ func TestBackfillChatLogOutputSizesFillsCompletionTokensFromChatIO(t *testing.T)
 	}
 
 	logRow := models.ChatLog{
-		UUID:      "video-log-1",
+		UUID:      "raw-output-log-1",
 		CreatedAt: createdAt,
 		UpdatedAt: createdAt,
 		Status:    "success",
-		Name:      "agnes-video-v2.0",
+		Name:      "custom-batch-v1",
 		Style:     "openai",
 		ChatIO:    1,
 		Size:      493,
@@ -204,8 +204,8 @@ func TestBackfillChatLogOutputSizesFillsCompletionTokensFromChatIO(t *testing.T)
 	if err := modelsDB.Create(&models.ChatIO{
 		LogId:        logRow.ID,
 		LogUUID:      logRow.UUID,
-		Input:        `{"messages":[{"role":"user","content":"生成一个视频"}]}`,
-		OutputString: `{"completed_at":1781689211,"status":"completed","video_id":"video_123"}`,
+		Input:        `{"messages":[{"role":"user","content":"处理这段内容"}]}`,
+		OutputString: `{"completed_at":1781689211,"status":"completed","result_id":"job_123"}`,
 	}).Error; err != nil {
 		t.Fatalf("create chat_io row: %v", err)
 	}

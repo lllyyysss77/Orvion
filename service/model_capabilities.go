@@ -13,7 +13,6 @@ import (
 const (
 	ModelCapabilityChat      = "chat"
 	ModelCapabilityVision    = "vision"
-	ModelCapabilityVideo     = "video"
 	ModelCapabilityEmbedding = "embedding"
 	ModelCapabilityRerank    = "rerank"
 )
@@ -46,11 +45,6 @@ var modelEndpointRules = map[string]ModelEndpointRule{
 		Required: []string{ModelCapabilityVision},
 		Suffix:   "-vision",
 		Label:    "视觉",
-	},
-	"videos": {
-		Required: []string{ModelCapabilityVideo},
-		Suffix:   "-video",
-		Label:    "视频",
 	},
 	"embeddings": {
 		Required: []string{ModelCapabilityEmbedding},
@@ -95,7 +89,7 @@ func normalizeModelCapabilities(values []string) map[string]struct{} {
 	for _, raw := range values {
 		value := strings.ToLower(strings.TrimSpace(raw))
 		switch value {
-		case ModelCapabilityChat, ModelCapabilityVision, ModelCapabilityVideo, ModelCapabilityEmbedding, ModelCapabilityRerank:
+		case ModelCapabilityChat, ModelCapabilityVision, ModelCapabilityEmbedding, ModelCapabilityRerank:
 		default:
 			continue
 		}

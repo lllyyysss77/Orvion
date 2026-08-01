@@ -56,6 +56,8 @@ type ProviderProxyTestStreamEvent struct {
 	ExitIP          string                           `json:"exit_ip,omitempty"`
 	ExitCountry     string                           `json:"exit_country,omitempty"`
 	ExitCountryCode string                           `json:"exit_country_code,omitempty"`
+	ExitRegion      string                           `json:"exit_region,omitempty"`
+	ExitCity        string                           `json:"exit_city,omitempty"`
 	ExitError       string                           `json:"exit_error,omitempty"`
 	Targets         []ProviderProxyTargetTestResult  `json:"targets,omitempty"`
 	TargetKey       string                           `json:"target_key,omitempty"`
@@ -73,6 +75,8 @@ type providerProxyExitInfo struct {
 	IP          string
 	Country     string
 	CountryCode string
+	Region      string
+	City        string
 }
 
 var providerProxyTestTargets = []providerProxyTestTarget{
@@ -177,6 +181,8 @@ func runProviderProxyTestStream(ctx context.Context, client *http.Client, send f
 			ExitIP:          exitInfo.IP,
 			ExitCountry:     exitInfo.Country,
 			ExitCountryCode: exitInfo.CountryCode,
+			ExitRegion:      exitInfo.Region,
+			ExitCity:        exitInfo.City,
 		})
 	}()
 
@@ -274,6 +280,8 @@ func parseProviderProxyExitResponse(body []byte) (providerProxyExitInfo, error) 
 		IP:          firstProxyExitString(payload, "ip", "query"),
 		Country:     firstProxyExitString(payload, "country_name", "country"),
 		CountryCode: firstProxyExitString(payload, "country_code", "countryCode", "country"),
+		Region:      firstProxyExitString(payload, "region", "region_name", "regionName"),
+		City:        firstProxyExitString(payload, "city"),
 	}
 	if strings.EqualFold(info.Country, info.CountryCode) {
 		info.Country = ""

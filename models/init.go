@@ -55,6 +55,7 @@ func Init(_ context.Context, dsn string) {
 	}
 
 	if err := DB.AutoMigrate(
+		&Proxy{},
 		&Provider{},
 		&Model{},
 		&ModelWithProvider{},

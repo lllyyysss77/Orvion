@@ -49,12 +49,12 @@ import {
   deleteProvider,
   getProviderTemplates,
   getProviderModels,
-  configAPI,
+  getProxies,
 } from "@/lib/api";
-import type { NetworkForwardingConfig, Provider, ProviderTemplate, ProviderModel } from "@/lib/api";
-import { cn, openExternalUrl } from "@/lib/utils";
+import type { Provider, ProviderTemplate, ProviderModel, Proxy as ProxyRecord } from "@/lib/api";
+import { openExternalUrl } from "@/lib/utils";
 import { toast } from "sonner";
-import { ChevronDown, Network, Shield, ExternalLink, Pencil, Trash2, Boxes, Plus, Copy, X } from "lucide-react";
+import { Shield, ExternalLink, Pencil, Trash2, Boxes, Plus, Copy } from "lucide-react";
 
 type ProviderCapability = "chat" | "openai" | "claude";
 
@@ -104,17 +104,8 @@ const formSchema = z.object({
   models_fetch_mode: z.enum(["v1_models", "api_pricing"]),
   config: z.string().min(1, { message: "配置不能为空" }),
   console: z.string().optional(),
-  proxy_url: z.string().trim().refine((value) => {
-    if (!value) return true;
-    try {
-      const normalized = value.replace(/^socket5:\/\//i, "socks5://");
-      const parsed = new URL(normalized);
-      const protocol = parsed.protocol.toLowerCase();
-      return protocol === "http:" || protocol === "https:" || protocol === "socks5:";
-    } catch {
-      return false;
-    }
-  }, { message: "代理地址仅支持 http/https/socks5" }),
+  proxy_id: z.number().int().min(0),
+  proxy_url: z.string(),
   capabilities: z.array(z.enum(["chat", "openai", "claude"])).min(1, { message: "至少选择一个接口支持能力" }),
   interface_conversion_enabled: z.boolean(),
   interface_conversion_target: z.enum(["chat", "responses", "messages", ""]),
@@ -134,12 +125,9 @@ export default function ProvidersPage() {
   const [modelsLoading, setModelsLoading] = useState(false);
   const [providerStatusLoadingId, setProviderStatusLoadingId] = useState<number | null>(null);
   const [structuredConfigEnabled, setStructuredConfigEnabled] = useState(false);
-  const [networkProxyURL, setNetworkProxyURL] = useState("");
-  const [proxyPickerOpen, setProxyPickerOpen] = useState(false);
-  const [proxyInputFocused, setProxyInputFocused] = useState(false);
+  const [proxyOptions, setProxyOptions] = useState<ProxyRecord[]>([]);
   const configCacheRef = useRef<Record<string, string>>({});
   const providerConfigEditorRef = useRef<ProviderConfigEditorRef | null>(null);
-  const proxyInputRef = useRef<HTMLInputElement | null>(null);
 
   // 筛选条件
   const [nameFilter, setNameFilter] = useState<string>("");
@@ -153,6 +141,7 @@ export default function ProvidersPage() {
       models_fetch_mode: "v1_models",
       config: "",
       console: "",
+      proxy_id: 0,
       proxy_url: "",
       capabilities: [...defaultProviderCapabilities],
       interface_conversion_enabled: false,
@@ -175,30 +164,19 @@ export default function ProvidersPage() {
     return options;
   }, [selectedCapabilities]);
 
-  const fetchNetworkForwardingConfig = useCallback(async () => {
+  const fetchProxyOptions = useCallback(async () => {
     try {
-      const response = await configAPI.getConfig("network_forwarding");
-      if (!response.value) {
-        setNetworkProxyURL("");
-        return;
-      }
-      const networkCfg = JSON.parse(response.value) as Partial<NetworkForwardingConfig>;
-      const proxyURL = networkCfg.global_proxy_url ?? networkCfg.telegram_proxy_url;
-      setNetworkProxyURL(typeof proxyURL === "string" ? proxyURL.trim() : "");
+      setProxyOptions(await getProxies());
     } catch (err) {
-      setNetworkProxyURL("");
-      console.error("获取网络转发配置失败", err);
+      console.error("获取代理列表失败", err);
     }
   }, []);
 
   useEffect(() => {
-    if (!open) {
-      setProxyPickerOpen(false);
-      setProxyInputFocused(false);
-      return;
+    if (open) {
+      void fetchProxyOptions();
     }
-    void fetchNetworkForwardingConfig();
-  }, [open, fetchNetworkForwardingConfig]);
+  }, [open, fetchProxyOptions]);
 
   useEffect(() => {
     if (!open) {
@@ -339,6 +317,7 @@ export default function ProvidersPage() {
         name: values.name,
         config: values.config,
         console: values.console || "",
+        proxy_id: values.proxy_id,
         proxy_url: values.proxy_url || "",
         models_fetch_mode: values.models_fetch_mode,
         capabilities: values.capabilities,
@@ -352,6 +331,7 @@ export default function ProvidersPage() {
         models_fetch_mode: "v1_models",
         config: "",
         console: "",
+        proxy_id: 0,
         proxy_url: "",
         capabilities: [...defaultProviderCapabilities],
         interface_conversion_enabled: false,
@@ -372,6 +352,7 @@ export default function ProvidersPage() {
         name: values.name,
         config: values.config,
         console: values.console || "",
+        proxy_id: values.proxy_id,
         proxy_url: values.proxy_url || "",
         models_fetch_mode: values.models_fetch_mode,
         capabilities: values.capabilities,
@@ -386,6 +367,7 @@ export default function ProvidersPage() {
         models_fetch_mode: "v1_models",
         config: "",
         console: "",
+        proxy_id: 0,
         proxy_url: "",
         capabilities: [...defaultProviderCapabilities],
         interface_conversion_enabled: false,
@@ -451,7 +433,8 @@ export default function ProvidersPage() {
       models_fetch_mode: provider.ModelsFetchMode === "api_pricing" ? "api_pricing" : "v1_models",
       config: provider.Config,
       console: provider.Console || "",
-      proxy_url: provider.ProxyURL || "",
+      proxy_id: provider.ProxyID || 0,
+      proxy_url: provider.ProxyID ? "" : provider.ProxyURL || "",
       capabilities: normalizeProviderCapabilities(provider.Capabilities),
       interface_conversion_enabled: provider.InterfaceConversionEnabled === 1 || provider.InterfaceConversionEnabled === true,
       interface_conversion_target: normalizeInterfaceConversionTarget(provider.InterfaceConversionTarget),
@@ -480,6 +463,7 @@ export default function ProvidersPage() {
       models_fetch_mode: "v1_models",
       config: defaultConfig,
       console: "",
+      proxy_id: 0,
       proxy_url: "",
       capabilities: [...defaultProviderCapabilities],
       interface_conversion_enabled: false,
@@ -752,124 +736,35 @@ export default function ProvidersPage() {
 
                 <FormField
                   control={form.control}
-                  name="proxy_url"
+                  name="proxy_id"
                   render={({ field }) => (
                     <FormItem className="min-w-0">
-                      <FormLabel>代理地址（可选）</FormLabel>
-                      <div className="relative">
+                      <FormLabel>上游代理</FormLabel>
+                      <Select
+                        value={field.value > 0 ? String(field.value) : (form.watch("proxy_url") ? "legacy" : "none")}
+                        onValueChange={(value) => {
+                          if (value === "legacy") return;
+                          field.onChange(value === "none" ? 0 : Number(value));
+                          form.setValue("proxy_url", "", { shouldDirty: true });
+                        }}
+                      >
                         <FormControl>
-                          <Input
-                            {...field}
-                            ref={(node) => {
-                              field.ref(node);
-                              proxyInputRef.current = node;
-                            }}
-                            value={field.value || ""}
-                            placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080"
-                            className={cn(
-                              "pr-10",
-                              field.value && !proxyInputFocused && "text-transparent caret-transparent selection:bg-transparent"
-                            )}
-                            onFocus={() => {
-                              setProxyInputFocused(true);
-                              setProxyPickerOpen(true);
-                            }}
-                            onBlur={() => {
-                              field.onBlur();
-                              window.setTimeout(() => {
-                                setProxyInputFocused(false);
-                                setProxyPickerOpen(false);
-                              }, 120);
-                            }}
-                            onChange={(event) => {
-                              field.onChange(event.target.value);
-                              setProxyPickerOpen(true);
-                            }}
-                          />
+                          <SelectTrigger>
+                            <SelectValue placeholder="选择代理" />
+                          </SelectTrigger>
                         </FormControl>
-                        {field.value && !proxyInputFocused && (
-                          <button
-                            type="button"
-                            title={field.value}
-                            className="absolute inset-y-1 left-2 right-10 flex min-w-0 items-center"
-                            onMouseDown={(event) => {
-                              event.preventDefault();
-                              setProxyInputFocused(true);
-                              setProxyPickerOpen(true);
-                              window.requestAnimationFrame(() => proxyInputRef.current?.focus());
-                            }}
-                          >
-                            <span className="max-w-full truncate rounded-full border border-slate-200 bg-slate-100 px-3 py-1 text-left font-mono text-xs leading-none text-slate-700 shadow-inner">
-                              {field.value}
-                            </span>
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          className="absolute right-1.5 top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                          title="选择系统代理"
-                          aria-label="选择系统代理"
-                          onMouseDown={(event) => {
-                            event.preventDefault();
-                            setProxyInputFocused(true);
-                            setProxyPickerOpen(true);
-                            window.requestAnimationFrame(() => proxyInputRef.current?.focus());
-                          }}
-                        >
-                          <ChevronDown className="size-4" />
-                        </button>
-                        {proxyPickerOpen && (
-                          <div className="absolute left-0 right-0 top-full z-50 mt-1 overflow-hidden rounded-xl border border-border/80 bg-popover p-1 shadow-xl">
-                            {networkProxyURL ? (
-                              <button
-                                type="button"
-                                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-muted"
-                                onMouseDown={(event) => {
-                                  event.preventDefault();
-                                  field.onChange(networkProxyURL);
-                                  form.clearErrors("proxy_url");
-                                  setProxyInputFocused(false);
-                                  setProxyPickerOpen(false);
-                                  window.requestAnimationFrame(() => proxyInputRef.current?.blur());
-                                }}
-                              >
-                                <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-600">
-                                  <Network className="size-4" />
-                                </span>
-                                <span className="min-w-0 flex-1">
-                                  <span className="block text-sm font-medium text-foreground">全局代理</span>
-                                  <span className="block truncate font-mono text-xs text-muted-foreground" title={networkProxyURL}>
-                                    {networkProxyURL}
-                                  </span>
-                                </span>
-                              </button>
-                            ) : (
-                              <div className="rounded-lg px-3 py-2 text-xs text-muted-foreground">
-                                暂未配置全局代理地址
-                              </div>
-                            )}
-                            {field.value && (
-                              <button
-                                type="button"
-                                className="mt-1 flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                                onMouseDown={(event) => {
-                                  event.preventDefault();
-                                  field.onChange("");
-                                  form.clearErrors("proxy_url");
-                                  setProxyInputFocused(false);
-                                  setProxyPickerOpen(false);
-                                  window.requestAnimationFrame(() => proxyInputRef.current?.blur());
-                                }}
-                              >
-                                <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-muted">
-                                  <X className="size-4" />
-                                </span>
-                                清空代理地址
-                              </button>
-                            )}
-                          </div>
-                        )}
-                      </div>
+                        <SelectContent>
+                          <SelectItem value="none">不使用代理（直连）</SelectItem>
+                          {form.watch("proxy_url") && (
+                            <SelectItem value="legacy">历史代理配置</SelectItem>
+                          )}
+                          {proxyOptions.map((proxy) => (
+                            <SelectItem key={proxy.ID} value={String(proxy.ID)}>
+                              {proxy.Name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                       <FormMessage />
                     </FormItem>
                   )}

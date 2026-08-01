@@ -84,7 +84,7 @@ func setupProviderAdminTestDB(t *testing.T, name string) *gorm.DB {
 		t.Fatalf("初始化测试数据库失败: %v", err)
 	}
 	models.DB = db
-	if err := db.AutoMigrate(&models.Provider{}); err != nil {
+	if err := db.AutoMigrate(&models.Proxy{}, &models.Provider{}); err != nil {
 		t.Fatalf("迁移 Provider 表失败: %v", err)
 	}
 	return db

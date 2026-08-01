@@ -144,7 +144,6 @@ func registerUnifiedRoutes(router *gin.Engine, authOpenAI gin.HandlerFunc, authO
 	v1.POST("/rerank", authOpenAI, handler.RerankHandler)
 	v1.POST("/images/generations", authOpenAI, handler.ImagesGenerationsHandler)
 	v1.POST("/images/edits", authOpenAI, handler.ImagesEditsHandler)
-	v1.POST("/videos", authOpenAI, handler.VideosHandler)
 	v1.POST("/messages", authAnthropic, handler.Messages)
 	v1.POST("/messages/count_tokens", authAnthropic, handler.CountTokens)
 }
@@ -162,6 +161,7 @@ func registerAdminAPIRoutes(router *gin.Engine, token string) {
 	api.Use(middleware.Auth(token))
 
 	registerMetricsRoutes(api)
+	registerProxyRoutes(api)
 	registerProviderRoutes(api)
 	registerModelRoutes(api)
 	registerModelProviderRoutes(api)
@@ -172,6 +172,14 @@ func registerAdminAPIRoutes(router *gin.Engine, token string) {
 	registerConfigRoutes(api)
 	registerLimiterRoutes(api)
 	registerTestRoutes(api)
+}
+
+func registerProxyRoutes(api *gin.RouterGroup) {
+	api.GET("/proxies", adminhandler.GetProxies)
+	api.POST("/proxies", adminhandler.CreateProxy)
+	api.PUT("/proxies/:id", adminhandler.UpdateProxy)
+	api.POST("/proxies/:id/region-check", adminhandler.CheckProxyRegion)
+	api.DELETE("/proxies/:id", adminhandler.DeleteProxy)
 }
 
 func registerMetricsRoutes(api *gin.RouterGroup) {

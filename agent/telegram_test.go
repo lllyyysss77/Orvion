@@ -1565,12 +1565,12 @@ func TestTelegramAgentToolActionFailureLogUsesTerminalOutput(t *testing.T) {
 		"工作目录：/tmp/demo",
 		"退出码：1",
 		"stdout：",
-		"Submitting video generation task...",
+		"Submitting background task...",
 		"stderr：",
 		"Error submitting task: timeout",
 	}, "\n")))
 
-	expected := "stdout：\nSubmitting video generation task...\nstderr：\nError submitting task: timeout"
+	expected := "stdout：\nSubmitting background task...\nstderr：\nError submitting task: timeout"
 	if log.Result != expected || log.Error != expected {
 		t.Fatalf("失败日志应只记录终端输出，实际为 result=%q error=%q", log.Result, log.Error)
 	}
@@ -1854,30 +1854,30 @@ func TestTelegramAgentSkillMarkdownUsageCommandIsRecognized(t *testing.T) {
 	ctx := context.Background()
 
 	root := t.TempDir()
-	skillDir := filepath.Join(root, "video-generation")
+	skillDir := filepath.Join(root, "report-generation")
 	scriptDir := filepath.Join(skillDir, "scripts")
 	if err := os.MkdirAll(scriptDir, 0o755); err != nil {
 		t.Fatalf("创建 Skill 脚本目录失败: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(scriptDir, "generate_video.py"), []byte("print('ok')\n"), 0o755); err != nil {
-		t.Fatalf("写入视频脚本失败: %v", err)
+	if err := os.WriteFile(filepath.Join(scriptDir, "generate_report.py"), []byte("print('ok')\n"), 0o755); err != nil {
+		t.Fatalf("写入报告脚本失败: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(strings.Join([]string{
-		"# Video Generation Skill",
+		"# Report Generation Skill",
 		"",
 		"## Description",
-		"This skill generates videos using the agnes-video-v2.0 model via HTTP API.",
+		"This skill generates reports from local data.",
 		"It executes a local Python script that internally uses system curl.",
 		"",
 		"## Capabilities",
-		"- Text-to-Video generation",
-		"- Image-to-Video generation",
+		"- Daily summaries",
+		"- Data export",
 		"",
 		"## Usage",
-		"When the user requests video generation, execute:",
+		"When the user requests a report, execute:",
 		"",
 		"```bash",
-		"python3 scripts/generate_video.py --mode txt2vid --prompt \"<prompt>\"",
+		"python3 scripts/generate_report.py --format markdown --topic \"<topic>\"",
 		"```",
 	}, "\n")), 0o644); err != nil {
 		t.Fatalf("写入 Skill 文件失败: %v", err)
@@ -1893,21 +1893,21 @@ func TestTelegramAgentSkillMarkdownUsageCommandIsRecognized(t *testing.T) {
 	if err != nil {
 		t.Fatalf("解析 Skill 失败: %v", err)
 	}
-	if !strings.Contains(skill.Description, "generates videos") {
+	if !strings.Contains(skill.Description, "generates reports") {
 		t.Fatalf("应从 Markdown Description 自动提取描述，实际为: %q", skill.Description)
 	}
-	if len(skill.Scripts) != 1 || skill.Scripts[0].Name != "generate_video" {
-		t.Fatalf("应识别 generate_video 脚本，实际为: %+v", skill.Scripts)
+	if len(skill.Scripts) != 1 || skill.Scripts[0].Name != "generate_report" {
+		t.Fatalf("应识别 generate_report 脚本，实际为: %+v", skill.Scripts)
 	}
-	if len(skill.Scripts[0].Usage) != 1 || !strings.Contains(skill.Scripts[0].Usage[0], "--mode txt2vid") {
+	if len(skill.Scripts[0].Usage) != 1 || !strings.Contains(skill.Scripts[0].Usage[0], "--format markdown") {
 		t.Fatalf("应从 Usage 代码块提取命令模板，实际为: %+v", skill.Scripts[0].Usage)
 	}
 
-	detail, err := agenttools.ReadTelegramAgentSkill(ctx, cfg, telegramAgentToolCallArgs{Skill: "video-generation"})
+	detail, err := agenttools.ReadTelegramAgentSkill(ctx, cfg, telegramAgentToolCallArgs{Skill: "report-generation"})
 	if err != nil {
 		t.Fatalf("读取 Skill 失败: %v", err)
 	}
-	if !strings.Contains(detail, "推荐命令模板") || !strings.Contains(detail, "python3 scripts/generate_video.py --mode txt2vid --prompt \"<prompt>\"") {
+	if !strings.Contains(detail, "推荐命令模板") || !strings.Contains(detail, "python3 scripts/generate_report.py --format markdown --topic \"<topic>\"") {
 		t.Fatalf("Skill 详情应展示推荐命令模板，实际为: %s", detail)
 	}
 }

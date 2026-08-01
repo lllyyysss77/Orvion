@@ -4,7 +4,7 @@ Orvion 是一个多提供商 LLM 网关（Go + Gin），提供 OpenAI/Anthropic 
 
 ## 功能概览
 
-- 统一协议入口：`/v1/chat/completions`、`/v1/responses`、`/v1/embeddings`、`/v1/rerank`、`/v1/images/*`、`/v1/videos`、`/v1/messages`
+- 统一协议入口：`/v1/chat/completions`、`/v1/responses`、`/v1/embeddings`、`/v1/rerank`、`/v1/images/*`、`/v1/messages`
 - 多提供商编排：同一逻辑模型可绑定多个上游，支持权重与负载均衡策略
 - 熔断与自恢复：连续错误自动下线模型关联，冷却后自动恢复
 - 限流控制：支持按 API Key 的 RPM 控制（内存实现）
@@ -173,7 +173,6 @@ go run ./cmd/migrate_sqlite_to_mysql
 - `POST /v1/rerank`
 - `POST /v1/images/generations`
 - `POST /v1/images/edits`
-- `POST /v1/videos`
 - `POST /v1/messages`
 - `POST /v1/messages/count_tokens`
 

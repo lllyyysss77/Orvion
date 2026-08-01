@@ -51,7 +51,7 @@ func GetModels(c *gin.Context) {
 	if capability := strings.TrimSpace(c.Query("capability")); capability != "" {
 		capability = strings.ToLower(capability)
 		switch capability {
-		case "chat", "vision", "video", "embedding", "rerank":
+		case "chat", "vision", "embedding", "rerank":
 			query = query.Where("capabilities LIKE ?", fmt.Sprintf("%%\"%s\"%%", capability))
 		default:
 			common.BadRequest(c, "invalid capability filter")
@@ -376,7 +376,7 @@ func normalizeModelCapabilities(values []string) []string {
 	for _, raw := range values {
 		value := strings.ToLower(strings.TrimSpace(raw))
 		switch value {
-		case "chat", "vision", "video", "embedding", "rerank":
+		case "chat", "vision", "embedding", "rerank":
 		default:
 			continue
 		}

@@ -241,9 +241,6 @@ export default function ModelChatTestPage() {
       endpointSet.add("messages");
       endpointSet.add("responses");
     }
-    if (normalizedCapabilities.includes("video")) {
-      endpointSet.add("videos");
-    }
     if (normalizedCapabilities.includes("embedding")) {
       endpointSet.add("embeddings");
     }
@@ -602,7 +599,7 @@ export default function ModelChatTestPage() {
     );
   }
 
-  const endpointIsMedia = endpoint.startsWith("images/") || endpoint === "videos";
+  const endpointIsMedia = endpoint.startsWith("images/");
   const endpointBadge = endpointIsMedia ? "媒体测试" : "对话测试";
   const promptPlaceholder = endpoint === "embeddings"
     ? "请输入要生成向量的文本"

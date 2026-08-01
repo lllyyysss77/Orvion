@@ -687,6 +687,9 @@ func providersWithMetaByModel(ctx context.Context, endpoint string, model models
 		if err != nil {
 			return nil, err
 		}
+		if err := models.ResolveProviderProxyURLs(ctx, providers); err != nil {
+			return nil, err
+		}
 		providerMap = lo.KeyBy(providers, func(p models.Provider) uint { return p.ID })
 	}
 

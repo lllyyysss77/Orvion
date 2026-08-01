@@ -215,7 +215,7 @@ func resolveProviderStyleForEndpoint(chatModel *ChatModel, endpoint string) stri
 		return consts.StyleAnthropic
 	case "responses":
 		return consts.StyleOpenAIRes
-	case "images/generations", "images/edits", "videos":
+	case "images/generations", "images/edits":
 		return consts.StyleOpenAI
 	case "chat/completions":
 		if baseStyle == consts.StyleGemini {
@@ -517,10 +517,6 @@ func buildChatTestBody(style string, endpoint string, req ChatTestRequest, strea
 			return json.Marshal(payload)
 		case "images/edits":
 			return nil, fmt.Errorf("images/edits 使用 multipart 方式发送")
-		case "videos":
-			return json.Marshal(map[string]any{
-				"prompt": prompt,
-			})
 		case "messages":
 			return nil, fmt.Errorf("OpenAI 不支持 messages 端点")
 		default:
@@ -646,7 +642,7 @@ func resolveTestLogBeforer(style string, endpoint string) service.Beforer {
 	switch style {
 	case consts.StyleOpenAI:
 		switch endpoint {
-		case "images/generations", "images/edits", "videos":
+		case "images/generations", "images/edits":
 			return service.BeforerOpenAIMedia
 		default:
 			return service.BeforerOpenAI
@@ -781,9 +777,6 @@ func extractChatContent(style string, endpoint string, raw []byte) string {
 			}
 			return ""
 		}
-		if endpoint == "videos" {
-			return extractVideoContent(raw)
-		}
 		if endpoint == "responses" {
 			if out := gjson.GetBytes(raw, "output_text"); out.Exists() && out.String() != "" {
 				return out.String()
@@ -814,40 +807,6 @@ func extractChatContent(style string, endpoint string, raw []byte) string {
 	default:
 		return ""
 	}
-}
-
-func extractVideoContent(raw []byte) string {
-	for _, path := range []string{
-		"data.0.url",
-		"url",
-		"result.url",
-		"output.0.url",
-		"remixed_from_video_id",
-	} {
-		value := strings.TrimSpace(gjson.GetBytes(raw, path).String())
-		if value == "" {
-			continue
-		}
-		if strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") {
-			return value
-		}
-	}
-
-	status := strings.TrimSpace(gjson.GetBytes(raw, "status").String())
-	videoID := strings.TrimSpace(gjson.GetBytes(raw, "video_id").String())
-	if strings.EqualFold(status, "completed") {
-		if videoID != "" {
-			return fmt.Sprintf("视频已生成：%s", videoID)
-		}
-		return "视频已生成"
-	}
-	if videoID != "" {
-		if status == "" {
-			status = "unknown"
-		}
-		return fmt.Sprintf("视频任务状态：%s（%s）", status, videoID)
-	}
-	return ""
 }
 
 func extractChatImagePreview(style string, endpoint string, raw []byte) string {
@@ -885,8 +844,6 @@ func normalizeTestEndpoint(raw string) string {
 		return "images/generations"
 	case "images/edits":
 		return "images/edits"
-	case "videos":
-		return "videos"
 	default:
 		return ""
 	}
@@ -1280,6 +1237,9 @@ func FindChatModel(ctx context.Context, id string) (*ChatModel, error) {
 	// Get the Provider
 	provider, err := gorm.G[models.Provider](models.DB).Where("id = ?", modelWithProvider.ProviderID).First(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := models.ResolveProviderProxyURL(ctx, &provider); err != nil {
 		return nil, err
 	}
 

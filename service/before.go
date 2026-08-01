@@ -36,7 +36,7 @@ func (b Before) WithModel(model string) (Before, error) {
 	return b, nil
 }
 
-// BeforerOpenAIMedia 仅用于图像/视频类接口，要求 model 字段存在。
+// BeforerOpenAIMedia 用于图像类接口，要求 model 字段存在。
 // 这些接口不使用 stream、tools 等字段，直接透传原始请求体。
 func BeforerOpenAIMedia(data []byte) (*Before, error) {
 	model := gjson.GetBytes(data, "model").String()

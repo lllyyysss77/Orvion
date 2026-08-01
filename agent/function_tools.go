@@ -284,9 +284,6 @@ func telegramAgentToolStatusLabel(name string, args telegramAgentToolCallArgs) s
 
 func telegramAgentToolStatusAction(name string, args telegramAgentToolCallArgs) (string, string) {
 	if name == telegramAgentToolRunTerminalCommand {
-		if telegramAgentToolLooksLikeVideoGeneration(args) {
-			return "正在生成视频", telegramAgentToolGenerationPrompt(args)
-		}
 		if telegramAgentToolLooksLikeImageGeneration(args) {
 			return "正在生成图片", telegramAgentToolGenerationPrompt(args)
 		}
@@ -316,8 +313,6 @@ func telegramAgentToolStatusAction(name string, args telegramAgentToolCallArgs) 
 func telegramAgentToolStatusCategory(name string, args telegramAgentToolCallArgs) string {
 	if name == telegramAgentToolRunTerminalCommand {
 		switch {
-		case telegramAgentToolLooksLikeVideoGeneration(args):
-			return "视频生成"
 		case telegramAgentToolLooksLikeImageGeneration(args):
 			return "图片生成"
 		case telegramAgentToolLooksLikeSearch(args):
@@ -351,8 +346,6 @@ func telegramAgentToolStatusHint(category string) string {
 	switch category {
 	case "图片生成":
 		return "生成完成后会直接把图片发送到当前对话。"
-	case "视频生成":
-		return "视频生成可能较慢，完成后会继续整理结果。"
 	case "搜索检索":
 		return "拿到结果后会筛选关键信息，再继续给出结论。"
 	case "日志排查":
@@ -447,13 +440,6 @@ func telegramAgentToolLooksLikeImageGeneration(args telegramAgentToolCallArgs) b
 	return telegramAgentToolStatusTextContains(args,
 		"image", "images", "img", "txt2img", "img2img", "z-image", "stable-diffusion", "sdxl", "flux",
 		"图片", "图像", "生图", "绘图", "画图",
-	)
-}
-
-func telegramAgentToolLooksLikeVideoGeneration(args telegramAgentToolCallArgs) bool {
-	return telegramAgentToolStatusTextContains(args,
-		"video", "vedio", "txt2vid", "img2vid", "text-to-video", "image-to-video", "generate_video", "agnes-video", "sora", "veo", "wan",
-		"视频", "生视频", "生成视频",
 	)
 }
 

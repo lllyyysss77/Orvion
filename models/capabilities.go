@@ -70,7 +70,7 @@ func sanitizeCapabilities(values []string) ModelCapabilities {
 	for _, raw := range values {
 		value := strings.ToLower(strings.TrimSpace(raw))
 		switch value {
-		case "chat", "vision", "video", "embedding", "rerank":
+		case "chat", "vision", "embedding", "rerank":
 		default:
 			continue
 		}
@@ -157,7 +157,7 @@ func sanitizeProviderCapabilities(values []string) ProviderCapabilities {
 
 func ResolveRequiredProviderCapability(endpoint string) string {
 	switch strings.ToLower(strings.TrimSpace(endpoint)) {
-	case "chat", "chat/completions", "chat_completions", "embeddings", "rerank", "images", "videos":
+	case "chat", "chat/completions", "chat_completions", "embeddings", "rerank", "images":
 		return ProviderCapabilityChat
 	case "responses":
 		return ProviderCapabilityOpenAI

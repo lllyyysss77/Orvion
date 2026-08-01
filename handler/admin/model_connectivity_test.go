@@ -30,7 +30,7 @@ func TestModelConnectivitySupportsChat(t *testing.T) {
 	if !modelConnectivitySupportsChat(models.ModelCapabilities{"chat", "vision"}) {
 		t.Fatal("包含 chat 能力时应允许连通性测试")
 	}
-	if modelConnectivitySupportsChat(models.ModelCapabilities{"video"}) {
+	if modelConnectivitySupportsChat(models.ModelCapabilities{"embedding"}) {
 		t.Fatal("非对话模型不应使用对话连通性测试")
 	}
 }

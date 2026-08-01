@@ -19,6 +19,7 @@ import {
   KeyRound,
   LogOut,
   MessageSquareText,
+  Network,
   PanelLeft,
   ScrollText,
   Settings2,
@@ -63,6 +64,7 @@ const navSections = [
     items: [
       { to: "/providers", label: "提供商", icon: Cloud },
       { to: "/models", label: "模型", icon: Boxes },
+      { to: "/proxies", label: "代理列表", icon: Network },
       { to: "/auth-keys", label: "API 密钥", icon: KeyRound },
     ],
   },

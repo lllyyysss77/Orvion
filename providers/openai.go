@@ -46,7 +46,7 @@ func (o *OpenAI) BuildReq(ctx context.Context, header http.Header, model string,
 			}
 		}
 	} else if normalizedEndpoint != "" {
-		// 允许通过上下文覆盖 OpenAI 目标路径，如 images/generations、images/edits、videos
+		// 允许通过上下文覆盖 OpenAI 目标路径，如 images/generations、images/edits
 		path = normalizedEndpoint
 	}
 	base := strings.TrimRight(o.BaseURL, "/")

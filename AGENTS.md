@@ -27,7 +27,7 @@ make all       # make webui && make run
 
 ### Request flow (`/v1/*`)
 
-1. `router.go` mounts OpenAI-style handlers (`/v1/chat/completions`, `/responses`, `/embeddings`, `/rerank`, `/images/*`, `/videos`) behind `middleware.AuthOpenAI`, and Anthropic-style handlers (`/v1/messages`, `/v1/messages/count_tokens`) behind `middleware.AuthAnthropic`. Auth accepts either the admin `TOKEN` or an `AuthKey` row.
+1. `router.go` mounts OpenAI-style handlers (`/v1/chat/completions`, `/responses`, `/embeddings`, `/rerank`, `/images/*`) behind `middleware.AuthOpenAI`, and Anthropic-style handlers (`/v1/messages`, `/v1/messages/count_tokens`) behind `middleware.AuthAnthropic`. Auth accepts either the admin `TOKEN` or an `AuthKey` row.
 2. `handler/chat.go::chatHandler` is the shared entry point. Each protocol passes its own `service.Beforer` (parses request, flags stream/tool/image/structured) and `service.Processer` (parses upstream response, extracts usage).
 3. `service.ProvidersWithMetaBymodelsName` resolves the logical `Model` → enabled `ModelWithProvider` rows → `Provider` rows, and returns `WeightItems`, `MaxRetry`, `TimeOut`, `Strategy`, `Breaker`, `IOLog`.
 4. `service.BalanceChatWithLimiter` (`service/chat.go`) drives the retry loop:

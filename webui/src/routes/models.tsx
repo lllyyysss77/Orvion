@@ -67,7 +67,6 @@ import {
   Trash2,
   Coins,
   Eye,
-  Video,
   Layers,
   ArrowUpDown,
   MessageSquare,
@@ -81,7 +80,7 @@ import {
 import { cn } from "@/lib/utils";
 import { resolveModelIcon } from "@/lib/model-icon";
 
-const capabilityValues = ["chat", "vision", "video", "embedding", "rerank"] as const;
+const capabilityValues = ["chat", "vision", "embedding", "rerank"] as const;
 type ModelCapability = (typeof capabilityValues)[number];
 type ModelColumnKey = "model" | "input" | "output" | "capabilities" | "connectivity" | "status" | "actions";
 type ModelGridStyle = CSSProperties & { "--model-cols": string };
@@ -209,13 +208,6 @@ const capabilityOptions: {
     icon: Eye,
     activeClass: "bg-emerald-50 text-emerald-700 border-emerald-200",
     iconClass: "text-emerald-500",
-  },
-  {
-    value: "video",
-    label: "视频",
-    icon: Video,
-    activeClass: "bg-purple-50 text-purple-700 border-purple-200",
-    iconClass: "text-purple-500",
   },
   {
     value: "embedding",

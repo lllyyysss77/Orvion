@@ -8,7 +8,9 @@ export interface Provider {
   Name: string;
   Config: string;
   Console: string;
+  ProxyID?: number | null;
   ProxyURL?: string | null;
+  ProxyName?: string | null;
   ModelsFetchMode?: "v1_models" | "api_pricing" | string;
   Capabilities?: string[] | null;
   Status?: number | boolean | null;
@@ -17,6 +19,23 @@ export interface Provider {
   ProviderEnabled?: boolean;
   ProviderModelCount?: number;
   EnabledProviderModelCount?: number;
+}
+
+export interface Proxy {
+  ID: number;
+  CreatedAt: string;
+  UpdatedAt: string;
+  Name: string;
+  ProxyURL: string;
+  UsageCount?: number;
+}
+
+export interface ProxyRegionCheckResult {
+  ip: string;
+  country: string;
+  country_code: string;
+  region: string;
+  city: string;
 }
 
 export interface Model {
@@ -435,6 +454,7 @@ export async function createProvider(provider: {
   name: string;
   config: string;
   console: string;
+  proxy_id?: number;
   proxy_url?: string;
   models_fetch_mode?: "v1_models" | "api_pricing";
   capabilities?: string[];
@@ -451,6 +471,7 @@ export async function updateProvider(id: number, provider: {
   name?: string;
   config?: string;
   console?: string;
+  proxy_id?: number;
   proxy_url?: string;
   models_fetch_mode?: "v1_models" | "api_pricing";
   capabilities?: string[];
@@ -461,6 +482,32 @@ export async function updateProvider(id: number, provider: {
     method: 'PUT',
     body: JSON.stringify(provider),
   });
+}
+
+export async function getProxies(): Promise<Proxy[]> {
+  return apiRequest<Proxy[]>('/proxies');
+}
+
+export async function createProxy(proxy: { name: string; proxy_url: string }): Promise<Proxy> {
+  return apiRequest<Proxy>('/proxies', {
+    method: 'POST',
+    body: JSON.stringify(proxy),
+  });
+}
+
+export async function updateProxy(id: number, proxy: { name: string; proxy_url: string }): Promise<Proxy> {
+  return apiRequest<Proxy>(`/proxies/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(proxy),
+  });
+}
+
+export async function deleteProxy(id: number): Promise<void> {
+	await apiRequest<void>(`/proxies/${id}`, { method: 'DELETE' });
+}
+
+export async function checkProxyRegion(id: number): Promise<ProxyRegionCheckResult> {
+  return apiRequest<ProxyRegionCheckResult>(`/proxies/${id}/region-check`, { method: 'POST' });
 }
 
 export async function updateProviderStatus(id: number, status: boolean): Promise<Provider> {

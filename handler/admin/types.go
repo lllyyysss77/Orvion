@@ -11,6 +11,7 @@ type ProviderRequest struct {
 	Name            string   `json:"name"`
 	Config          string   `json:"config"`
 	Console         string   `json:"console"`
+	ProxyID         uint     `json:"proxy_id"`
 	ProxyURL        string   `json:"proxy_url"`
 	ModelsFetchMode string   `json:"models_fetch_mode"`
 	Capabilities    []string `json:"capabilities"`
@@ -25,9 +26,20 @@ type ProviderStatusRequest struct {
 
 type ProviderListItem struct {
 	models.Provider
-	ProviderEnabled           bool `json:"ProviderEnabled"`
-	ProviderModelCount        int  `json:"ProviderModelCount"`
-	EnabledProviderModelCount int  `json:"EnabledProviderModelCount"`
+	ProxyName                 string `json:"ProxyName"`
+	ProviderEnabled           bool   `json:"ProviderEnabled"`
+	ProviderModelCount        int    `json:"ProviderModelCount"`
+	EnabledProviderModelCount int    `json:"EnabledProviderModelCount"`
+}
+
+type ProxyRequest struct {
+	Name     string `json:"name"`
+	ProxyURL string `json:"proxy_url"`
+}
+
+type ProxyListItem struct {
+	models.Proxy
+	UsageCount int64 `json:"UsageCount"`
 }
 
 const (

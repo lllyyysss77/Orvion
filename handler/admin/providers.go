@@ -91,11 +91,24 @@ func buildProviderListItems(ctx context.Context, providers []models.Provider) []
 	for _, row := range rows {
 		statsByProviderID[row.ProviderID] = row
 	}
+	proxyNames := make(map[uint]string)
+	proxyIDs := lo.Uniq(lo.FilterMap(providers, func(provider models.Provider, _ int) (uint, bool) {
+		return provider.ProxyID, provider.ProxyID > 0
+	}))
+	if len(proxyIDs) > 0 {
+		var proxies []models.Proxy
+		if err := models.DB.WithContext(ctx).Where("id IN ?", proxyIDs).Find(&proxies).Error; err == nil {
+			for _, proxy := range proxies {
+				proxyNames[proxy.ID] = proxy.Name
+			}
+		}
+	}
 
 	for _, provider := range providers {
 		stats := statsByProviderID[provider.ID]
 		items = append(items, ProviderListItem{
 			Provider:                  provider,
+			ProxyName:                 proxyNames[provider.ProxyID],
 			ProviderEnabled:           provider.Status != 0,
 			ProviderModelCount:        stats.TotalCount,
 			EnabledProviderModelCount: stats.EnabledCount,
@@ -108,6 +121,10 @@ func GetProviderModels(c *gin.Context) {
 	id := c.Param("id")
 	provider, err := gorm.G[models.Provider](models.DB).Where("id = ?", id).First(c.Request.Context())
 	if err != nil {
+		common.InternalServerError(c, err.Error())
+		return
+	}
+	if err := models.ResolveProviderProxyURL(c.Request.Context(), &provider); err != nil {
 		common.InternalServerError(c, err.Error())
 		return
 	}
@@ -335,12 +352,29 @@ func sanitizeProviderProxyURL(raw string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if strings.TrimSpace(parsed.Host) == "" {
+		return "", errors.New("proxy URL must include host")
+	}
 	switch strings.ToLower(strings.TrimSpace(parsed.Scheme)) {
 	case "http", "https", "socks5":
 		return proxyURL, nil
 	default:
 		return "", fmt.Errorf("unsupported proxy scheme: %s", parsed.Scheme)
 	}
+}
+
+func resolveProviderProxy(ctx context.Context, proxyID uint, legacyProxyURL string) (string, error) {
+	if proxyID == 0 {
+		return sanitizeProviderProxyURL(legacyProxyURL)
+	}
+	proxy, err := gorm.G[models.Proxy](models.DB).Where("id = ?", proxyID).First(ctx)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", fmt.Errorf("proxy_id %d does not exist", proxyID)
+		}
+		return "", err
+	}
+	return proxy.ProxyURL, nil
 }
 
 // CreateProvider 创建提供商
@@ -350,7 +384,7 @@ func CreateProvider(c *gin.Context) {
 		common.BadRequest(c, "Invalid request body: "+err.Error())
 		return
 	}
-	proxyURL, err := sanitizeProviderProxyURL(req.ProxyURL)
+	proxyURL, err := resolveProviderProxy(c.Request.Context(), req.ProxyID, req.ProxyURL)
 	if err != nil {
 		common.BadRequest(c, "Invalid proxy_url: "+err.Error())
 		return
@@ -397,6 +431,7 @@ func CreateProvider(c *gin.Context) {
 		Name:                       req.Name,
 		Config:                     normalizedConfig,
 		Console:                    req.Console,
+		ProxyID:                    req.ProxyID,
 		ProxyURL:                   proxyURL,
 		ModelsFetchMode:            normalizeModelsFetchMode(req.ModelsFetchMode),
 		Capabilities:               normalizedCapabilities,
@@ -427,7 +462,7 @@ func UpdateProvider(c *gin.Context) {
 		common.BadRequest(c, "Invalid request body: "+err.Error())
 		return
 	}
-	proxyURL, err := sanitizeProviderProxyURL(req.ProxyURL)
+	proxyURL, err := resolveProviderProxy(c.Request.Context(), req.ProxyID, req.ProxyURL)
 	if err != nil {
 		common.BadRequest(c, "Invalid proxy_url: "+err.Error())
 		return
@@ -472,6 +507,7 @@ func UpdateProvider(c *gin.Context) {
 		"name":                         req.Name,
 		"config":                       normalizedConfig,
 		"console":                      req.Console,
+		"proxy_id":                     req.ProxyID,
 		"proxy_url":                    proxyURL,
 		"models_fetch_mode":            normalizeModelsFetchMode(req.ModelsFetchMode),
 		"capabilities":                 normalizedCapabilities,

@@ -74,14 +74,6 @@ func ImagesEditsHandler(c *gin.Context) {
 	chatHandler(c, service.BeforerOpenAIMedia, service.ProcesserOpenAI, consts.StyleOpenAI, consts.StyleOpenAI, "images")
 }
 
-// VideosHandler 转发 OpenAI 兼容 videos 接口:
-// POST /v1/videos
-func VideosHandler(c *gin.Context) {
-	ctx := context.WithValue(c.Request.Context(), consts.ContextKeyOpenAIEndpoint, "videos")
-	c.Request = c.Request.WithContext(ctx)
-	chatHandler(c, service.BeforerOpenAIMedia, service.ProcesserOpenAI, consts.StyleOpenAI, consts.StyleOpenAI, "videos")
-}
-
 func resolveRequestPath(c *gin.Context) string {
 	if c == nil {
 		return ""
@@ -195,18 +187,6 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 				streamErr = readErr
 				slog.Error("read response body", "err", readErr)
 				return
-			}
-			if endpoint == "videos" {
-				proxyURL := resolveVideoPollProxyURL(effectiveProvidersWithMeta, log)
-				polledBody, pollErr := waitForOpenAIVideoCompletion(ctx, res.Request, body, proxyURL)
-				if pollErr != nil {
-					slog.Warn("视频任务轮询失败，回退当前响应",
-						"error", pollErr,
-						"model", log.Name,
-						"provider", log.ProviderName,
-					)
-				}
-				body = polledBody
 			}
 			normalized := runtimesvc.NormalizeOpenAIChatCompletionPayload(body, false)
 			writeHeader(c, false, openAINonStreamHeader(res.Header), logStyle)
