@@ -319,6 +319,7 @@ retryLoop:
 					ChatIO:              ioLog,
 					Retry:               retry,
 					ProxyTimeMs:         int(time.Since(start).Milliseconds()),
+					TrafficBytes:        int64(len(before.raw)),
 				}
 
 				client, clientErr := providers.GetClientWithProxy(responseHeaderTimeout, provider.ProxyURL)
@@ -510,6 +511,7 @@ func RecordLog(ctx context.Context, reqStart time.Time, upstreamFirstChunkMs int
 		if log.Size == 0 {
 			log.Size = runtimesvc.EstimateOutputSize(output)
 		}
+		log.TrafficBytes = int64(len(before.raw)) + int64(log.Size)
 		// 对齐 Aether fallback：仅当 usage 完全缺失时，才做估算兜底，避免覆盖已解析的真实值。
 		if log.Usage.PromptTokens == 0 && log.Usage.CompletionTokens == 0 && log.Usage.TotalTokens == 0 {
 			fallback := estimateUsageFromIO(style, before.Model, before.raw, output)

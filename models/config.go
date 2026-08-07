@@ -35,6 +35,8 @@ const (
 	KeyTelegramDailyUsageReportLastSentDate = "tg_daily_usage_report_last_sent_date"
 	// KeyTelegramAgent TG 流式对话 Agent 配置。
 	KeyTelegramAgent = "telegram_agent"
+	// KeyProxyHealthCheck 代理自动健康检查配置。
+	KeyProxyHealthCheck = "proxy_health_check"
 )
 
 type AnthropicCountTokens struct {
@@ -98,6 +100,12 @@ type ModelPriceSyncConfig struct {
 type SystemLogCleanupConfig struct {
 	Enabled         bool `json:"enabled"`
 	IntervalMinutes int  `json:"interval_minutes"`
+}
+
+type ProxyHealthCheckConfig struct {
+	Enabled         bool `json:"enabled"`
+	IntervalMinutes int  `json:"interval_minutes"`
+	Concurrency     int  `json:"concurrency"`
 }
 
 type GitHubVersionCheckConfig struct {

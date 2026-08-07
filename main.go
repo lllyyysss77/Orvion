@@ -20,6 +20,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/racio/orvion/consts"
 	"github.com/racio/orvion/handler"
+	adminhandler "github.com/racio/orvion/handler/admin"
 	"github.com/racio/orvion/limiter"
 	"github.com/racio/orvion/models"
 	"github.com/racio/orvion/pkg/logutil"
@@ -201,6 +202,7 @@ func startBackgroundWorkers(ctx context.Context) {
 	service.StartPriceSync(ctx)
 	service.StartSystemLogCleanup(ctx)
 	service.StartModelProviderAutoRecovery(ctx)
+	adminhandler.StartProxyHealthCheck(ctx)
 	service.StartTelegramCommandBot(ctx)
 	service.StartTelegramDailyUsageReport(ctx)
 	service.StartTelegramAgentScheduledTasks(ctx)

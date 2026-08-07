@@ -60,6 +60,7 @@ func TestProxyUpdateSyncsProviderAndDeleteRejectsUsage(t *testing.T) {
 	proxy := models.Proxy{
 		Name: "旧节点", ProxyURL: "http://127.0.0.1:7890",
 		ExitIP: "203.0.113.1", ExitCountry: "Japan", RegionCheckedAt: &now,
+		HealthStatus: 1, LatencyMS: 88, SuccessRate: 100, CheckSuccesses: 3, CheckTotal: 3,
 	}
 	if err := db.Create(&proxy).Error; err != nil {
 		t.Fatalf("创建代理失败: %v", err)
@@ -93,8 +94,8 @@ func TestProxyUpdateSyncsProviderAndDeleteRejectsUsage(t *testing.T) {
 	if err := db.First(&proxy, proxyID).Error; err != nil {
 		t.Fatalf("读取更新后代理失败: %v", err)
 	}
-	if proxy.ExitIP != "" || proxy.ExitCountry != "" || proxy.RegionCheckedAt != nil {
-		t.Fatalf("编辑代理后应清空旧地区结果: %+v", proxy)
+	if proxy.ExitIP != "" || proxy.ExitCountry != "" || proxy.RegionCheckedAt != nil || proxy.HealthStatus != 0 || proxy.LatencyMS != 0 || proxy.SuccessRate != 0 || proxy.CheckSuccesses != 0 || proxy.CheckTotal != 0 {
+		t.Fatalf("编辑代理后应清空旧检查结果: %+v", proxy)
 	}
 
 	rec = httptest.NewRecorder()
@@ -104,16 +105,16 @@ func TestProxyUpdateSyncsProviderAndDeleteRejectsUsage(t *testing.T) {
 	}
 }
 
-func TestSaveProxyRegionCheckOverwritesStoredResult(t *testing.T) {
+func TestSaveProxyCheckOverwritesStoredResult(t *testing.T) {
 	db := setupProviderAdminTestDB(t, "admin_proxy_region_persistence")
 	proxy := models.Proxy{Name: "节点", ProxyURL: "http://127.0.0.1:7890"}
 	if err := db.Create(&proxy).Error; err != nil {
 		t.Fatalf("创建代理失败: %v", err)
 	}
 
-	result, err := saveProxyRegionCheck(context.Background(), proxy.ID, providerProxyExitInfo{
+	result, err := saveProxyCheck(context.Background(), proxy.ID, providerProxyExitInfo{
 		IP: "203.0.113.8", Country: "Japan", CountryCode: "JP", Region: "Tokyo", City: "Shinjuku",
-	}, nil)
+	}, nil, proxyAvailabilityResult{Available: true, LatencyMS: 120, Successes: 3, Total: 3})
 	if err != nil {
 		t.Fatalf("保存成功结果失败: %v", err)
 	}
@@ -125,11 +126,27 @@ func TestSaveProxyRegionCheckOverwritesStoredResult(t *testing.T) {
 	if err := db.First(&proxy, proxyID).Error; err != nil {
 		t.Fatalf("读取代理失败: %v", err)
 	}
-	if proxy.ExitIP != "203.0.113.8" || proxy.ExitRegion != "Tokyo" || proxy.RegionCheckedAt == nil {
+	if proxy.ExitIP != "203.0.113.8" || proxy.ExitRegion != "Tokyo" || proxy.RegionCheckedAt == nil || proxy.HealthStatus != 1 || proxy.LatencyMS != 120 || proxy.SuccessRate != 100 {
 		t.Fatalf("地区结果未持久化: %+v", proxy)
 	}
 
-	result, err = saveProxyRegionCheck(context.Background(), proxy.ID, providerProxyExitInfo{}, errors.New("代理连接失败"))
+	partialErr := errors.New("第 3 次连接超时")
+	result, err = saveProxyCheck(context.Background(), proxy.ID, providerProxyExitInfo{
+		IP: "203.0.113.8", Country: "Japan", CountryCode: "JP", Region: "Tokyo", City: "Shinjuku",
+	}, nil, proxyAvailabilityResult{Available: true, LatencyMS: 135, Successes: 2, Total: 3, Error: partialErr})
+	if err != nil {
+		t.Fatalf("保存部分成功结果失败: %v", err)
+	}
+	proxy = models.Proxy{}
+	if err := db.First(&proxy, proxyID).Error; err != nil {
+		t.Fatalf("读取部分成功后的代理失败: %v", err)
+	}
+	if !result.Available || proxy.HealthStatus != 1 || proxy.CheckSuccesses != 2 || proxy.CheckTotal != 3 || proxy.SuccessRate < 66 || !strings.Contains(proxy.RegionCheckError, partialErr.Error()) {
+		t.Fatalf("部分成功结果未完整持久化: result=%+v proxy=%+v", result, proxy)
+	}
+
+	checkErr := errors.New("代理连接失败")
+	result, err = saveProxyCheck(context.Background(), proxy.ID, providerProxyExitInfo{}, checkErr, proxyAvailabilityResult{Total: 3, Error: checkErr})
 	if err != nil {
 		t.Fatalf("保存失败结果失败: %v", err)
 	}
@@ -137,7 +154,7 @@ func TestSaveProxyRegionCheckOverwritesStoredResult(t *testing.T) {
 	if err := db.First(&proxy, proxyID).Error; err != nil {
 		t.Fatalf("读取失败后的代理失败: %v", err)
 	}
-	if result.Error == "" || proxy.ExitIP != "" || proxy.ExitRegion != "" || proxy.RegionCheckError != "代理连接失败" {
+	if result.Error == "" || proxy.ExitIP != "" || proxy.ExitRegion != "" || !strings.Contains(proxy.RegionCheckError, "代理连接失败") || proxy.HealthStatus != 0 || proxy.SuccessRate != 0 {
 		t.Fatalf("失败结果未覆盖旧地区: result=%+v proxy=%+v", result, proxy)
 	}
 }

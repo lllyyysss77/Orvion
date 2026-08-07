@@ -53,6 +53,7 @@ var (
 		"chunk_time_ms",
 		"tps",
 		"size",
+		"traffic_bytes",
 		"prompt_tokens",
 		"completion_tokens",
 		"total_tokens",
@@ -137,6 +138,11 @@ type ChatLogAuthKeyCountRow struct {
 type ChatLogProviderUsageRow struct {
 	ProviderName string `gorm:"column:provider_name"`
 	UsageCount   int64  `gorm:"column:usage_count"`
+}
+
+type ChatLogProxyTrafficRow struct {
+	ProxyID      uint  `gorm:"column:proxy_id"`
+	TrafficBytes int64 `gorm:"column:traffic_bytes"`
 }
 
 type ChatLogProviderSuccessStat struct {
@@ -743,6 +749,30 @@ func QueryChatLogProviderUsage(ctx context.Context, scope ChatLogQueryScope, whe
 		   FROM (`+union.SQL+`) AS logs`+normalizeWhereSQL(whereSQL)+`
 		  GROUP BY provider_name`,
 		args...,
+	).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func QueryChatLogProxyTraffic(ctx context.Context, startAt time.Time, endAt time.Time) ([]ChatLogProxyTrafficRow, error) {
+	scope := ChatLogQueryScope{StartAt: &startAt, EndAt: &endAt}
+	union, err := BuildChatLogUnionQuery(scope, "created_at, model_with_provider_id, traffic_bytes")
+	if err != nil || union.SQL == "" {
+		return []ChatLogProxyTrafficRow{}, err
+	}
+	rows := make([]ChatLogProxyTrafficRow, 0)
+	if err := DB.WithContext(ctx).Raw(
+		`SELECT providers.proxy_id, COALESCE(SUM(logs.traffic_bytes), 0) AS traffic_bytes
+		   FROM (`+union.SQL+`) AS logs
+		   JOIN model_with_providers ON model_with_providers.id = logs.model_with_provider_id
+		   JOIN providers ON providers.id = model_with_providers.provider_id
+		  WHERE logs.created_at >= ?
+		    AND logs.created_at < ?
+		    AND providers.proxy_id > 0
+		  GROUP BY providers.proxy_id`,
+		startAt,
+		endAt,
 	).Scan(&rows).Error; err != nil {
 		return nil, err
 	}

@@ -34,7 +34,13 @@ export interface Proxy {
   ExitCity?: string;
   RegionCheckedAt?: string | null;
   RegionCheckError?: string;
+  HealthStatus?: number;
+  LatencyMS?: number;
+  SuccessRate?: number;
+  CheckSuccesses?: number;
+  CheckTotal?: number;
   UsageCount?: number;
+  TrafficBytes?: number;
 }
 
 export interface ProxyRegionCheckResult {
@@ -45,6 +51,11 @@ export interface ProxyRegionCheckResult {
   city: string;
   checked_at: string;
   error?: string;
+  available: boolean;
+  latency_ms: number;
+  success_rate: number;
+  successes: number;
+  total: number;
 }
 
 export interface Model {
@@ -515,8 +526,8 @@ export async function deleteProxy(id: number): Promise<void> {
 	await apiRequest<void>(`/proxies/${id}`, { method: 'DELETE' });
 }
 
-export async function checkProxyRegion(id: number): Promise<ProxyRegionCheckResult> {
-  return apiRequest<ProxyRegionCheckResult>(`/proxies/${id}/region-check`, { method: 'POST' });
+export async function checkProxyRegion(id: number, signal?: AbortSignal): Promise<ProxyRegionCheckResult> {
+  return apiRequest<ProxyRegionCheckResult>(`/proxies/${id}/region-check`, { method: 'POST', signal });
 }
 
 export async function updateProviderStatus(id: number, status: boolean): Promise<Provider> {
@@ -1235,6 +1246,12 @@ export interface ModelPriceSyncConfig {
 export interface SystemLogCleanupConfig {
   enabled: boolean;
   interval_minutes: number;
+}
+
+export interface ProxyHealthCheckConfig {
+  enabled: boolean;
+  interval_minutes: number;
+  concurrency: number;
 }
 
 export interface GitHubVersionCheckConfig {

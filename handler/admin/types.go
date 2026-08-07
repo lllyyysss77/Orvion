@@ -39,7 +39,8 @@ type ProxyRequest struct {
 
 type ProxyListItem struct {
 	models.Proxy
-	UsageCount int64 `json:"UsageCount"`
+	UsageCount   int64 `json:"UsageCount"`
+	TrafficBytes int64 `json:"TrafficBytes"`
 }
 
 const (

@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"errors"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -17,6 +18,14 @@ import (
 
 const proxyRegionCheckTimeout = 20 * time.Second
 
+const proxyAvailabilitySamples = 3
+
+var proxyAvailabilityTarget = providerProxyTestTarget{
+	Key:  "cloudflare",
+	Name: "Cloudflare",
+	URL:  "https://www.cloudflare.com/cdn-cgi/trace",
+}
+
 type ProxyRegionCheckResult struct {
 	IP          string    `json:"ip"`
 	Country     string    `json:"country"`
@@ -25,6 +34,19 @@ type ProxyRegionCheckResult struct {
 	City        string    `json:"city"`
 	CheckedAt   time.Time `json:"checked_at"`
 	Error       string    `json:"error,omitempty"`
+	Available   bool      `json:"available"`
+	LatencyMS   int64     `json:"latency_ms"`
+	SuccessRate float64   `json:"success_rate"`
+	Successes   int       `json:"successes"`
+	Total       int       `json:"total"`
+}
+
+type proxyAvailabilityResult struct {
+	Available bool
+	LatencyMS int64
+	Successes int
+	Total     int
+	Error     error
 }
 
 func sanitizeManagedProxyURL(raw string) (string, error) {
@@ -92,9 +114,25 @@ func GetProxies(c *gin.Context) {
 		usageByProxyID[row.ProxyID] = row.UsageCount
 	}
 
+	now := time.Now()
+	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	trafficRows, err := models.QueryChatLogProxyTraffic(ctx, startOfDay, startOfDay.AddDate(0, 0, 1))
+	if err != nil {
+		common.InternalServerError(c, err.Error())
+		return
+	}
+	trafficByProxyID := make(map[uint]int64, len(trafficRows))
+	for _, row := range trafficRows {
+		trafficByProxyID[row.ProxyID] = row.TrafficBytes
+	}
+
 	items := make([]ProxyListItem, 0, len(proxies))
 	for _, proxy := range proxies {
-		items = append(items, ProxyListItem{Proxy: proxy, UsageCount: usageByProxyID[proxy.ID]})
+		items = append(items, ProxyListItem{
+			Proxy:        proxy,
+			UsageCount:   usageByProxyID[proxy.ID],
+			TrafficBytes: trafficByProxyID[proxy.ID],
+		})
 	}
 	common.Success(c, items)
 }
@@ -178,6 +216,11 @@ func UpdateProxy(c *gin.Context) {
 			updates["exit_city"] = ""
 			updates["region_checked_at"] = nil
 			updates["region_check_error"] = ""
+			updates["health_status"] = 0
+			updates["latency_ms"] = 0
+			updates["success_rate"] = 0
+			updates["check_successes"] = 0
+			updates["check_total"] = 0
 		}
 		if err := tx.Model(&models.Proxy{}).Where("id = ?", id).Updates(updates).Error; err != nil {
 			return err
@@ -241,18 +284,7 @@ func CheckProxyRegion(c *gin.Context) {
 		common.InternalServerError(c, err.Error())
 		return
 	}
-	client, err := providers.GetClientWithProxy(providerProxyExitLookupTimeout, proxy.ProxyURL)
-	if err != nil {
-		result, saveErr := saveProxyRegionCheck(ctx, proxy.ID, providerProxyExitInfo{}, err)
-		if saveErr != nil {
-			common.InternalServerError(c, saveErr.Error())
-			return
-		}
-		common.Success(c, result)
-		return
-	}
-	info, err := lookupProviderProxyExit(ctx, client)
-	result, saveErr := saveProxyRegionCheck(ctx, proxy.ID, info, err)
+	result, saveErr := checkProxy(ctx, proxy)
 	if saveErr != nil {
 		common.InternalServerError(c, saveErr.Error())
 		return
@@ -260,7 +292,57 @@ func CheckProxyRegion(c *gin.Context) {
 	common.Success(c, result)
 }
 
-func saveProxyRegionCheck(ctx context.Context, proxyID uint, info providerProxyExitInfo, checkErr error) (ProxyRegionCheckResult, error) {
+func checkProxy(ctx context.Context, proxy models.Proxy) (ProxyRegionCheckResult, error) {
+	client, err := providers.GetClientWithProxy(providerProxyExitLookupTimeout, proxy.ProxyURL)
+	if err != nil {
+		return saveProxyCheck(ctx, proxy.ID, providerProxyExitInfo{}, err, proxyAvailabilityResult{
+			Total: proxyAvailabilitySamples, Error: err,
+		})
+	}
+	type regionLookupResult struct {
+		info providerProxyExitInfo
+		err  error
+	}
+	regionResultCh := make(chan regionLookupResult, 1)
+	go func() {
+		info, lookupErr := lookupProviderProxyExit(ctx, client)
+		regionResultCh <- regionLookupResult{info: info, err: lookupErr}
+	}()
+	health := checkProxyAvailability(ctx, client)
+	regionResult := <-regionResultCh
+	result, saveErr := saveProxyCheck(ctx, proxy.ID, regionResult.info, regionResult.err, health)
+	return result, saveErr
+}
+
+func checkProxyAvailability(ctx context.Context, client *http.Client) proxyAvailabilityResult {
+	result := proxyAvailabilityResult{Total: proxyAvailabilitySamples}
+	var latencyTotal int64
+	var lastErr error
+	for index := 0; index < proxyAvailabilitySamples; index++ {
+		if ctx.Err() != nil {
+			lastErr = ctx.Err()
+			break
+		}
+		sample := testProviderProxyTargetSample(ctx, client, proxyAvailabilityTarget, index)
+		if sample.OK {
+			result.Successes++
+			latencyTotal += sample.LatencyMS
+		} else if sample.Error != "" {
+			lastErr = errors.New(sample.Error)
+		}
+	}
+	result.Available = result.Successes > 0
+	if result.Successes > 0 {
+		result.LatencyMS = latencyTotal / int64(result.Successes)
+	}
+	if !result.Available && lastErr == nil {
+		lastErr = errors.New("代理可用性检查失败")
+	}
+	result.Error = lastErr
+	return result
+}
+
+func saveProxyCheck(ctx context.Context, proxyID uint, info providerProxyExitInfo, regionErr error, health proxyAvailabilityResult) (ProxyRegionCheckResult, error) {
 	checkedAt := time.Now()
 	result := ProxyRegionCheckResult{
 		IP:          info.IP,
@@ -269,14 +351,32 @@ func saveProxyRegionCheck(ctx context.Context, proxyID uint, info providerProxyE
 		Region:      info.Region,
 		City:        info.City,
 		CheckedAt:   checkedAt,
+		Available:   health.Available,
+		LatencyMS:   health.LatencyMS,
+		Successes:   health.Successes,
+		Total:       health.Total,
 	}
-	if checkErr != nil {
+	if health.Total > 0 {
+		result.SuccessRate = float64(health.Successes) * 100 / float64(health.Total)
+	}
+	if regionErr != nil {
 		result.IP = ""
 		result.Country = ""
 		result.CountryCode = ""
 		result.Region = ""
 		result.City = ""
-		result.Error = checkErr.Error()
+	}
+	checkErrors := make([]string, 0, 2)
+	if regionErr != nil {
+		checkErrors = append(checkErrors, "地区检查: "+regionErr.Error())
+	}
+	if health.Error != nil {
+		checkErrors = append(checkErrors, "可用性检查: "+health.Error.Error())
+	}
+	result.Error = strings.Join(checkErrors, "; ")
+	healthStatus := 0
+	if result.Available {
+		healthStatus = 1
 	}
 	err := models.DB.WithContext(ctx).Model(&models.Proxy{}).Where("id = ?", proxyID).Updates(map[string]any{
 		"exit_ip":            result.IP,
@@ -286,6 +386,11 @@ func saveProxyRegionCheck(ctx context.Context, proxyID uint, info providerProxyE
 		"exit_city":          result.City,
 		"region_checked_at":  checkedAt,
 		"region_check_error": result.Error,
+		"health_status":      healthStatus,
+		"latency_ms":         result.LatencyMS,
+		"success_rate":       result.SuccessRate,
+		"check_successes":    result.Successes,
+		"check_total":        result.Total,
 	}).Error
 	return result, err
 }

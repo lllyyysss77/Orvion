@@ -734,7 +734,7 @@ export default function ProvidersPage() {
                         }}
                       >
                         <FormControl>
-                          <SelectTrigger>
+                          <SelectTrigger className="w-full">
                             <SelectValue placeholder="选择代理" />
                           </SelectTrigger>
                         </FormControl>

@@ -35,6 +35,11 @@ type Proxy struct {
 	ExitCity         string     `gorm:"column:exit_city;size:160"`
 	RegionCheckedAt  *time.Time `gorm:"column:region_checked_at;index"`
 	RegionCheckError string     `gorm:"column:region_check_error;size:2048"`
+	HealthStatus     int        `gorm:"column:health_status;index"`
+	LatencyMS        int64      `gorm:"column:latency_ms"`
+	SuccessRate      float64    `gorm:"column:success_rate"`
+	CheckSuccesses   int        `gorm:"column:check_successes"`
+	CheckTotal       int        `gorm:"column:check_total"`
 }
 
 type AnthropicConfig struct {
@@ -96,7 +101,8 @@ type ChatLog struct {
 	FirstChunkTimeMs int    `gorm:"column:first_chunk_time_ms"` // 首个chunk耗时(毫秒)
 	ChunkTimeMs      int    `gorm:"column:chunk_time_ms"`       // chunk耗时(毫秒)
 	Tps              float64
-	Size             int // 响应大小 字节
+	Size             int   // 响应大小 字节
+	TrafficBytes     int64 `gorm:"column:traffic_bytes"` // 请求与响应总流量 字节
 	Usage
 }
 
