@@ -6,7 +6,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { cn, openExternalUrl } from "@/lib/utils";
 import Loading from "@/components/loading";
 import iconSvg from "@/assets/icon.svg";
-import providerPageAnimeBg from "@/assets/ainme.webp";
+import providerPageAnimeBg from "@/assets/provider-page-bg.png";
 import pikachuPatrolSprites from "@/assets/Pikachu/patrol.webp";
 import {
   Activity,
@@ -693,13 +693,17 @@ export default function Layout() {
             style={isProvidersRoute
               ? {
                 backgroundImage: `linear-gradient(115deg, color-mix(in srgb, var(--background) 22%, transparent) 0%, color-mix(in srgb, var(--background) 14%, transparent) 52%, color-mix(in srgb, var(--background) 6%, transparent) 100%), url(${providerPageAnimeBg})`,
-                backgroundPosition: "center 18%",
-                backgroundSize: "100% 100%",
+                backgroundPosition: "center center",
+                // 第一层渐变铺满，第二层原图等比铺满，避免强制拉伸造成明显变形。
+                backgroundSize: "100% 100%, cover",
               }
               : undefined}
           >
             <div
-              className="mx-auto h-full max-w-[1720px] min-w-0 overflow-hidden"
+              className={cn(
+                "mx-auto h-full min-w-0 overflow-hidden",
+                isProvidersRoute ? "max-w-[2200px]" : "max-w-[1720px]"
+              )}
             >
               {renderRouteContent()}
             </div>

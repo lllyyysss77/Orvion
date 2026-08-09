@@ -515,7 +515,7 @@ export default function ProvidersPage() {
         ) : (
           <div className="h-full flex flex-col">
             <div className="flex-1 min-h-0 overflow-y-auto py-1">
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+              <div className="mx-auto grid w-full max-w-[2200px] gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
                 {providers.map((provider) => (
                   <div
                     key={provider.ID}

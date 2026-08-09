@@ -480,7 +480,7 @@ export default function TelegramAgentSchedulesPage() {
   }, []);
 
   return (
-    <div className="mx-auto flex h-full w-full max-w-7xl flex-col gap-5 overflow-hidden px-4 py-6 lg:px-6">
+    <div className="mx-auto flex h-full w-full max-w-none flex-col gap-5 overflow-hidden px-4 py-6 lg:px-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
