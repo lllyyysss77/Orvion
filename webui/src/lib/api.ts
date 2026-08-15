@@ -238,6 +238,15 @@ export interface DatabaseTableRowsResponse {
   pages: number;
 }
 
+export interface DatabaseSQLResponse {
+  statement_type: "select" | "insert" | "update" | "delete";
+  columns: string[];
+  rows: Record<string, unknown>[];
+  rows_affected: number;
+  truncated: boolean;
+  duration_ms: number;
+}
+
 export interface ImageCacheItem {
   id: number;
   file_name: string;
@@ -870,6 +879,13 @@ export async function getDatabaseTableRows(
     page_size: String(pageSize),
   });
   return apiRequest<DatabaseTableRowsResponse>(`/system/tables/${encodeURIComponent(tableName)}/rows?${query}`);
+}
+
+export async function executeDatabaseSQL(sql: string): Promise<DatabaseSQLResponse> {
+  return apiRequest<DatabaseSQLResponse>('/system/sql/execute', {
+    method: 'POST',
+    body: JSON.stringify({ sql }),
+  });
 }
 
 export async function getImageCache(): Promise<ImageCacheSnapshot> {

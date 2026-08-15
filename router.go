@@ -232,6 +232,7 @@ func registerSystemRoutes(api *gin.RouterGroup) {
 	api.DELETE("/system/image-cache/:id", adminhandler.DeleteImageCache)
 	api.GET("/system/tables", adminhandler.GetDatabaseTables)
 	api.GET("/system/tables/:name/rows", adminhandler.GetDatabaseTableRows)
+	api.POST("/system/sql/execute", adminhandler.ExecuteDatabaseSQL)
 	api.GET("/user-agents", adminhandler.GetUserAgents)
 	api.POST("/logs/cleanup", adminhandler.CleanLogs)
 }

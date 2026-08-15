@@ -14,11 +14,13 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 import {
   clearSystemLogs,
   deleteImageCacheItem,
+  executeDatabaseSQL,
   getDatabaseTableRows,
   getDatabaseTables,
   getImageCache,
@@ -26,14 +28,16 @@ import {
   getSystemLogs,
   type DatabaseTableInfo,
   type DatabaseTableRowsResponse,
+  type DatabaseSQLResponse,
   type ImageCacheSnapshot,
   type SystemLogSnapshot,
 } from "@/lib/api";
-import { Activity, ChevronLeft, ChevronRight, Cpu, Database, FileTerminal, GitBranch, HardDrive, Image as ImageIcon, RefreshCw, Table2, Trash2 } from "lucide-react";
+import { Activity, ChevronLeft, ChevronRight, Cpu, Database, FileTerminal, GitBranch, HardDrive, Image as ImageIcon, Play, RefreshCw, Table2, Terminal, Trash2 } from "lucide-react";
 
 const POLL_INTERVAL_MS = 3_000;
 const DEFAULT_LINE_LIMIT = 200;
 const DATABASE_TABLE_PAGE_SIZE = 30;
+const DEFAULT_DATABASE_SQL = "SELECT * FROM providers LIMIT 100;";
 
 const formatBytes = (bytes: number) => {
   if (!Number.isFinite(bytes) || bytes <= 0) {
@@ -142,6 +146,10 @@ export default function SystemLogsPage() {
   const [tableRowsLoading, setTableRowsLoading] = useState(false);
   const [selectedTableName, setSelectedTableName] = useState("");
   const [tableRows, setTableRows] = useState<DatabaseTableRowsResponse | null>(null);
+  const [sqlDialogOpen, setSqlDialogOpen] = useState(false);
+  const [sqlText, setSqlText] = useState(DEFAULT_DATABASE_SQL);
+  const [sqlExecuting, setSqlExecuting] = useState(false);
+  const [sqlResult, setSqlResult] = useState<DatabaseSQLResponse | null>(null);
   const [imageCacheDialogOpen, setImageCacheDialogOpen] = useState(false);
   const [imageCache, setImageCache] = useState<ImageCacheSnapshot | null>(null);
   const [imageCacheLoading, setImageCacheLoading] = useState(false);
@@ -326,6 +334,43 @@ export default function SystemLogsPage() {
     const totalPages = Math.max(tableRows?.pages ?? 1, 1);
     const normalizedPage = Math.min(Math.max(nextPage, 1), totalPages);
     void fetchDatabaseTableContent(selectedTableName, normalizedPage);
+  };
+
+  const openSQLDialog = () => {
+    setSqlResult(null);
+    setSqlDialogOpen(true);
+  };
+
+  const handleExecuteDatabaseSQL = async () => {
+    const normalizedSQL = sqlText.trim();
+    if (!normalizedSQL) {
+      toast.error("请输入 SQL 语句");
+      return;
+    }
+
+    const isMutation = /^(INSERT|UPDATE|DELETE)\b/i.test(normalizedSQL);
+    if (isMutation && !window.confirm("该语句会修改数据库内容，确定继续执行吗？")) {
+      return;
+    }
+
+    try {
+      setSqlExecuting(true);
+      const result = await executeDatabaseSQL(normalizedSQL);
+      setSqlResult(result);
+      toast.success(
+        result.statement_type === "select"
+          ? `查询完成，共返回 ${result.rows.length} 行`
+          : `执行完成，影响 ${result.rows_affected} 行`,
+      );
+      if (result.statement_type !== "select" && selectedTableName) {
+        await fetchDatabaseTableContent(selectedTableName, tableRows?.page ?? 1);
+      }
+    } catch (error) {
+      console.error("执行数据库 SQL 失败", error);
+      toast.error(error instanceof Error ? error.message : "执行数据库 SQL 失败");
+    } finally {
+      setSqlExecuting(false);
+    }
   };
 
   const handleClearLogs = async () => {
@@ -632,16 +677,27 @@ export default function SystemLogsPage() {
                   共 {databaseTables.length.toLocaleString()} 张表
                 </DialogDescription>
               </div>
-              <Button
-                variant="outline"
-                size="sm"
-                className="rounded-full"
-                disabled={tablesLoading}
-                onClick={() => void fetchDatabaseTables()}
-              >
-                <RefreshCw className={cn("size-4", tablesLoading && "animate-spin")} />
-                刷新
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="rounded-full"
+                  onClick={openSQLDialog}
+                >
+                  <Terminal className="size-4" />
+                  SQL 执行
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="rounded-full"
+                  disabled={tablesLoading}
+                  onClick={() => void fetchDatabaseTables()}
+                >
+                  <RefreshCw className={cn("size-4", tablesLoading && "animate-spin")} />
+                  刷新
+                </Button>
+              </div>
             </div>
           </DialogHeader>
 
@@ -791,6 +847,94 @@ export default function SystemLogsPage() {
                   </div>
                 )}
               </div>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={sqlDialogOpen} onOpenChange={setSqlDialogOpen}>
+        <DialogContent className="flex h-[82vh] w-[94vw] !max-w-6xl flex-col overflow-hidden p-0">
+          <DialogHeader className="border-b border-border/70 px-5 py-4 pr-12">
+            <DialogTitle className="flex items-center gap-2">
+              <Terminal className="size-4 text-muted-foreground" />
+              执行 SQL
+            </DialogTitle>
+            <DialogDescription>
+              仅允许执行单条 SELECT、INSERT、UPDATE 或 DELETE 语句，禁止建表、删表、改表结构和多语句执行。
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden p-5">
+            <Textarea
+              value={sqlText}
+              onChange={(event) => setSqlText(event.target.value)}
+              placeholder="输入 SQL，例如：SELECT * FROM providers LIMIT 100;"
+              className="min-h-36 resize-y font-mono text-sm leading-6"
+              spellCheck={false}
+              aria-label="SQL 语句"
+            />
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <p className="text-xs text-muted-foreground">
+                查询最多返回 1000 行；写操作执行前会再次确认。
+              </p>
+              <Button onClick={() => void handleExecuteDatabaseSQL()} disabled={sqlExecuting || !sqlText.trim()}>
+                <Play className={cn("size-4", sqlExecuting && "animate-pulse")} />
+                {sqlExecuting ? "执行中..." : "执行 SQL"}
+              </Button>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-hidden rounded-lg border border-border/70 bg-muted/10">
+              {sqlExecuting ? (
+                <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                  正在执行 SQL...
+                </div>
+              ) : !sqlResult ? (
+                <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                  执行结果将在这里显示。
+                </div>
+              ) : sqlResult.statement_type !== "select" ? (
+                <div className="flex h-full flex-col items-center justify-center gap-2 text-sm">
+                  <div className="font-semibold">{sqlResult.statement_type.toUpperCase()} 执行完成</div>
+                  <div className="text-muted-foreground">影响 {sqlResult.rows_affected.toLocaleString()} 行，耗时 {sqlResult.duration_ms} ms</div>
+                </div>
+              ) : sqlResult.rows.length === 0 ? (
+                <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                  查询成功，但没有返回记录。
+                </div>
+              ) : (
+                <div className="h-full overflow-auto">
+                  <Table className="min-w-max text-xs">
+                    <TableHeader className="sticky top-0 z-10 bg-background">
+                      <TableRow>
+                        <TableHead className="w-14 bg-background text-right text-muted-foreground">#</TableHead>
+                        {sqlResult.columns.map((column) => (
+                          <TableHead key={column} className="bg-background">{column}</TableHead>
+                        ))}
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {sqlResult.rows.map((row, rowIndex) => (
+                        <TableRow key={rowIndex}>
+                          <TableCell className="text-right text-muted-foreground">{rowIndex + 1}</TableCell>
+                          {sqlResult.columns.map((column) => {
+                            const cellText = formatDatabaseCellValue(row[column]);
+                            return (
+                              <TableCell key={column} className="max-w-[320px] truncate" title={cellText}>
+                                {cellText}
+                              </TableCell>
+                            );
+                          })}
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                  {sqlResult.truncated ? (
+                    <div className="border-t border-border/60 px-4 py-2 text-xs text-amber-700 dark:text-amber-300">
+                      结果超过 1000 行，仅显示前 1000 行。
+                    </div>
+                  ) : null}
+                </div>
+              )}
             </div>
           </div>
         </DialogContent>

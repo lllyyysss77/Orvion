@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback, useRef, memo, type ReactNode } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef, memo, type PointerEvent, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -369,6 +369,78 @@ const LogCard = memo(({ isAuthKeyMode, log, onOpenDetail, onViewChatIO }: LogCar
   );
 });
 
+type LogPointerRipple = {
+  id: number;
+  x: number;
+  y: number;
+  size: number;
+};
+
+const LogRippleLayer = ({ children }: { children: ReactNode }) => {
+  const [ripples, setRipples] = useState<LogPointerRipple[]>([]);
+  const lastPointRef = useRef<{ x: number; y: number; time: number } | null>(null);
+  const nextRippleIDRef = useRef(0);
+
+  const handlePointerMove = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    if (event.pointerType && event.pointerType !== "mouse") return;
+
+    const rect = event.currentTarget.getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const y = event.clientY - rect.top;
+    const now = performance.now();
+    const previous = lastPointRef.current;
+    const distance = previous ? Math.hypot(x - previous.x, y - previous.y) : Infinity;
+
+    if (previous && distance < 22 && now - previous.time < 45) return;
+
+    const spacing = 30;
+    const steps = previous ? Math.min(4, Math.max(1, Math.floor(distance / spacing))) : 1;
+    const nextRipples: LogPointerRipple[] = [];
+    for (let index = 1; index <= steps; index += 1) {
+      const progress = previous ? index / steps : 1;
+      const rippleID = nextRippleIDRef.current;
+      nextRippleIDRef.current += 1;
+      nextRipples.push({
+        id: rippleID,
+        x: previous ? previous.x + (x - previous.x) * progress : x,
+        y: previous ? previous.y + (y - previous.y) * progress : y,
+        size: 20 + (rippleID % 4) * 4,
+      });
+    }
+
+    lastPointRef.current = { x, y, time: now };
+    setRipples((current) => [...current, ...nextRipples].slice(-28));
+  }, []);
+
+  const handlePointerLeave = useCallback(() => {
+    lastPointRef.current = null;
+  }, []);
+
+  const removeRipple = useCallback((rippleID: number) => {
+    setRipples((current) => current.filter((ripple) => ripple.id !== rippleID));
+  }, []);
+
+  return (
+    <div
+      className="relative min-h-0 flex-1"
+      onPointerMove={handlePointerMove}
+      onPointerLeave={handlePointerLeave}
+    >
+      {children}
+      <div className="pointer-events-none absolute inset-0 z-20 overflow-hidden" aria-hidden="true">
+        {ripples.map((ripple) => (
+          <span
+            key={ripple.id}
+            className="logs-pointer-ripple"
+            style={{ left: ripple.x, top: ripple.y, width: ripple.size, height: ripple.size }}
+            onAnimationEnd={() => removeRipple(ripple.id)}
+          />
+        ))}
+      </div>
+    </div>
+  );
+};
+
 const parsePromptTokensDetails = (value: ChatLog["prompt_tokens_details"]) => {
   if (!value) return { cached_tokens: 0 };
   if (typeof value === "object") return value as { cached_tokens: number };
@@ -703,30 +775,32 @@ export default function LogsPage() {
           </div>
         ) : (
           <div className="h-full flex flex-col">
-            <div ref={listRef} className="flex-1 overflow-y-auto p-3">
-              <div className="relative w-full" style={{ height: rowVirtualizer.getTotalSize() }}>
-                {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-                  const log = logsList[virtualRow.index];
-                  if (!log) return null;
-                  return (
-                    <div
-                      key={log.UUID || log.ID}
-                      data-index={virtualRow.index}
-                      ref={rowVirtualizer.measureElement}
-                      className="absolute left-0 top-0 w-full pb-3"
-                      style={{ transform: `translateY(${virtualRow.start}px)` }}
-                    >
-                      <LogCard
-                        isAuthKeyMode={isAuthKeyMode}
-                        log={log}
-                        onOpenDetail={openDetailDialog}
-                        onViewChatIO={handleViewChatIO}
-                      />
-                    </div>
-                  );
-                })}
+            <LogRippleLayer>
+              <div ref={listRef} className="h-full overflow-y-auto p-3">
+                <div className="relative w-full" style={{ height: rowVirtualizer.getTotalSize() }}>
+                  {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+                    const log = logsList[virtualRow.index];
+                    if (!log) return null;
+                    return (
+                      <div
+                        key={log.UUID || log.ID}
+                        data-index={virtualRow.index}
+                        ref={rowVirtualizer.measureElement}
+                        className="absolute left-0 top-0 w-full pb-3"
+                        style={{ transform: `translateY(${virtualRow.start}px)` }}
+                      >
+                        <LogCard
+                          isAuthKeyMode={isAuthKeyMode}
+                          log={log}
+                          onOpenDetail={openDetailDialog}
+                          onViewChatIO={handleViewChatIO}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
-            </div>
+            </LogRippleLayer>
           </div>
         )}
       </div>

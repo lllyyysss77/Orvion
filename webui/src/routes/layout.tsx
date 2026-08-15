@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 import { checkVersionUpdate, configAPI, getVersion, type TelegramAgentConfig, type VersionUpdateCheck } from "@/lib/api";
 import { clearStoredAuthToken, getStoredAuthTokenMode } from "@/lib/auth";
+import { refreshProviderBackgroundCache } from "@/lib/provider-background-cache";
 import {
   applyUIFont,
   isUIFontOption,
@@ -126,6 +127,7 @@ export default function Layout() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(getInitialSidebarCollapsed);
   const [uiFont, setUIFont] = useState<UIFontOption>(getInitialUIFont);
   const [telegramAgentEnabled, setTelegramAgentEnabled] = useState<boolean | null>(null);
+  const [providerBackgroundSrc, setProviderBackgroundSrc] = useState(providerPageAnimeBg);
   const [navigationProgressVisible, setNavigationProgressVisible] = useState(false);
   const [navigationProgressValue, setNavigationProgressValue] = useState(0);
   const navigate = useNavigate();
@@ -140,6 +142,15 @@ export default function Layout() {
   const shouldShowAgentRouteLoader = isAgentRoute && !isAuthKeyToken && telegramAgentEnabled === null;
   const progressTimersRef = useRef<number[]>([]);
   const progressStartedRef = useRef(false);
+  const providerBackgroundRefreshStartedRef = useRef(false);
+
+  useEffect(() => {
+    if (!isProvidersRoute || providerBackgroundRefreshStartedRef.current) {
+      return undefined;
+    }
+    providerBackgroundRefreshStartedRef.current = true;
+    return refreshProviderBackgroundCache(providerPageAnimeBg, setProviderBackgroundSrc);
+  }, [isProvidersRoute]);
 
   useEffect(() => {
     if (isAuthKeyToken) {
@@ -692,7 +703,7 @@ export default function Layout() {
             )}
             style={isProvidersRoute
               ? {
-                backgroundImage: `linear-gradient(115deg, color-mix(in srgb, var(--background) 22%, transparent) 0%, color-mix(in srgb, var(--background) 14%, transparent) 52%, color-mix(in srgb, var(--background) 6%, transparent) 100%), url(${providerPageAnimeBg})`,
+                backgroundImage: `linear-gradient(115deg, color-mix(in srgb, var(--background) 22%, transparent) 0%, color-mix(in srgb, var(--background) 14%, transparent) 52%, color-mix(in srgb, var(--background) 6%, transparent) 100%), url(${providerBackgroundSrc})`,
                 backgroundPosition: "center center",
                 // 第一层渐变铺满，第二层原图等比铺满，避免强制拉伸造成明显变形。
                 backgroundSize: "100% 100%, cover",
