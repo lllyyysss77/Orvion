@@ -82,7 +82,7 @@ import { resolveModelIcon } from "@/lib/model-icon";
 
 const capabilityValues = ["chat", "vision", "embedding", "rerank"] as const;
 type ModelCapability = (typeof capabilityValues)[number];
-type ModelColumnKey = "model" | "input" | "output" | "capabilities" | "connectivity" | "status" | "actions";
+type ModelColumnKey = "model" | "input" | "output" | "cacheRead" | "cacheWrite" | "config" | "capabilities" | "connectivity" | "status" | "actions";
 type ModelGridStyle = CSSProperties & { "--model-cols": string };
 
 function modelGridStyle(template: string, transform?: string): ModelGridStyle {
@@ -106,6 +106,9 @@ const resolveConnectivityStatus = (result: ModelConnectivityTestResult): Connect
 const MODEL_FILTER_STORAGE_KEY = "orvion_models_filters_v1";
 const MODEL_COLUMNS_STORAGE_KEY = "orvion_models_columns_v1";
 const MODEL_WIDTH_STORAGE_KEY = "orvion_models_width_v1";
+const MODEL_ROW_ESTIMATE = 84;
+const MODEL_PAGE_SIZE_MIN = 12;
+const MODEL_PAGE_SIZE_MAX = 50;
 
 type ModelFilterState = {
   searchInput: string;
@@ -129,13 +132,16 @@ const defaultModelColumns: ModelColumnVisibility = {
   model: true,
   input: true,
   output: true,
+  cacheRead: true,
+  cacheWrite: true,
+  config: true,
   capabilities: true,
   status: true,
   connectivity: true,
   actions: true,
 };
 
-const modelColumnOrder: ModelColumnKey[] = ["model", "input", "output", "capabilities", "status", "connectivity", "actions"];
+const modelColumnOrder: ModelColumnKey[] = ["model", "input", "output", "cacheRead", "cacheWrite", "config", "capabilities", "status", "connectivity", "actions"];
 
 const defaultModelWidths: ModelWidthState = {
   model: "default",
@@ -339,7 +345,7 @@ export default function ModelsPage() {
   const [editingModel, setEditingModel] = useState<Model | null>(null);
   const [deleteId, setDeleteId] = useState<number | null>(null);
   const [page, setPage] = useState(1);
-  const [pageSize] = useState(12);
+  const [pageSize, setPageSize] = useState(MODEL_PAGE_SIZE_MIN);
   const [searchInput, setSearchInput] = useState(() => readStoredModelFilters().searchInput);
   const [searchTerm, setSearchTerm] = useState(() => readStoredModelFilters().searchInput.trim());
   const [capabilityFilter, setCapabilityFilter] = useState<string>(() => readStoredModelFilters().capabilityFilter);
@@ -359,6 +365,36 @@ export default function ModelsPage() {
     width: 0,
     visible: false,
   });
+
+  useLayoutEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const updatePageSize = () => {
+      const list = listRef.current;
+      const availableHeight = list?.clientHeight || Math.max(window.innerHeight - 300, MODEL_ROW_ESTIMATE * MODEL_PAGE_SIZE_MIN);
+      const nextPageSize = Math.max(
+        MODEL_PAGE_SIZE_MIN,
+        Math.min(MODEL_PAGE_SIZE_MAX, Math.floor(availableHeight / MODEL_ROW_ESTIMATE)),
+      );
+      setPageSize((current) => (current === nextPageSize ? current : nextPageSize));
+    };
+
+    updatePageSize();
+    window.addEventListener("resize", updatePageSize);
+
+    const list = listRef.current;
+    const observer = list && typeof ResizeObserver !== "undefined"
+      ? new ResizeObserver(updatePageSize)
+      : null;
+    if (list && observer) {
+      observer.observe(list);
+    }
+
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", updatePageSize);
+    };
+  }, [loading]);
 
   // 初始化表单
   const form = useForm<z.infer<typeof formSchema>>({
@@ -577,7 +613,7 @@ export default function ModelsPage() {
   const rowVirtualizer = useVirtualizer({
     count: visibleModels.length,
     getScrollElement: () => listRef.current,
-    estimateSize: () => 84,
+    estimateSize: () => MODEL_ROW_ESTIMATE,
     overscan: 8,
   });
   const currentPageConnectivityTesting = visibleModels.some((model) => connectivityStates[model.ID]?.status === "testing");
@@ -593,6 +629,9 @@ export default function ModelsPage() {
       model: modelWidth,
       input: priceWidth,
       output: priceWidth,
+      cacheRead: priceWidth,
+      cacheWrite: priceWidth,
+      config: "minmax(12rem,1.25fr)",
       capabilities: "minmax(11rem,1fr)",
       status: "9rem",
       connectivity: "4.75rem",
@@ -959,6 +998,9 @@ export default function ModelsPage() {
                           model: "模型",
                           input: "输入价格",
                           output: "输出价格",
+                          cacheRead: "缓存读价格",
+                          cacheWrite: "缓存写价格",
+                          config: "运行配置",
                           capabilities: "能力",
                           status: "状态",
                           connectivity: "连通",
@@ -1111,6 +1153,9 @@ export default function ModelsPage() {
                 {columnVisibility.model ? <div>模型</div> : null}
                 {columnVisibility.input ? <div className="text-center">输入</div> : null}
                 {columnVisibility.output ? <div className="text-center">输出</div> : null}
+                {columnVisibility.cacheRead ? <div className="text-center">缓存读</div> : null}
+                {columnVisibility.cacheWrite ? <div className="text-center">缓存写</div> : null}
+                {columnVisibility.config ? <div className="text-center">运行配置</div> : null}
                 {columnVisibility.capabilities ? <div className="text-center">能力</div> : null}
                 {columnVisibility.status ? <div className="text-center">状态</div> : null}
                 {columnVisibility.connectivity ? (
@@ -1204,6 +1249,42 @@ export default function ModelsPage() {
                           <span className="tabular-nums">
                             {formatPrice(model.OutputPrice)}$
                           </span>
+                        </div>
+                      </div>
+                      ) : null}
+
+                      {columnVisibility.cacheRead ? (
+                      <div className="min-w-0 xl:justify-self-center">
+                        <div className="mb-1 text-[11px] font-medium text-muted-foreground xl:hidden">缓存读</div>
+                        <div className="flex items-center gap-1 text-sm font-medium text-foreground/80 xl:justify-center">
+                          <Coins className="size-3.5 text-emerald-500" />
+                          <span className="tabular-nums">{formatPrice(model.CacheReadPrice)}$</span>
+                        </div>
+                      </div>
+                      ) : null}
+
+                      {columnVisibility.cacheWrite ? (
+                      <div className="min-w-0 xl:justify-self-center">
+                        <div className="mb-1 text-[11px] font-medium text-muted-foreground xl:hidden">缓存写</div>
+                        <div className="flex items-center gap-1 text-sm font-medium text-foreground/80 xl:justify-center">
+                          <Coins className="size-3.5 text-emerald-500" />
+                          <span className="tabular-nums">{formatPrice(model.CacheWritePrice)}$</span>
+                        </div>
+                      </div>
+                      ) : null}
+
+                      {columnVisibility.config ? (
+                      <div className="min-w-0 xl:justify-self-center xl:w-full">
+                        <div className="mb-1 text-[11px] font-medium text-muted-foreground xl:hidden">运行配置</div>
+                        <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground xl:justify-center">
+                          <span className="rounded-full border border-border/60 bg-muted/40 px-2 py-0.5">
+                            {model.Strategy === "rotor" ? "轮询" : "权重"}
+                          </span>
+                          <span>重试 {model.MaxRetry ?? 0}</span>
+                          <span>超时 {model.TimeOut ?? 0}s</span>
+                          {Number(model.Breaker) === 1 ? (
+                            <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-amber-700">熔断</span>
+                          ) : null}
                         </div>
                       </div>
                       ) : null}

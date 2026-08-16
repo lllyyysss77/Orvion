@@ -26,6 +26,7 @@ import {
   ArrowUpToLine,
   CalendarDays,
   Coins,
+  ChartColumnIncreasing,
   CheckCircle2,
   XCircle,
   type LucideIcon,
@@ -363,7 +364,10 @@ const TodayAmountTrendCard = memo(({
       <CardHeader className="pb-2">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
-            <div className="text-xs text-muted-foreground">24 小时请求分布</div>
+            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Activity className="size-3.5 text-primary" aria-hidden="true" />
+              <span>24 小时请求分布</span>
+            </div>
             <div className="mt-1 flex items-baseline gap-2">
               <span className="text-2xl font-semibold leading-none text-foreground">{formatCompactValue(totalRequests)}</span>
               <span className="text-xs text-muted-foreground">次请求</span>
@@ -588,7 +592,10 @@ const DailyModelCostCard = memo(({ trend }: DailyModelCostCardProps) => {
       <CardHeader className="pb-2">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="flex flex-col gap-1">
-            <span className="text-xs text-muted-foreground">每日模型成本</span>
+            <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Coins className="size-3.5 text-amber-600" aria-hidden="true" />
+              <span>每日模型成本</span>
+            </span>
           </div>
           <div className="text-xs text-muted-foreground">
             最近 <span className="text-foreground">{trend.labels.length}</span> 天
@@ -771,7 +778,10 @@ const ModelUsageCard = memo(({ items, range, loading, onRangeChange }: ModelUsag
       <CardHeader className="pb-2">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="flex flex-col gap-1">
-            <span className="text-xs text-muted-foreground">模型用量概览</span>
+            <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <ChartColumnIncreasing className="size-3.5 text-primary" aria-hidden="true" />
+              <span>模型用量概览</span>
+            </span>
             <div className="flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
               <span>模型数 <span className="text-foreground">{items.length}</span></span>
               <span>总 Tokens <span className="text-foreground">{formatTokenCompact(totalTokens)}</span></span>

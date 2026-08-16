@@ -106,20 +106,26 @@ async function saveCachedImage(source: string, blob: Blob): Promise<void> {
   saveMetadata(metadata);
 }
 
+export interface ProviderBackgroundCacheController {
+  refresh: () => void;
+  dispose: () => void;
+}
+
 /**
- * 读取本地原图并在后台刷新。
+ * 创建背景图缓存控制器。
  * 原图二进制保存在 IndexedDB，localStorage 仅保存版本、大小和更新时间等索引信息。
  */
-export function refreshProviderBackgroundCache(
+export function createProviderBackgroundCacheController(
   source: string,
   onUpdated: (src: string) => void,
-): () => void {
+): ProviderBackgroundCacheController {
   if (typeof window === "undefined" || typeof URL === "undefined") {
-    return () => undefined;
+    return { refresh: () => undefined, dispose: () => undefined };
   }
 
   let active = true;
   let activeObjectURL: string | null = null;
+  let refreshInFlight: Promise<void> | null = null;
 
   const publish = (blob: Blob) => {
     if (!active) return;
@@ -153,13 +159,21 @@ export function refreshProviderBackgroundCache(
     }
   };
 
-  void loadAndRefresh();
+  const refresh = () => {
+    if (!active || refreshInFlight) return;
+    refreshInFlight = loadAndRefresh().finally(() => {
+      refreshInFlight = null;
+    });
+  };
 
-  return () => {
+  const dispose = () => {
     active = false;
     if (activeObjectURL) {
       URL.revokeObjectURL(activeObjectURL);
       activeObjectURL = null;
     }
   };
+
+  refresh();
+  return { refresh, dispose };
 }

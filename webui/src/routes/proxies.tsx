@@ -289,12 +289,12 @@ export default function ProxiesPage() {
       applyCheckResult(proxy.ID, result);
       if (notify) {
         if (result.available) toast.success(`${proxy.Name} 检查完成，延迟 ${result.latency_ms} ms`);
-        else toast.error(`${proxy.Name} 不可用${result.error ? `: ${result.error}` : ""}`);
+        else toast.error(`${proxy.Name} 不可用`);
       }
       return result.available;
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return false;
-      if (notify) toast.error(`代理检查失败: ${error instanceof Error ? error.message : String(error)}`);
+      if (notify) toast.error(`代理 ${proxy.Name} 检查失败`);
       return false;
     } finally {
       setCheckingIDs((current) => {
@@ -362,29 +362,39 @@ export default function ProxiesPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold">代理列表</h1>
-          <p className="mt-1 text-sm text-muted-foreground">统一维护提供商访问上游时使用的代理。</p>
-        </div>
-        <div className="flex items-center gap-2">
-          {batchProgress.running ? (
-            <Button variant="outline" onClick={() => batchControllerRef.current?.abort()}>
-              <Square className="size-4" />
-              停止检查 {batchProgress.completed}/{batchProgress.total}
+      <section className="overflow-hidden rounded-3xl border border-border/60 bg-gradient-to-br from-card via-card to-primary/[0.06] p-5 shadow-[0_16px_40px_rgba(98,71,47,0.07)]">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="flex min-w-0 items-start gap-3">
+            <div className="flex size-11 shrink-0 items-center justify-center rounded-2xl bg-primary/10 text-primary ring-1 ring-primary/15">
+              <Network className="size-5" />
+            </div>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h1 className="text-2xl font-semibold tracking-tight">代理列表</h1>
+              </div>
+              <p className="mt-1 text-sm text-muted-foreground">统一维护提供商访问上游时使用的代理，实时掌握出口地区与健康状态。</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            {batchProgress.running ? (
+              <Button variant="outline" className="rounded-xl bg-background/70" onClick={() => batchControllerRef.current?.abort()}>
+                <Square className="size-4" />
+                停止检查 {batchProgress.completed}/{batchProgress.total}
+              </Button>
+            ) : (
+              <Button variant="outline" className="rounded-xl bg-background/70" onClick={() => void checkAll()} disabled={proxies.length === 0}>
+                <Activity className="size-4" />
+                检查全部
+              </Button>
+            )}
+            <Button className="rounded-xl shadow-sm" onClick={openCreate}>
+              <Plus className="size-4" />
+              新增代理
             </Button>
-          ) : (
-            <Button variant="outline" onClick={() => void checkAll()} disabled={proxies.length === 0}>
-              <Activity className="size-4" />
-              检查全部
-            </Button>
-          )}
-          <Button onClick={openCreate}>
-            <Plus className="size-4" />
-            新增代理
-          </Button>
+          </div>
         </div>
-      </div>
+
+      </section>
 
       {batchProgress.running && (
         <div className="h-1 overflow-hidden rounded-full bg-muted" aria-label={`检查进度 ${batchProgress.completed}/${batchProgress.total}`}>
@@ -392,14 +402,17 @@ export default function ProxiesPage() {
         </div>
       )}
 
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border bg-muted/20 px-4 py-3">
-        <div>
-          <div className="flex items-center gap-2 text-sm font-medium"><Activity className="size-4" />自动健康检查</div>
+      <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-border/60 bg-card/75 px-4 py-3.5 shadow-sm">
+        <div className="flex items-start gap-3">
+          <div className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600 ring-1 ring-emerald-100 dark:bg-emerald-400/10 dark:text-emerald-300 dark:ring-emerald-400/20"><Activity className="size-4" /></div>
+          <div>
+          <div className="flex items-center gap-2 text-sm font-medium">自动健康检查<Badge variant="outline" className="rounded-full px-2 py-0 text-[10px]">{autoCheckInterval === "0" ? "已关闭" : `每 ${autoCheckInterval} 分钟`}</Badge></div>
           <p className="mt-1 text-xs text-muted-foreground">后台最多 3 个并发，仅在可用状态变化时写入通知。</p>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           <Select value={autoCheckInterval} onValueChange={setAutoCheckInterval}>
-            <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
+            <SelectTrigger className="w-36 rounded-xl"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="0">关闭</SelectItem>
               <SelectItem value="15">每 15 分钟</SelectItem>
@@ -407,19 +420,23 @@ export default function ProxiesPage() {
               <SelectItem value="60">每 60 分钟</SelectItem>
             </SelectContent>
           </Select>
-          <Button variant="outline" onClick={() => void saveAutoCheckConfig()} disabled={autoCheckSaving}>
+          <Button variant="outline" className="rounded-xl" onClick={() => void saveAutoCheckConfig()} disabled={autoCheckSaving}>
             {autoCheckSaving ? "保存中..." : "保存"}
           </Button>
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-border/60 bg-card/70 p-3 shadow-sm">
+        <div className="mr-1 flex items-center gap-2 text-xs font-medium text-muted-foreground">
+          <Search className="size-4 text-primary" />
+          <span>筛选节点</span>
+        </div>
         <div className="relative min-w-56 flex-1 sm:max-w-80">
           <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-          <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索节点名称" className="pl-9" />
+          <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索节点名称" className="h-9 rounded-xl border-border/60 bg-background/70 pl-9" />
         </div>
         <Select value={protocol} onValueChange={setProtocol}>
-          <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
+          <SelectTrigger className="w-32 rounded-xl bg-background/70"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">全部协议</SelectItem>
             <SelectItem value="http">HTTP</SelectItem>
@@ -427,14 +444,14 @@ export default function ProxiesPage() {
           </SelectContent>
         </Select>
         <Select value={region} onValueChange={setRegion}>
-          <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
+          <SelectTrigger className="w-36 rounded-xl bg-background/70"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">全部地区</SelectItem>
             {regionOptions.map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)}
           </SelectContent>
         </Select>
         <Select value={availability} onValueChange={(value) => setAvailability(value as AvailabilityFilter)}>
-          <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
+          <SelectTrigger className="w-36 rounded-xl bg-background/70"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">全部状态</SelectItem>
             <SelectItem value="available">可用</SelectItem>
@@ -443,7 +460,7 @@ export default function ProxiesPage() {
           </SelectContent>
         </Select>
         <Select value={sortMode} onValueChange={(value) => setSortMode(value as SortMode)}>
-          <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
+          <SelectTrigger className="w-36 rounded-xl bg-background/70"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="default">默认排序</SelectItem>
             <SelectItem value="name">按名称</SelectItem>
@@ -452,12 +469,15 @@ export default function ProxiesPage() {
             <SelectItem value="usage">按使用数量</SelectItem>
           </SelectContent>
         </Select>
+        <Badge variant="outline" className="ml-auto rounded-full bg-background/70 px-2.5 py-1 text-xs">
+          显示 {visibleProxies.length} / {proxies.length}
+        </Badge>
       </div>
 
-      <div className="min-h-0 overflow-auto rounded-md border">
+      <div className="min-h-0 flex-1 overflow-auto rounded-2xl border border-border/70 bg-card/80 shadow-[0_12px_30px_rgba(98,71,47,0.06)]">
         <Table>
-          <TableHeader>
-            <TableRow>
+          <TableHeader className="sticky top-0 z-10 bg-muted/90 backdrop-blur-sm">
+            <TableRow className="hover:bg-transparent">
               <TableHead>名称</TableHead>
               <TableHead>代理地址</TableHead>
               <TableHead>出口地区</TableHead>
@@ -485,11 +505,23 @@ export default function ProxiesPage() {
               const checking = checkingIDs.has(proxy.ID);
               const revealed = revealedIDs.has(proxy.ID);
               return (
-                <TableRow key={proxy.ID}>
-                  <TableCell className="font-medium">{proxy.Name}</TableCell>
+                <TableRow key={proxy.ID} className="group border-border/50 transition-colors hover:bg-primary/[0.035]">
+                  <TableCell className="py-4">
+                    <div className="flex min-w-40 items-center gap-3">
+                      <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary ring-1 ring-primary/10 transition-transform group-hover:scale-105">
+                        <Network className="size-4" />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="truncate font-semibold" title={proxy.Name}>{proxy.Name}</div>
+                        <Badge variant="outline" className="mt-1 rounded-full px-1.5 py-0 text-[10px] uppercase tracking-wide text-muted-foreground">
+                          {proxyProtocol(proxy.ProxyURL) === "socks5" ? "SOCKS5" : "HTTP"}
+                        </Badge>
+                      </div>
+                    </div>
+                  </TableCell>
                   <TableCell>
-                    <div className="flex min-w-72 max-w-[480px] items-center gap-1">
-                      <code className="min-w-0 flex-1 truncate text-xs" title={revealed ? proxy.ProxyURL : maskProxyURL(proxy.ProxyURL)}>
+                    <div className="flex min-w-72 max-w-[480px] items-center gap-1.5 rounded-xl border border-border/50 bg-muted/25 px-2 py-1.5">
+                      <code className="min-w-0 flex-1 truncate text-xs text-foreground/75" title={revealed ? proxy.ProxyURL : maskProxyURL(proxy.ProxyURL)}>
                         {revealed ? proxy.ProxyURL : maskProxyURL(proxy.ProxyURL)}
                       </code>
                       {proxy.ProxyURL.includes("@") && (
@@ -523,19 +555,20 @@ export default function ProxiesPage() {
                       </Button>
                     </div>
                   </TableCell>
-                  <TableCell>
-                    <div className="min-w-32" title={proxy.RegionCheckError || proxy.ExitIP || undefined}>
+                  <TableCell className="py-4">
+                    <div className="min-w-32" title={proxy.ExitIP || undefined}>
                       <div className="flex items-center gap-1.5">
+                        <MapPin className="size-3.5 shrink-0 text-primary" />
                         {proxy.ExitCountryCode && <span>{countryFlag(proxy.ExitCountryCode)}</span>}
                         <span className="max-w-48 truncate text-sm">{location}</span>
                       </div>
                       {proxy.ExitIP && <div className="mt-0.5 font-mono text-xs text-muted-foreground">{proxy.ExitIP}</div>}
                     </div>
                   </TableCell>
-                  <TableCell>
+                  <TableCell className="py-4">
                     <div className="min-w-32 space-y-1">
                       <div className="flex items-center gap-2">
-                        <Badge variant={!healthChecked ? "outline" : proxy.HealthStatus === 1 ? "default" : "destructive"}>
+                        <Badge className={!healthChecked ? "rounded-full" : proxy.HealthStatus === 1 ? "rounded-full border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-50 dark:border-emerald-400/20 dark:bg-emerald-400/10 dark:text-emerald-300" : "rounded-full"} variant={!healthChecked ? "outline" : proxy.HealthStatus === 1 ? "default" : "destructive"}>
                           {!healthChecked ? "未检查" : proxy.HealthStatus === 1 ? "可用" : "不可用"}
                         </Badge>
                         {healthChecked && proxy.HealthStatus === 1 && <span className="text-xs tabular-nums">{proxy.LatencyMS} ms</span>}
@@ -546,24 +579,23 @@ export default function ProxiesPage() {
                       <div className={`text-xs ${stale ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground"}`} title={proxy.RegionCheckedAt ? new Date(proxy.RegionCheckedAt).toLocaleString("zh-CN") : undefined}>
                         {formatCheckedAt(proxy.RegionCheckedAt, now)}{stale && checked ? " · 建议复查" : ""}
                       </div>
-                      {proxy.RegionCheckError && <div className="max-w-52 truncate text-xs text-destructive" title={proxy.RegionCheckError}>{proxy.RegionCheckError}</div>}
                     </div>
                   </TableCell>
-                  <TableCell>
-                    <Badge variant={proxy.UsageCount ? "default" : "outline"}>
+                  <TableCell className="py-4">
+                    <Badge className="rounded-full" variant={proxy.UsageCount ? "default" : "outline"}>
                       {proxy.UsageCount ? `${proxy.UsageCount} 个提供商` : "未使用"}
                     </Badge>
                   </TableCell>
-                  <TableCell className="font-mono text-xs tabular-nums">{formatBytes(proxy.TrafficBytes)}</TableCell>
-                  <TableCell>
-                    <div className="flex justify-end gap-1">
-                      <Button variant="ghost" size="icon" title="检查节点" disabled={checking} onClick={() => void checkOne(proxy)}>
+                  <TableCell className="py-4 font-mono text-xs tabular-nums text-foreground/75">{formatBytes(proxy.TrafficBytes)}</TableCell>
+                  <TableCell className="py-4">
+                    <div className="flex justify-end gap-1 opacity-70 transition-opacity group-hover:opacity-100">
+                      <Button variant="ghost" size="icon" className="size-8 rounded-lg hover:bg-primary/10 hover:text-primary" title="检查节点" disabled={checking} onClick={() => void checkOne(proxy)}>
                         {checking ? <LoaderCircle className="size-4 animate-spin" /> : <MapPin className="size-4" />}
                       </Button>
-                      <Button variant="ghost" size="icon" title="编辑代理" onClick={() => openEdit(proxy)}>
+                      <Button variant="ghost" size="icon" className="size-8 rounded-lg hover:bg-primary/10 hover:text-primary" title="编辑代理" onClick={() => openEdit(proxy)}>
                         <Pencil className="size-4" />
                       </Button>
-                      <Button variant="ghost" size="icon" title="删除代理" onClick={() => setPendingDelete(proxy)}>
+                      <Button variant="ghost" size="icon" className="size-8 rounded-lg hover:bg-destructive/10 hover:text-destructive" title="删除代理" onClick={() => setPendingDelete(proxy)}>
                         <Trash2 className="size-4" />
                       </Button>
                     </div>

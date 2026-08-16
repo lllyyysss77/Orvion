@@ -28,7 +28,7 @@ import {
 } from "lucide-react";
 import { checkVersionUpdate, configAPI, getVersion, type TelegramAgentConfig, type VersionUpdateCheck } from "@/lib/api";
 import { clearStoredAuthToken, getStoredAuthTokenMode } from "@/lib/auth";
-import { refreshProviderBackgroundCache } from "@/lib/provider-background-cache";
+import { createProviderBackgroundCacheController } from "@/lib/provider-background-cache";
 import {
   applyUIFont,
   isUIFontOption,
@@ -142,14 +142,27 @@ export default function Layout() {
   const shouldShowAgentRouteLoader = isAgentRoute && !isAuthKeyToken && telegramAgentEnabled === null;
   const progressTimersRef = useRef<number[]>([]);
   const progressStartedRef = useRef(false);
-  const providerBackgroundRefreshStartedRef = useRef(false);
 
   useEffect(() => {
-    if (!isProvidersRoute || providerBackgroundRefreshStartedRef.current) {
+    if (!isProvidersRoute) {
       return undefined;
     }
-    providerBackgroundRefreshStartedRef.current = true;
-    return refreshProviderBackgroundCache(providerPageAnimeBg, setProviderBackgroundSrc);
+
+    const cacheController = createProviderBackgroundCacheController(
+      providerPageAnimeBg,
+      setProviderBackgroundSrc,
+    );
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        cacheController.refresh();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      cacheController.dispose();
+    };
   }, [isProvidersRoute]);
 
   useEffect(() => {
