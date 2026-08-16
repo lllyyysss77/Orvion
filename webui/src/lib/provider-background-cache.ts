@@ -106,6 +106,8 @@ async function saveCachedImage(source: string, blob: Blob): Promise<void> {
   saveMetadata(metadata);
 }
 
+const imageSignature = (blob: Blob) => `${blob.size}:${blob.type || "image/*"}`;
+
 export interface ProviderBackgroundCacheController {
   refresh: () => void;
   dispose: () => void;
@@ -130,21 +132,31 @@ export function createProviderBackgroundCacheController(
   const publish = (blob: Blob) => {
     if (!active) return;
     const nextObjectURL = URL.createObjectURL(blob);
-    if (activeObjectURL) {
-      URL.revokeObjectURL(activeObjectURL);
-    }
-    activeObjectURL = nextObjectURL;
-    onUpdated(nextObjectURL);
+    const image = new Image();
+    image.onload = () => {
+      if (!active) {
+        URL.revokeObjectURL(nextObjectURL);
+        return;
+      }
+      if (activeObjectURL) {
+        URL.revokeObjectURL(activeObjectURL);
+      }
+      activeObjectURL = nextObjectURL;
+      onUpdated(nextObjectURL);
+    };
+    image.onerror = () => URL.revokeObjectURL(nextObjectURL);
+    image.src = nextObjectURL;
   };
 
   const loadAndRefresh = async () => {
+    let cachedSignature: string | null = null;
     try {
       const cachedBlob = await readCachedImage(source);
       if (cachedBlob) {
-        publish(cachedBlob);
+        cachedSignature = imageSignature(cachedBlob);
       }
     } catch {
-      // 本地缓存不可读时直接走网络刷新。
+      // 本地缓存不可读时直接走网络刷新，不影响默认背景显示。
     }
 
     try {
@@ -153,9 +165,12 @@ export function createProviderBackgroundCacheController(
       const blob = await response.blob();
       if (!blob.type.startsWith("image/")) return;
       await saveCachedImage(source, blob);
-      publish(blob);
+      // 默认背景已经由打包资源显示；只有图片内容发生变化时才替换，避免相同图片闪烁。
+      if (cachedSignature && imageSignature(blob) !== cachedSignature) {
+        publish(blob);
+      }
     } catch {
-      // 网络刷新失败时继续使用已读取的本地原图或默认资源 URL。
+      // 网络刷新失败时继续使用默认资源 URL。
     }
   };
 
